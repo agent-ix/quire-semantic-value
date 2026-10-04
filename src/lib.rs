@@ -1,18 +1,27 @@
-//! The shared no_std semantic-value leaf: runtime semantic values over the quire-exact kernel.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! `quire-semantic-value`: a shared `no_std` leaf crate above the `quire-exact`
+//! kernel.
+//!
+//! It holds the runtime semantic values that a compiler, an evaluator and a
+//! backend share, so the code exists once. Its dependencies are the
+//! `quire-exact` kernel, the one RFC 8785 encoder (`quire-canonical`, built
+//! without `std`), `serde` and `thiserror`. It uses only `core` and `alloc`.
+#![no_std]
 
-#![warn(missing_docs)]
-
-/// Placeholder entry point.
-pub fn hello() -> &'static str {
-    "hello from quire_semantic_value"
-}
-
+extern crate alloc;
 #[cfg(test)]
-mod tests {
-    use super::*;
+extern crate std;
 
-    #[test]
-    fn hello_returns_greeting() {
-        assert!(hello().contains("quire_semantic_value"));
-    }
-}
+pub mod call;
+pub mod checking;
+pub mod containment;
+pub mod declaration;
+pub mod definition;
+pub mod enumeration;
+pub mod location;
+pub mod loss;
+pub mod object_closure;
+pub mod quantity;
+pub mod semantic_node;
+pub mod stop;
+pub mod unit;

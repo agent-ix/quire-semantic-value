@@ -8,7 +8,7 @@
 
 ## Docs
 
-- The crate root carries `#![warn(missing_docs)]`. Every `pub` item needs a real doc
+- `[lints.rust]` sets `missing_docs = "warn"`. Every `pub` item needs a real doc
   comment — one accurate sentence on what it's for, not a restatement of its name. If
   something shouldn't be public API, narrow its visibility instead of silencing the lint.
 - `missing_docs` is a rustc lint: it fires under `cargo check`/`clippy`, so `make lint`
@@ -21,9 +21,7 @@
 
 ## Unsafe
 
-- Every `unsafe {` block must have a `// SAFETY: <reason>` comment within the 3 lines above it.
-- `make audit-unsafe` enforces this. CI runs the same check.
-- Pre-existing baselines (legacy unsafe without comments) live in `scripts/unsafe_comment_baseline.txt`. Regenerate with `bash scripts/check_unsafe_comments.sh --update-baseline`.
+- `unsafe_code = "forbid"` in `[lints.rust]`: this crate has no `unsafe`.
 
 ## Dependencies
 
@@ -33,11 +31,10 @@
 
 ## Tests
 
-- Unit tests inline with `#[cfg(test)]`. Integration tests in `tests/`.
+- Unit tests inline with `#[cfg(test)]`.
 - Aim for property tests (`proptest`) on parsers / format encoders / anything with adversarial inputs.
 
 ## Don't
 
 - Don't add `#[allow(...)]` to silence a clippy lint without a comment explaining the trade-off.
 - Don't disable a CI gate to unblock a PR. Fix the underlying issue.
-- Don't introduce `unsafe` without a `// SAFETY:` comment.
