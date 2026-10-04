@@ -2,9 +2,11 @@ msrv = "1.98"
 cognitive-complexity-threshold = 30
 too-many-arguments-threshold = 8
 
-# This crate mints no `NodeKey`: it resolves a node id by lookup among the keys
-# a caller admitted (FR-060-AC-5).
+# This crate mints no `NodeKey`, `EffectiveId` or `PopulationId`: it resolves a
+# node id by lookup among the keys a caller admitted (FR-060-AC-5, FR-060-AC-6).
 disallowed-methods = [
     { path = "quire_exact::NodeKey::from_digest", reason = "only the checking stage mints a NodeKey" },
     { path = "quire_exact::NodeKey::decode_admitted", reason = "only the checking stage decodes an admitted NodeKey" },
+    { path = "quire_exact::EffectiveId::from_digest", reason = "only the model stage mints an EffectiveId" },
+    { path = "quire_exact::PopulationId::from_digest", reason = "only the model stage mints a PopulationId" },
 ]
