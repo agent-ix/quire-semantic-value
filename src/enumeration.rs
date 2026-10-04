@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! FR-141 enumerations at run time (ADR-011 §6.1 layer SV): an admitted
+//! FR-141 enumerations at run time: an admitted
 //! declaration's structure ([`EnumDeclaration`]), an admitted member as an
 //! [`EnumValue`], the checked `VariantId` -> [`EnumValue`] index
 //! ([`EnumMemberIndex`]), and the FR-141 comparison schedule
 //! ([`compare_enum`]). Node identity (preimages, digests, owner join and
-//! stale-key refusal) stays in `qsl-semantics`' `value::enumeration`.
+//! stale-key refusal) stays with the caller.
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -21,7 +21,7 @@ use quire_exact::{
 
 /// Whether `members` is a schema member list: nonempty, distinct
 /// identifiers. The one statement of the rule, shared by
-/// [`EnumDeclaration::new`] and `qsl-semantics`' preimage readers.
+/// [`EnumDeclaration::new`] and a caller's preimage readers.
 pub fn is_member_list(members: &[String]) -> bool {
     let distinct: BTreeSet<_> = members.iter().collect();
     !members.is_empty()
@@ -31,9 +31,9 @@ pub fn is_member_list(members: &[String]) -> bool {
 
 /// An admitted enum declaration node: its key, its ordering and its member
 /// cases. This type checks the structural rules a declaration is compared
-/// under. It does not mint or verify the key: SV takes the declaration key
-/// the caller admitted as given (only the compiler's `check` mints and
-/// verifies node keys, ADR-011 §6.1).
+/// under. It does not mint or verify the key: this type takes the declaration key
+/// the caller admitted as given (only the checking stage mints and
+/// verifies node keys).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EnumDeclaration {
     key: NodeKey,
@@ -94,7 +94,7 @@ impl EnumDeclaration {
     /// The position and the ordered flag come from this declaration. The
     /// member key is taken as given: it is the caller's admitted
     /// `quire.enum-member-node/v1` key for `case`, and nothing here checks
-    /// it against the case (SV mints and verifies no key). A wrong key gives
+    /// it against the case (this crate mints and verifies no key). A wrong key gives
     /// a value whose `=` (member keys) and ordering (positions) disagree.
     pub fn member(&self, case: &str, member: NodeKey) -> Result<EnumValue, InvalidSemanticGraph> {
         let position = self
@@ -136,12 +136,9 @@ impl EnumValue {
     }
 
     /// Zero-based FR-141 canonical-list position of the member: the same
-    /// value ADR-013 O-14/OQ-D's `EnumMember::rank` carries once a caller
-    /// pairs it with this member's [`Self::variant`]. Widened from
-    /// `pub(crate)` (this change): an external caller building an
-    /// `EnumShape`/`Value::Enum` from an admitted [`EnumValue`] -- exactly
-    /// what `check::check::Typer::name` and `check::EnumBinding::shape` do
-    /// inside this crate -- needs it too.
+    /// value `quire_exact::EnumMember::rank` carries once a caller
+    /// pairs it with this member's [`Self::variant`]. A caller building an
+    /// `EnumShape`/`Value::Enum` from an admitted [`EnumValue`] needs it.
     pub fn position(&self) -> usize {
         self.position
     }
@@ -156,11 +153,11 @@ impl EnumValue {
         &self.case
     }
 
-    /// This member's kernel `VariantId` (ADR-013 O-14, OQ-F ruling): the same
+    /// This member's kernel `VariantId`: the same
     /// `quire.checked-semantic-node/v1` bytes as [`Self::member`], retyped,
-    /// with no fresh computation. It is the OQ-F `quire.enum-member-node/v1`
+    /// with no fresh computation. It is the `quire.enum-member-node/v1`
     /// identity exactly when the member key the value was built with is:
-    /// `qsl-semantics`' `AdmittedEnumDeclaration::admit_member` verifies
+    /// a caller's admission verifies
     /// that against the preimage, while [`EnumDeclaration::member`] takes
     /// the key as given.
     pub fn variant(&self) -> VariantId {
@@ -168,14 +165,13 @@ impl EnumValue {
     }
 }
 
-/// ADR-013 T-6 (last sentence): the checked `VariantId` -> [`EnumValue`]
-/// index, built once as `check` admits each enum member and consulted
-/// wherever an evaluated kernel `Value::Enum` (a bare `VariantId` and rank,
-/// ADR-013 O-14/OQ-D) needs its declaration, ordered flag, position or case
+/// The checked `VariantId` -> [`EnumValue`]
+/// index, built once as the checking stage admits each enum member and consulted
+/// wherever an evaluated kernel `Value::Enum` (a bare `VariantId` and rank) needs its declaration, ordered flag, position or case
 /// name back. The kernel is a leaf and carries none of this (`quire_exact::
 /// value`'s own module doc); the FR-141 enum-specific `=`/ordering schedule
 /// ([`compare_enum`], `declaration::CheckedEquality`'s `Enum`
-/// schedule, and `value::expression::evaluate`'s `OrderedKind::Enums` arm)
+/// schedule, and an evaluator's ordered-enum arm)
 /// resolves a `VariantId` back to its full [`EnumValue`] through this index
 /// rather than the kernel ever holding one.
 ///
@@ -189,7 +185,7 @@ impl EnumMemberIndex {
     /// Record one admitted member, keyed by its own `VariantId`
     /// ([`EnumValue::variant`], its member key retyped). The last write for
     /// a given `VariantId` wins. When member keys are the verified
-    /// content-addressed identities (ADR-013 O-04), two structurally
+    /// content-addressed identities, two structurally
     /// identical members (same declaration, same case) share one
     /// `VariantId`, so recording either is equivalent; with keys taken as
     /// given, the index is keyed by whatever key the caller admitted.
@@ -205,7 +201,7 @@ impl EnumMemberIndex {
 
     /// The sub-index holding only the entries named by `variants`, silently
     /// skipping any this index never recorded. `declaration::
-    /// CheckedEquality` (SR-511 M2) uses this to retain, inside a checked
+    /// CheckedEquality` uses this to retain, inside a checked
     /// `Enum`-scheduled equality node, only the compared operands' own enum
     /// declaration -- an `EnumShape::variants()` iterator -- rather than a
     /// clone of the whole package's enum-member index.

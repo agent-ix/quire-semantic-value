@@ -32,8 +32,7 @@ pub enum QuantityUnit {
 }
 
 impl QuantityUnit {
-    /// The kernel [`UnitId`] a quantity in this unit carries (ADR-013 T-6,
-    /// OQ-B): the declared unit's node key or the compound unit's digest.
+    /// The kernel [`UnitId`] a quantity in this unit carries: the declared unit's node key or the compound unit's digest.
     pub fn id(&self) -> UnitId {
         match self {
             Self::Declared(unit) => unit.id(),
@@ -120,8 +119,8 @@ impl IdentifiedUnit {
 
 /// The unit graph over kernel [`UnitId`]s: each id's [`QuantityUnit`]. A
 /// kernel [`Quantity`] carries only its unit's id, so every FR-142 operation
-/// reads its operands through a table (ADR-013 T-6: the unit graph stays in
-/// `semantic_value`). A table read from an admitted graph also holds each
+/// reads its operands through a table (the unit graph stays in
+/// this crate). A table read from an admitted graph also holds each
 /// admitted dimension's and unit's nominal preimage bytes, which lowering
 /// builds their nodes from (FR-094).
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

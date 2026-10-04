@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The FR-143 declared record, tuple and model object-type registry, and
-//! the FR-149 checked equality layer over it (ADR-011 §6.1 layer SV).
+//! the FR-149 checked equality layer over it.
 //!
 //! It owns the registry (`TypeEnvironment`, `ObjectTypeDeclaration`,
 //! `CompositeDeclaration`, `CompositeShape`, `InvalidDeclaration`,
@@ -9,11 +9,10 @@
 //! `CheckedEquality`, `TypeEnvironment::check_equality`,
 //! `admits_equality_conversion`, `operand_value`). The environment also
 //! carries the package's quantity [`UnitTable`], since a `ValueType::Quantity`
-//! names its unit only by id. None of these are kernel types (ADR-011
-//! §6.1), so they live in SV, over `quire_exact`'s own `Value`/`ValueType`,
-//! where QSL's layer 3 and up and a backend share them. An object type's
-//! operations carry the domain package's effect frame, a `model` type, so
-//! they stay in `qsl-semantics`' `model::operation` table beside the
+//! names its unit only by id. None of these are kernel types, so they live here,
+//! over `quire_exact`'s own `Value`/`ValueType`, where a compiler and a backend
+//! share them. An object type's operations carry the domain package's effect
+//! frame, a caller's model type, so they stay with the caller beside the
 //! environment, and a reached [`TypeEnvironmentLimits`] ceiling is this
 //! module's own [`EnvironmentLimit`], which a compiler stage maps to its
 //! stage limit.
@@ -21,47 +20,37 @@
 //! The equality layer lives here because it is parameterized over a
 //! `TypeEnvironment` and a checked `ValueType`. The occurrence-pair walk it
 //! schedules is [`quire_exact::planned_equality`]/[`quire_exact::plan_equality`],
-//! called directly by `CheckedEquality::run`: the kernel's own `plan_pairs` is `pub(crate)`
-//! there, and this layer never needs the lower-level pair count that
-//! `value::expression::evaluate`'s `Machine` gets straight from
-//! `quire_exact::member_equal`.
+//! called directly by `CheckedEquality::run`: the kernel's own `plan_pairs` is
+//! `pub(crate)` there, and this layer never needs the lower-level pair count that
+//! an evaluator gets straight from `quire_exact::member_equal`.
 //!
 //! [`FieldDeclaration`], [`Component`], [`ConstructionCause`] and
-//! [`ConstructionRefusal`] (moved here from the now-deleted
-//! `value::composite`) are QSL's own, non-kernel types (ADR-011 §6.1; ADR-013
-//! O-15): a field is identified here by its declared *name* (a `str`-keyed
-//! lookup, `match_names`/`fill_slots`), not by the kernel's opaque
-//! `MemberId` (`quire_exact::FieldDeclaration`'s own key) -- adopting
-//! `MemberId` here needs the ADR-013 O-06 member-identity resolution that
-//! `check`'s `CheckedGraph` (ADR-013 T-1, S-3) has not yet landed
-//! (`value::member`'s own doc comment: "No production caller constructs a
-//! `Member` yet"). `ConstructionCause` also carries `UnknownDeclaration`,
-//! which the kernel's own `ConstructionCause` has no need of: the kernel's
-//! `record`/`tuple` take their declared shape directly, with no registry
-//! lookup to fail, while this module's `TypeEnvironment::record`/`tuple`/
-//! `evaluate_record`/`evaluate_tuple` look a `NodeKey` up in the registry
-//! first and must report that lookup's own failure. Because of this,
-//! `TypeEnvironment` cannot call the kernel's checked `record`/`tuple`
-//! constructors either (they need the kernel's `MemberId`-keyed
-//! `FieldDeclaration`); it does its own name-keyed checking exactly as
-//! before, through `fill_slots`/`match_names`, and then calls the
-//! kernel's trusted, unchecked
-//! [`from_admitted_slots`] to materialize
-//! the result -- mirroring `quire_exact::OptionValue::from_admitted`'s
-//! identical bypass role, which `value::expression::evaluate` already calls
-//! directly.
+//! [`ConstructionRefusal`] are not kernel types: a field is identified here by
+//! its declared *name* (a `str`-keyed lookup, `match_names`/`fill_slots`), not by
+//! the kernel's opaque `MemberId` (`quire_exact::FieldDeclaration`'s own key).
+//! `ConstructionCause` also carries `UnknownDeclaration`, which the kernel's own
+//! `ConstructionCause` has no need of: the kernel's `record`/`tuple` take their
+//! declared shape directly, with no registry lookup to fail, while this module's
+//! `TypeEnvironment::record`/`tuple`/`evaluate_record`/`evaluate_tuple` look a
+//! `NodeKey` up in the registry first and must report that lookup's own failure.
+//! Because of this, `TypeEnvironment` cannot call the kernel's checked
+//! `record`/`tuple` constructors either (they need the kernel's `MemberId`-keyed
+//! `FieldDeclaration`); it does its own name-keyed checking through
+//! `fill_slots`/`match_names`, and then calls the kernel's trusted, unchecked
+//! [`from_admitted_slots`] to materialize the result -- mirroring
+//! `quire_exact::OptionValue::from_admitted`'s identical bypass role.
 //!
 //! FR-089-AC-6: kernel `ValueType::admits` refuses every
 //! `(ValueType::Population, Value::Population)` pair outright -- the
-//! declared-maximum comparison (FR-089-AC-5) is the QSL layer's own check.
+//! declared-maximum comparison (FR-089-AC-5) is the caller layer's own check.
 //! `Population` is FR-153's own restriction: it is never nested inside a
 //! record field, tuple position, option payload or collection element (every
 //! such context is refused earlier, at declaration admission, by
 //! `TypeEnvironment::type_refusal`), so none of this module's `admits()`
-//! calls (`fill_slots`'s field check) ever receive a `Population` pair; only
-//! `value::expression::validate`'s top-level parameter-admission loop needs
-//! the FR-089-AC-5 compensation, since `Population<T>[N]` is reachable there
-//! directly as a bare parameter type.
+//! calls (`fill_slots`'s field check) ever receive a `Population` pair; only an
+//! evaluator's top-level parameter-admission loop needs the FR-089-AC-5
+//! compensation, since `Population<T>[N]` is reachable there directly as a bare
+//! parameter type.
 
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
@@ -361,7 +350,7 @@ impl CompositeDeclaration {
 }
 
 /// A model object type exported by a bound model, with its attributes. It is
-/// keyed by its effective-declaration identity (ADR-013 O-05), the identity a
+/// keyed by its effective-declaration identity, the identity a
 /// `Reference<T>` value's type component carries (FR-143), which `model`
 /// computes over the domain package's effective view -- never a checked
 /// node id.
@@ -370,8 +359,7 @@ pub struct ObjectTypeDeclaration {
     key: EffectiveId,
     name: String,
     attributes: Vec<FieldDeclaration>,
-    /// Every directly declared supertype (FR-151/FR-152/FR-153 generalization,
-    /// #204 round 1 H1), empty unless [`Self::with_supertypes`] sets it.
+    /// Every directly declared supertype (FR-151/FR-152/FR-153 generalization), empty unless [`Self::with_supertypes`] sets it.
     supertypes: Vec<EffectiveId>,
 }
 
@@ -638,7 +626,7 @@ impl EnvironmentLimit {
 /// Why type-environment admission produced no environment (FR-082): a
 /// refusal of the declarations, or a [`TypeEnvironmentLimits`] ceiling
 /// reached first, which names no declaration. A compiler stage reports the
-/// ceiling as its own stage limit (ADR-014 B-3).
+/// ceiling as its own stage limit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EnvironmentFailure {
     /// A ceiling was reached first.
@@ -734,7 +722,7 @@ pub enum DeclarationCause {
         /// The declaration names along the cycle.
         cycle: Vec<String>,
     },
-    /// An object type's own declared `supertypes` (H1, #204 round 1) form a
+    /// An object type's own declared `supertypes` form a
     /// cycle: a separate graph from [`Self::Recursion`]'s field-containment
     /// one -- generalization, not containment -- so it earns its own
     /// variant rather than reusing [`RecursionEdges`].
@@ -750,7 +738,7 @@ pub enum DeclarationCause {
 pub struct TypeEnvironment {
     composites: BTreeMap<NodeKey, CompositeDeclaration>,
     object_types: BTreeMap<EffectiveId, ObjectTypeDeclaration>,
-    /// Every object type's own proper ancestor set (H1, #204 round 1):
+    /// Every object type's own proper ancestor set:
     /// transitive, not just direct, `supertypes`. Precomputed once in
     /// [`TypeEnvironment::new`], after the supertypes graph is known
     /// acyclic, so [`Self::conforms`] is a plain set lookup.
@@ -931,7 +919,7 @@ impl TypeEnvironment {
         self.object_types.values()
     }
 
-    /// Whether `sub` conforms to `sup` (H1, #204 round 1): reflexive
+    /// Whether `sub` conforms to `sup`: reflexive
     /// (`sub == sup` always conforms), or `sup` is a proper ancestor of
     /// `sub` in the admitted supertypes graph. `false` for either key
     /// outside this environment's own admitted object types, never a panic.
@@ -1017,7 +1005,7 @@ impl TypeEnvironment {
                 }
                 // FR-143: `T` in `Reference<T>` must name a model object
                 // type; any other target is `type-mismatch`. The key is an
-                // effective identity (ADR-013 O-05), so an admitted record or
+                // effective identity, so an admitted record or
                 // tuple (keyed by `NodeKey`) can never satisfy it either.
                 ValueType::Reference(key) if !self.object_types.contains_key(key) => {
                     return Some(DeclarationCause::Type(IllTypedCause::TypeMismatch));
@@ -1198,7 +1186,7 @@ impl TypeEnvironment {
     }
 
     /// Every object type's own declared `supertypes`, keyed by its own key
-    /// (H1, #204 round 1): every entry must itself name an admitted object
+    /// every entry must itself name an admitted object
     /// type, and the whole graph must be acyclic -- refuses the first cycle
     /// found, in declaration-key order, exactly as [`Self::check_recursion`]
     /// does for the separate field-containment graph.
@@ -2223,10 +2211,10 @@ pub struct CheckedEquality {
     /// The unit of every top-level quantity type the operands name, resolved
     /// at checking, so evaluation reads no package table.
     units: UnitTable,
-    /// ADR-013 T-6 (last sentence): the checked `VariantId -> EnumValue`
+    /// The checked `VariantId -> EnumValue`
     /// index, captured at checking so `Self::evaluate` needs no extra
     /// argument. Empty and never consulted unless `schedule` is
-    /// `EqualitySchedule::Enum`. Filtered (SR-511 M2) to only the compared
+    /// `EqualitySchedule::Enum`. Filtered to only the compared
     /// operands' own `EnumShape` -- never the whole package's enum-member
     /// index -- so a checked package with many sizeable enums does not
     /// retain O(equality nodes x total enum members) in its checked IR.
@@ -2236,9 +2224,9 @@ pub struct CheckedEquality {
 impl TypeEnvironment {
     /// Type-check `left op right` against this environment's unit table.
     /// Every refusal is made before any charge. `enum_members` is the
-    /// ADR-013 T-6 (last sentence) checked `VariantId -> EnumValue` index:
-    /// `TypeEnvironment` itself holds no enum declarations (those are
-    /// `check::Scope::enums`', ADR-011 §6.1's own module split), so a
+    /// checked `VariantId -> EnumValue` index:
+    /// `TypeEnvironment` itself holds no enum declarations (those are the
+    /// checker's scope's), so a
     /// caller checking an `Enum`-scheduled equality supplies it here, once,
     /// rather than [`CheckedEquality::evaluate`] taking it as an extra
     /// argument every caller -- including every non-enum test -- would
@@ -2263,7 +2251,7 @@ impl TypeEnvironment {
     /// [`Self::check_equality`] against one checking stage's units, which
     /// add the compound units its expressions formed. `enum_members` gives
     /// the member index of one compared enum shape: exactly its own
-    /// members (SR-511 M2). `check`'s `Scope` answers it from a table built
+    /// members. `check`'s `Scope` answers it from a table built
     /// once per shape, so an equality does not copy its enum.
     pub fn check_equality_in(
         &self,
@@ -2344,7 +2332,7 @@ impl TypeEnvironment {
             (l, r) if l == r => EqualitySchedule::Plan,
             _ => return ill_typed(IllTypedCause::TypeMismatch),
         };
-        // SR-511 M2: retain only the compared enum declaration's own
+        // Retain only the compared enum declaration's own
         // members (`left_type`'s `EnumShape`, which schedule selection
         // above already confirmed equals `right_type`'s), not a clone of
         // the whole package's `enum_members` index. Computed before `left`
@@ -2372,10 +2360,10 @@ impl CheckedEquality {
 
     /// Evaluate over the two completed operand values, left conversion first.
     /// Neither source value is changed. For the `Enum` schedule, a bare
-    /// kernel `Value::Enum` (ADR-013 O-14/OQ-D) carries only its `VariantId`
+    /// kernel `Value::Enum` carries only its `VariantId`
     /// and rank, so this resolves each side back to its full declaration/
     /// ordered/case data through the `enum_members` index captured at
-    /// checking (ADR-013 T-6, last sentence) before calling [`compare_enum`],
+    /// checking before calling [`compare_enum`],
     /// which needs none of the other schedules' declaration or unit data.
     pub fn evaluate(&self, left: &Value, right: &Value, meter: &mut Meter) -> Outcome<bool> {
         outcome_from_stop(self.run(left, right, meter))

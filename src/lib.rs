@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `quire-semantic-value`: the ADR-011 §6.1 layer SV, a shared `no_std`
-//! leaf crate (FB-05) above the `quire-exact` kernel (K < SV < 3).
+//! `quire-semantic-value`: a shared `no_std` leaf crate above the `quire-exact`
+//! kernel.
 //!
-//! It holds the runtime semantic values QSL's layer 3 and above and a backend
-//! share, so the code exists once. It depends on no QSL layer: its
-//! dependencies are the `quire-exact` kernel, ADR-013 §2's one RFC 8785
-//! encoder (`quire-canonical`, built without `std`), `serde` and
-//! `thiserror`. It uses only `core` and `alloc`.
+//! It holds the runtime semantic values that a compiler, an evaluator and a
+//! backend share, so the code exists once. Its dependencies are the
+//! `quire-exact` kernel, the one RFC 8785 encoder (`quire-canonical`, built
+//! without `std`), `serde` and `thiserror`. It uses only `core` and `alloc`.
 #![no_std]
 
 extern crate alloc;

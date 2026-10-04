@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Expression locations (ADR-011 §6.1 layer SV): the declaration an
+//! Expression locations: the declaration an
 //! expression belongs to ([`Origin`]) and the child-index path from that
 //! declaration's root expression ([`Location`]). A checking refusal, an
 //! evaluation outcome and a loss record are all located this way.
 //!
 //! These are not `quire_exact::{Origin, Location}`: those name a checked
-//! node's source occurrence (ADR-013 O-07/T-5). These name a position
+//! node's source occurrence. These name a position
 //! inside a package's expression trees.
 
 use alloc::string::String;
@@ -79,7 +79,7 @@ pub enum Origin {
 /// The path is a shared parent chain: a child is the parent's chain plus one
 /// link, so [`Location::child`] costs the same at any depth and a node a
 /// hundred thousand levels down holds no copy of the path above it
-/// (ADR-030 D-1). The index sequence is built only on output, by
+///. The index sequence is built only on output, by
 /// [`Location::path`]. Clone, equality, hash, order, debug and drop never
 /// recurse with the depth.
 #[derive(Clone)]

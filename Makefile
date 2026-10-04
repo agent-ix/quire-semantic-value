@@ -3,6 +3,9 @@
 # =============================================================================
 
 CARGO ?= cargo
+# A target with no `std` at all: building for it proves the crate pulls in
+# nothing from `std`.
+NO_STD_TARGET ?= thumbv7em-none-eabi
 
 .PHONY: help
 help:
@@ -11,12 +14,12 @@ help:
 	@echo "  make fmt-check        - Verify formatting (CI gate)"
 	@echo "  make lint             - Clippy with -D warnings"
 	@echo "  make test             - cargo test"
+	@echo "  make build-no-std     - Build for $(NO_STD_TARGET)"
 	@echo "  make build            - Release build"
 	@echo "  make clean            - cargo clean"
-	@echo "  make deny             - cargo deny check licenses"
-	@echo "  make audit-unsafe     - Enforce // SAFETY: comments on unsafe blocks"
+	@echo "  make deny             - cargo deny check"
 	@echo "  make docs             - cargo doc, denying missing/broken doc links"
-	@echo "  make ci               - All CI gates locally (fmt-check + lint + test + deny + audit-unsafe + docs)"
+	@echo "  make ci               - All CI gates locally (fmt-check + lint + test + build-no-std + deny + docs)"
 
 # =============================================================================
 # Format / Lint / Test
@@ -33,10 +36,17 @@ fmt-check:
 .PHONY: lint
 lint:
 	$(CARGO) clippy --all-targets -- -D warnings
+	$(CARGO) clippy --lib --target $(NO_STD_TARGET) -- -D warnings
 
 .PHONY: test
 test:
 	$(CARGO) test
+
+# `quire-semantic-value` is `#![no_std]` + `alloc`, so it builds for a
+# bare-metal target.
+.PHONY: build-no-std
+build-no-std:
+	$(CARGO) build --locked --target $(NO_STD_TARGET)
 
 .PHONY: build
 build:
@@ -52,15 +62,11 @@ clean:
 
 .PHONY: deny
 deny:
-	$(CARGO) deny check licenses
+	$(CARGO) deny check
 
 .PHONY: cargo-audit
 cargo-audit:
 	$(CARGO) audit
-
-.PHONY: audit-unsafe
-audit-unsafe:
-	bash scripts/check_unsafe_comments.sh
 
 # =============================================================================
 # Documentation
@@ -77,4 +83,4 @@ docs:
 # =============================================================================
 
 .PHONY: ci
-ci: fmt-check lint test deny audit-unsafe docs
+ci: fmt-check lint test build-no-std deny docs

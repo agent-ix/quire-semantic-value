@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The call-admission refusal (ADR-011 §6.1 layer SV): a runtime input a
-//! call or evaluation refuses before any charge. `qsl-eval`'s admission
-//! code produces it; a backend admitting arguments to checked code refuses
-//! the same way.
+//! The call-admission refusal: a runtime input a call or evaluation refuses
+//! before any charge. An evaluator's admission code produces it; a backend
+//! admitting arguments to checked code refuses the same way.
 //!
 //! Each refusal names its stable catalog code as a string
 //! ([`InputRefusal::code`]) and its closed cause tag ([`InputRefusal::cause`]).
-//! This crate depends on `quire-exact` only, so it cannot name the F-layer
-//! diagnostic `Code` enum; `qsl-eval`'s `input_refusal_code` maps each
-//! refusal to that enum, and its test pins the enum's spelling to this
-//! string for every variant.
+//! This crate depends on `quire-exact` only, so it cannot name a diagnostic
+//! `Code` enum; a consumer maps each refusal to its own enum, and pins that
+//! enum's spelling to this string for every variant.
 
 use alloc::string::String;
 

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The checking call surface (ADR-011 §6.1 layer SV): how a standalone
-//! expression is checked ([`CheckMode`]) and the node admission limits a
-//! checker declares before accepting a package ([`CheckingLimits`],
-//! NFR-011). `qsl-semantics`' checker consumes these; a backend names them
-//! when it calls checked code.
+//! The checking call surface: how a standalone expression is checked
+//! ([`CheckMode`]) and the node admission limits a checker declares before
+//! accepting a package ([`CheckingLimits`], NFR-011). A checker consumes these;
+//! a backend names them when it calls checked code.
 
 /// How a standalone expression is checked.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -40,7 +39,7 @@ pub const DEFAULT_CHECKING_WORK_BUDGET: u64 = DEFAULT_CHECKING_INPUT_BYTES;
 /// checked package records the limits it was checked under (the checked
 /// graph's `effective_limits`).
 ///
-/// Nesting depth is not a limit (ADR-030 D-1): every checking walk runs over
+/// Nesting depth is not a limit: every checking walk runs over
 /// an explicit heap stack whose growth these ceilings charge, so an
 /// expression or a type of any depth checks within them (FR-258).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -51,8 +50,7 @@ pub struct CheckingLimits {
     /// caller-configurable knob). Defaults to
     /// [`DEFAULT_CHECKING_INPUT_BYTES`]; [`Self::with_input_bytes`] sets it.
     input_bytes: u64,
-    /// The checking stage's shared-meter `work_units` bound (PR
-    /// #302 review finding 3 -- `LimitKind::WorkBudget`'s one
+    /// The checking stage's shared-meter `work_units` bound (`LimitKind::WorkBudget`'s one
     /// caller-configurable knob, since that kind is produced by a denied
     /// charge against the contract meter, not a `StageLimits` field).
     /// Defaults to [`DEFAULT_CHECKING_WORK_BUDGET`]; [`Self::with_work_budget`]

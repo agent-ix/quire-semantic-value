@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The I04 nominal semantic-node refusal vocabulary (ADR-011 §6.1 layer SV):
-//! the strict reader's `invalid_semantic_graph` refusal, its typed causes,
-//! and the structural term check every dimension and compound unit applies.
+//! The nominal semantic-node refusal vocabulary: the strict reader's
+//! `invalid_semantic_graph` refusal, its typed causes, and the structural term
+//! check every dimension and compound unit applies.
 //!
 //! The preimage side (owner projection, RFC 8785 encoding and the SHA-256
-//! node-key digest) stays in `qsl-semantics`' `value::semantic_node`; this
-//! module holds only what a backend that is handed already-admitted node
-//! keys raises as well.
+//! node-key digest) stays with the caller; this module holds only what a backend
+//! that is handed already-admitted node keys raises as well.
 
 use alloc::collections::BTreeSet;
 use alloc::string::{String, ToString};
@@ -91,26 +90,26 @@ pub fn check_terms<K: Ord>(terms: &[(K, Integer)]) -> Result<(), SemanticGraphCa
     Ok(())
 }
 
-/// The limits every QSL identity preimage encodes under.
+/// The limits every identity preimage encodes under.
 ///
-/// ADR-013 §2 (ADR-013:113, "One RFC 8785 JCS implementation produces every
-/// RFC 8785 encoding"): every QSL normalized identity -- checked node keys,
+/// One RFC 8785 JCS implementation produces every RFC 8785 encoding: every
+/// normalized identity -- checked node keys,
 /// nominal and unit preimages, `EffectiveId`, `UniverseId`, `PopulationId`,
 /// `package_id` and the domain-package `sha256-jcs` digest -- is encoded by
 /// the `quire-canonical` crate, called directly at each identity site. This
 /// constant is no encoder: it fixes only the limits those calls share, so the
 /// bound is stated once. It lives here, in the lowest identity-preimage
-/// module, so every QSL layer from SV up may name it (FR-068-AC-6), and this
+/// module, so every identity site above it may name it, and this
 /// crate's compound-unit id encodes under it.
 ///
-/// The encoder bounds bytes only; depth is not a limit (ADR-030 D-4.4).
+/// The encoder bounds bytes only; depth is not a limit.
 /// FR-259 B3 makes this the published default of the `identity.input_bytes`
 /// setting, 16777216 bytes. Until that setting lands it stays `u64::MAX`:
-/// `qsl-semantics`'s `preimage_digest` reports every encoder error as a
+/// a caller's `preimage_digest` reports every encoder error as a
 /// non-canonical preimage, so a finite bound here would report a byte error
 /// as a malformed value, against FR-259 B4. Every preimage is built from
-/// values an earlier stage already bounded (intake's `MAX_INPUT_BYTES`, the
-/// check stage's limits, a package reader's `artifact_bytes`), and a caller
+/// values an earlier stage already bounded (the intake limit, the
+/// check stage's limits, a package reader's artifact byte limit), and a caller
 /// with a tighter byte budget of its own passes its own [`Limits`] instead
 /// (the v2 reader does).
 pub const IDENTITY_LIMITS: Limits = Limits::new(u64::MAX);

@@ -1,28 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The `semantic_value` early-exit carrier (ADR-011 §6.1 layer SV), always
-//! converted into a [`quire_exact::Outcome`] by [`outcome_from_stop`], and
-//! back by [`outcome_into_stop`]. It is not a kernel type and not a
-//! spec-owned type, which is why it holds no catalog code of its own and is
-//! not part of ADR-013 O-16/O-17's outcome or refusal families. It is shared
-//! by the `semantic_value` computations (this crate's `quantity`, and
-//! `qsl-semantics`' `declaration` and `enumeration`), by `qsl-semantics`'
-//! `value::model_query` and by the layer-5 evaluator (`value::expression`),
-//! which all convert through [`outcome_from_stop`]/[`outcome_into_stop`],
-//! which is why an `?`-friendly shape earns its own module rather than
-//! inline handling at each call site.
+//! The early-exit carrier for this crate's computations, always converted into
+//! a [`quire_exact::Outcome`] by [`outcome_from_stop`], and back by
+//! [`outcome_into_stop`]. It is not a kernel type and not a spec-owned type,
+//! which is why it holds no catalog code of its own and is not part of the
+//! kernel's outcome or refusal families. It is shared by this crate's
+//! computations (`quantity`, `declaration`, `enumeration`) and by the evaluators
+//! above it, which all convert through
+//! [`outcome_from_stop`]/[`outcome_into_stop`], which is why an `?`-friendly
+//! shape earns its own module rather than inline handling at each call site.
 //!
-//! `quire_exact::Outcome<T>` is foreign to this crate (K is a leaf, ADR-011
-//! §6.1), so `outcome_from_stop`/`outcome_into_stop` cannot be an inherent
-//! `impl` on it (E0116, the orphan rule) the way QSL's own now-deleted
-//! `value::outcome` copy could. They are plain functions instead: a
+//! `quire_exact::Outcome<T>` is foreign to this crate, so
+//! `outcome_from_stop`/`outcome_into_stop` cannot be an inherent `impl` on it
+//! (E0116, the orphan rule). They are plain functions instead: a
 //! single-implementation trait would add a name to learn with no seam or
 //! polymorphism to justify it.
 //!
 //! No `Halt` variant carries a fault into a `Stop`, and no `Stop`-returning
-//! helper can pass one to [`outcome_from_stop`]: `value::expression`'s
-//! `Machine` carries its own crate-private `Halt` for an S6a invariant break
-//! (PR #334), and no `From<Halt> for Stop` conversion exists here, so a
-//! fault stays unrepresentable in `Stop` by construction, not by convention.
+//! helper can pass one to [`outcome_from_stop`]: an evaluator carries its own
+//! crate-private `Halt` for an invariant break, and no `From<Halt> for Stop`
+//! conversion exists here, so a fault stays unrepresentable in `Stop` by
+//! construction, not by convention.
 
 use quire_exact::{Incomplete, Outcome, Refusal, Undefined};
 

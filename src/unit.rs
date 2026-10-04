@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! FR-142 dimensions, declared units, their admitted unit graph and the
-//! evaluator-owned compound-unit value, at runtime (ADR-011 §6.1 layer SV).
+//! evaluator-owned compound-unit value, at runtime.
 //!
-//! Base dimensions and units are I04 nominal nodes. A dimension is a sorted
+//! Base dimensions and units are nominal nodes. A dimension is a sorted
 //! map from base-dimension key to a nonzero mathematical exponent. The units
 //! of one dimension node form an acyclic graph with exactly one targetless
 //! canonical root; each edge maps `target_value = scale × source_value +
@@ -12,20 +12,19 @@
 //! that already passed their per-node checks, [`UnitGraph::from_checked_nodes`]
 //! resolves their references, refuses a malformed graph and composes each
 //! unit's exact path to its root. Reading a node's preimage, recomputing its
-//! key and checking its owner is the compile side's work (`qsl-semantics`'
-//! `value::unit`), which needs `serde` and RFC 8785.
+//! key and checking its owner is the compile side's work, which needs `serde`
+//! and RFC 8785.
 //!
-//! It never constructs a `NodeKey`: only QSL `check` mints one (ADR-011 §6.1,
-//! ADR-013 O-04). A node id read from a preimage is its 32 digest bytes; it
-//! resolves to a `NodeKey` only by lookup among the admitted nodes' keys.
+//! It never constructs a `NodeKey`: only the checking stage mints one. A node id
+//! read from a preimage is its 32 digest bytes; it resolves to a `NodeKey` only
+//! by lookup among the admitted nodes' keys.
 //!
 //! A declared unit's kernel [`UnitId`] is its admitted node key under the
-//! `quire.checked-semantic-node/v1` label ([`Unit::id`], and C-30's
+//! `quire.checked-semantic-node/v1` label ([`Unit::id`], and
 //! [`UnitGraph::declared_unit_id`], which refuses any key that is not an
 //! admitted unit's). A compound unit's is its `quire.value.compound-unit/v1`
 //! digest ([`CompoundUnit::id`], [`compound_unit_id`]), encoded and hashed by
-//! `quire-canonical` (ADR-013 §2, ADR-013:113: the one RFC 8785
-//! implementation).
+//! `quire-canonical` (the one RFC 8785 implementation).
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::{String, ToString};
@@ -172,7 +171,7 @@ impl Unit {
     }
 
     /// The declared-arm [`UnitId`]: this admitted unit's node key under the
-    /// `quire.checked-semantic-node/v1` label (ADR-013 T-6, OQ-B).
+    /// `quire.checked-semantic-node/v1` label.
     pub fn id(&self) -> UnitId {
         UnitId::declared(self.key)
     }
@@ -353,7 +352,7 @@ impl UnitGraph {
     ///
     /// This checks topology only. It does not check that a key is the digest
     /// of its node's preimage or that the node's owner is selected: that is
-    /// the caller's, and QSL's `admit_unit_graph` does both. A graph built
+    /// the caller's, and the compile side does both. A graph built
     /// from keys nobody checked carries no key-provenance guarantee.
     ///
     /// The graph, referenced by node ids, is checked for unknown or derived
@@ -435,11 +434,11 @@ impl UnitGraph {
         self.units.values()
     }
 
-    /// ADR-013 C-30: a unit node key as a declared-arm [`UnitId`]. Only the
+    /// A unit node key as a declared-arm [`UnitId`]. Only the
     /// key of a unit in this graph converts; any other node key, such as a
     /// dimension's, is refused. That the key is the digest of its
     /// `quire.unit-node/v1` preimage holds when the graph's builder checked
-    /// it, as QSL's `admit_unit_graph` does ([`Self::from_checked_nodes`]).
+    /// it, as the compile side does ([`Self::from_checked_nodes`]).
     pub fn declared_unit_id(&self, key: NodeKey) -> Result<UnitId, NotAUnitKey> {
         self.unit(key).map(Unit::id).ok_or(NotAUnitKey { key })
     }
@@ -475,7 +474,7 @@ impl UnitGraph {
     }
 }
 
-/// C-30's refusal: the node key names no admitted unit.
+/// The refusal: the node key names no admitted unit.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, thiserror::Error)]
 #[error("node key {key} names no admitted unit")]
 pub struct NotAUnitKey {
@@ -655,7 +654,7 @@ struct CanonicalCompound {
 /// The compound-arm [`UnitId`] of exactly these `(unit node id, exponent)`
 /// terms, each id as its 32 digest bytes: the SHA-256 of their JCS
 /// `quire.value.compound-unit/v1` preimage, encoded and hashed by
-/// `quire-canonical` (ADR-013 §2, ADR-013:113: the one RFC 8785
+/// `quire-canonical` (the one RFC 8785
 /// implementation).
 pub fn compound_unit_id<'a>(terms: impl IntoIterator<Item = ([u8; 32], &'a Integer)>) -> UnitId {
     let preimage = CanonicalCompound {
@@ -721,7 +720,7 @@ impl CompoundUnit {
     }
 
     /// The compound-arm [`UnitId`]: the `quire.value.compound-unit/v1`
-    /// digest of the terms (ADR-013 T-6, OQ-B), computed on each call.
+    /// digest of the terms, computed on each call.
     pub fn id(&self) -> UnitId {
         compound_unit_id(
             self.terms

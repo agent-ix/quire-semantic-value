@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The definition-admission refusal vocabulary (ADR-011 §6.1 layer SV): the
-//! lock's closed `selection_refusal_codes` ([`SelectionRefusalCode`]) and the
-//! I04 `invalid_package` refusal with its closed `cause_tag` subset
-//! ([`PackageRefusal`]). The lock catalog and the admission that raises them
-//! stay in `qsl-semantics`' `value::definition`.
+//! The definition-admission refusal vocabulary: the lock's closed
+//! `selection_refusal_codes` ([`SelectionRefusalCode`]) and the `invalid_package`
+//! refusal with its closed `cause_tag` subset ([`PackageRefusal`]). The lock
+//! catalog and the admission that raises them stay with the caller.
 
 /// The lock's closed `selection_refusal_codes`, in check order.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Evaluation loss records (ADR-011 §6.1 layer SV): the information one
+//! Evaluation loss records: the information one
 //! completed operation discarded ([`ValueLoss`]) and the expression that
 //! produced it ([`LocatedLoss`]). A completed evaluation reports them in
 //! evaluation order.

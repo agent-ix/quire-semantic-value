@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The core object closure of an object environment over the kernel
-//! [`ObjectReference`] (QSpec FR-143-AC-3 and AC-9; ADR-011 §6.2). Its
-//! admission rules are FR-106-AC-10's.
+//! [`ObjectReference`] (QSpec FR-143-AC-3 and AC-9). Its admission rules are
+//! FR-106-AC-10's.
 //!
 //! A reference is terminal: its identity is the snapshot-supplied
 //! QSpec FR-009/FR-204 triple (universe, object-type declaration identity, object
@@ -9,11 +9,11 @@
 //! form creates one. Cycles between objects are representable only through
 //! references resolved in an [`ObjectClosure`].
 //!
-//! The closure names only kernel ids and SV values, checked against SV's
-//! [`TypeEnvironment`], so it sits in SV beside `containment`. FR-089's
-//! `PopulationId` -> `PopulationBinding` correspondence is not here: the
-//! binding is layer-3 `model`'s, so `model::object_environment` holds that
-//! map beside the closure it builds.
+//! The closure names only kernel ids and this crate's values, checked against
+//! this crate's [`TypeEnvironment`], so it sits beside `containment`. FR-089's
+//! `PopulationId` to population-binding correspondence is not here: the binding
+//! is the caller's model's, so the caller holds that map beside the closure it
+//! builds.
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -25,7 +25,7 @@ use quire_exact::{FieldValue, ObjectReference, UniverseId, Value};
 /// Why an object closure does not close.
 ///
 /// `object` is boxed: `ObjectReference` grew past a fixed-size 32-byte
-/// `UniverseId` (ADR-013 §8 OQ-C ruling), which pushed this refusal's stack
+/// `UniverseId`, which pushed this refusal's stack
 /// size over `clippy::result_large_err`'s threshold on the cold refusal
 /// path.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
