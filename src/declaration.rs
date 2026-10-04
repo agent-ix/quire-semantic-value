@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The FR-143 declared record, tuple and model object-type registry, and
-//! the FR-149 checked equality layer over it.
+//! The QSpec FR-143 declared record, tuple and model object-type registry, and
+//! the QSpec FR-149 checked equality layer over it.
 //!
 //! It owns the registry (`TypeEnvironment`, `ObjectTypeDeclaration`,
 //! `CompositeDeclaration`, `CompositeShape`, `InvalidDeclaration`,
@@ -40,15 +40,15 @@
 //! [`from_admitted_slots`] to materialize the result -- mirroring
 //! `quire_exact::OptionValue::from_admitted`'s identical bypass role.
 //!
-//! FR-089-AC-6: kernel `ValueType::admits` refuses every
+//! QSL FR-089-AC-6: kernel `ValueType::admits` refuses every
 //! `(ValueType::Population, Value::Population)` pair outright -- the
-//! declared-maximum comparison (FR-089-AC-5) is the caller layer's own check.
-//! `Population` is FR-153's own restriction: it is never nested inside a
+//! declared-maximum comparison (QSL FR-089-AC-5) is the caller layer's own check.
+//! `Population` is QSL FR-153's own restriction: it is never nested inside a
 //! record field, tuple position, option payload or collection element (every
 //! such context is refused earlier, at declaration admission, by
 //! `TypeEnvironment::type_refusal`), so none of this module's `admits()`
 //! calls (`fill_slots`'s field check) ever receive a `Population` pair; only an
-//! evaluator's top-level parameter-admission loop needs the FR-089-AC-5
+//! evaluator's top-level parameter-admission loop needs the QSL FR-089-AC-5
 //! compensation, since `Population<T>[N]` is reachable there directly as a bare
 //! parameter type.
 
@@ -80,7 +80,7 @@ use quire_exact::NodeKey;
 use quire_exact::{compare_text, evaluate_decimal};
 
 /// One object-type field's identity: the object type that declares it and
-/// its declared name (FR-151 field redefinition names its target this way).
+/// its declared name (QSL FR-151 field redefinition names its target this way).
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FieldRef {
     /// The declaring object type's effective identity.
@@ -105,7 +105,7 @@ pub struct FieldDeclaration {
     name: String,
     value_type: ValueType,
     presence: Presence,
-    /// The inherited field this one redefines (FR-151
+    /// The inherited field this one redefines (QSL FR-151
     /// `quire.model.normalize.redefine/v1`), if any. Only an object-type
     /// field may carry one.
     redefines: Option<FieldRef>,
@@ -128,7 +128,7 @@ impl FieldDeclaration {
         }
     }
 
-    /// This field, redefining the inherited field `target` (FR-151): the
+    /// This field, redefining the inherited field `target` (QSL FR-151): the
     /// producer copies the domain package's own `redefines` link, which
     /// phase-4 normalization has already checked. In every object type that
     /// inherits both, `target` is hidden and this field takes its one slot.
@@ -315,7 +315,7 @@ pub enum CompositeShape {
     Tuple(Vec<ValueType>),
 }
 
-/// A record or tuple declaration with its producer-assigned I04 node key.
+/// A record or tuple declaration with its producer-assigned node key.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompositeDeclaration {
     key: NodeKey,
@@ -351,7 +351,7 @@ impl CompositeDeclaration {
 
 /// A model object type exported by a bound model, with its attributes. It is
 /// keyed by its effective-declaration identity, the identity a
-/// `Reference<T>` value's type component carries (FR-143), which `model`
+/// `Reference<T>` value's type component carries (QSpec FR-143), which `model`
 /// computes over the domain package's effective view -- never a checked
 /// node id.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -359,7 +359,8 @@ pub struct ObjectTypeDeclaration {
     key: EffectiveId,
     name: String,
     attributes: Vec<FieldDeclaration>,
-    /// Every directly declared supertype (FR-151/FR-152/FR-153 generalization), empty unless [`Self::with_supertypes`] sets it.
+    /// Every directly declared supertype (QSL FR-151/FR-152/FR-153
+    /// generalization), empty unless [`Self::with_supertypes`] sets it.
     supertypes: Vec<EffectiveId>,
 }
 
@@ -468,12 +469,12 @@ impl AsRef<FieldDeclaration> for EffectiveAttribute {
     }
 }
 
-/// The NFR-012 default `ancestor_steps` ceiling, which [`TypeEnvironment::new`]
+/// The QSL NFR-012 default `ancestor_steps` ceiling, which [`TypeEnvironment::new`]
 /// admits under. The model's own `ModelNormalizationLimits` and
 /// `PopulationAdmissionLimits` defaults read this same value.
 pub const DEFAULT_ANCESTOR_STEPS: u64 = 100_000;
 
-/// The NFR-012 default admission `work_units` budget, the same value as the
+/// The QSL NFR-012 default admission `work_units` budget, the same value as the
 /// model's own `ModelNormalizationLimits::work_units` and
 /// `PopulationAdmissionLimits::work_units` defaults.
 pub const DEFAULT_WORK_UNITS: u64 = 16_777_216;
@@ -482,7 +483,7 @@ pub const DEFAULT_WORK_UNITS: u64 = 16_777_216;
 /// Every member is a real limit; zero is never "unlimited".
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TypeEnvironmentLimits {
-    /// FR-082's `ancestor_steps`: the most types one conformance walk may
+    /// QSL FR-082's `ancestor_steps`: the most types one conformance walk may
     /// expand, the type it starts from included.
     pub ancestor_steps: u64,
     /// Cumulative work units admission may spend building the ancestor
@@ -518,12 +519,12 @@ impl WorkBudget {
         }
     }
 
-    /// Charge `units`, or the [`EnvironmentLimitKind::WorkUnits`] limit (FR-082)
+    /// Charge `units`, or the [`EnvironmentLimitKind::WorkUnits`] limit (QSL FR-082)
     /// once the budget would be passed, naming the cumulative total the
     /// refused charge would have reached.
     fn charge(&mut self, units: usize) -> Result<(), EnvironmentLimit> {
         let units = u64::try_from(units).unwrap_or(u64::MAX);
-        // A cancelled handle (FR-276) denies the charge as an exhausted
+        // A cancelled handle (QSL FR-276) denies the charge as an exhausted
         // budget does; the caller that owns the handle reports the
         // cancellation.
         let cancelled = self.cancel.poll();
@@ -578,7 +579,7 @@ impl Stopped {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum EnvironmentLimitKind {
     /// `ancestor_steps`: one object type's conformance walk would expand
-    /// more types than the ceiling, itself included (FR-082).
+    /// more types than the ceiling, itself included (QSL FR-082).
     AncestorSteps,
     /// `work_units`: the admission's cumulative ancestor-closure and
     /// flattening work.
@@ -623,7 +624,7 @@ impl EnvironmentLimit {
     }
 }
 
-/// Why type-environment admission produced no environment (FR-082): a
+/// Why type-environment admission produced no environment (QSL FR-082): a
 /// refusal of the declarations, or a [`TypeEnvironmentLimits`] ceiling
 /// reached first, which names no declaration. A compiler stage reports the
 /// ceiling as its own stage limit.
@@ -645,7 +646,7 @@ impl EnvironmentFailure {
     }
 }
 
-/// Type-environment admission's outcome (FR-082).
+/// Type-environment admission's outcome (QSL FR-082).
 pub type Admission<T> = Result<T, EnvironmentFailure>;
 
 /// Why a declaration set is not admitted.
@@ -699,7 +700,7 @@ pub enum DeclarationCause {
     RedefinitionTarget(FieldRef),
     /// Two attributes of one object type's effective set both stand for
     /// this field, and neither owner is a proper descendant of the other:
-    /// FR-151's conflicting redefinitions of one member reaching a type.
+    /// QSL FR-151's conflicting redefinitions of one member reaching a type.
     RedefinitionConflict(FieldRef),
     /// A field that redefines this one widens it: an optional redefiner of
     /// a required field, or a value type admitting a value the redefined
@@ -763,7 +764,7 @@ struct Edge {
 
 impl TypeEnvironment {
     /// Admit `composites` and `object_types` as one closed environment,
-    /// under the NFR-012 default ceilings ([`TypeEnvironmentLimits::default`]).
+    /// under the QSL NFR-012 default ceilings ([`TypeEnvironmentLimits::default`]).
     /// See [`Self::bounded`].
     pub fn new(
         composites: impl IntoIterator<Item = CompositeDeclaration>,
@@ -774,11 +775,11 @@ impl TypeEnvironment {
 
     /// Admit `composites` and `object_types` as one closed environment.
     ///
-    /// `limits.ancestor_steps` is the FR-082 ceiling the model walks this
+    /// `limits.ancestor_steps` is the QSL FR-082 ceiling the model walks this
     /// package's conformance under at evaluation (the population binding's
     /// own `ancestor_steps`). An object type whose walk would expand more
     /// types than that, itself included, stops admission with an
-    /// [`EnvironmentLimitKind::AncestorSteps`] limit (FR-082). Check time is the stricter
+    /// [`EnvironmentLimitKind::AncestorSteps`] limit (QSL FR-082). Check time is the stricter
     /// side: every conformance question the checker answers from this
     /// environment is one evaluation completes with the same verdict.
     ///
@@ -799,7 +800,7 @@ impl TypeEnvironment {
     }
 
     /// [`Self::bounded`] with the caller's [`quire_exact::Cancel`] handle
-    /// polled at every work charge (FR-276). A cancelled handle stops
+    /// polled at every work charge (QSL FR-276). A cancelled handle stops
     /// admission with a [`EnvironmentLimitKind::WorkUnits`] limit, which the
     /// caller that owns the handle reads as its cancellation.
     pub fn bounded_with_cancel(
@@ -1003,14 +1004,14 @@ impl TypeEnvironment {
                 ValueType::Composite(key) if !self.composites.contains_key(key) => {
                     return Some(DeclarationCause::UnknownDeclaration(*key));
                 }
-                // FR-143: `T` in `Reference<T>` must name a model object
+                // QSpec FR-143: `T` in `Reference<T>` must name a model object
                 // type; any other target is `type-mismatch`. The key is an
                 // effective identity, so an admitted record or
                 // tuple (keyed by `NodeKey`) can never satisfy it either.
                 ValueType::Reference(key) if !self.object_types.contains_key(key) => {
                     return Some(DeclarationCause::Type(IllTypedCause::TypeMismatch));
                 }
-                // FR-153 names a population binding only as the direct
+                // QSL FR-153 names a population binding only as the direct
                 // operand of `allInstances`/`lookup` (checked by
                 // `Typer::all_instances`/`Typer::lookup` themselves, which
                 // never route the population expression's own type through
@@ -1021,7 +1022,7 @@ impl TypeEnvironment {
                 // explicit refusal covers the former), an `Option` payload, a
                 // collection element, or a record/tuple/object-type member --
                 // refuses it here, never admitting a binding into a context
-                // FR-153 never gives it Outputs for.
+                // QSL FR-153 never gives it Outputs for.
                 ValueType::Population(_) => {
                     return Some(DeclarationCause::Type(IllTypedCause::OperatorIneligible));
                 }
@@ -1378,10 +1379,10 @@ impl TypeEnvironment {
         Ok(own)
     }
 
-    /// Stop at the first object type, in key order, whose FR-082 conformance
+    /// Stop at the first object type, in key order, whose QSL FR-082 conformance
     /// walk expands more than `limit` types: an [`EnvironmentLimitKind::AncestorSteps`] limit whose
     /// actual counter is the ceiling plus one, the step the walk would stop
-    /// at (FR-082). The model's walk from `S`
+    /// at (QSL FR-082). The model's walk from `S`
     /// (`ModelIndex::conforms`) expands `S` and then each distinct ancestor
     /// once, and stops early only when it meets its target, so `1 +` the
     /// ancestor count is the most any walk from `S` expands. Admitting only
@@ -1406,7 +1407,7 @@ impl TypeEnvironment {
 
     /// Refuse the first object-type field, in key then declaration order,
     /// whose `redefines` names no field of a proper ancestor of its owner
-    /// (FR-151: the target must be inherited by the owning type).
+    /// (QSL FR-151: the target must be inherited by the owning type).
     fn check_redefinitions(&self, table: &FieldTable<'_>) -> Result<(), InvalidDeclaration> {
         for declaration in self.object_types.values() {
             for target in declaration
@@ -1469,7 +1470,7 @@ impl TypeEnvironment {
 
     /// Every object type's effective attribute set, flattened once.
     ///
-    /// This applies FR-151's phase-4 redefinition result
+    /// This applies QSL FR-151's phase-4 redefinition result
     /// (`quire.model.normalize.redefine/v1`) to the `redefines` links a
     /// producer copies from the normalized domain package: a redefined field
     /// stays declared but is hidden in every type that also has its
@@ -1527,7 +1528,7 @@ impl TypeEnvironment {
     /// one is kept as it is. A larger group keeps only the attribute whose
     /// owner is a proper descendant of every other member's owner, with the
     /// members' lineages merged into it; a group with no such member is
-    /// FR-151's conflict.
+    /// QSL FR-151's conflict.
     fn flatten(
         &self,
         declaration: &ObjectTypeDeclaration,
@@ -2188,14 +2189,14 @@ impl EqualityOperand {
     }
 }
 
-/// The schedule FR-149 selects from the common type.
+/// The schedule QSpec FR-149 selects from the common type.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum EqualitySchedule {
-    /// A top-level text pair: the FR-141 text schedule.
+    /// A top-level text pair: the QSpec FR-141 text schedule.
     Text,
     /// A top-level enumeration pair: `enum.*`.
     Enum,
-    /// A top-level quantity pair: the FR-142 comparison schedule.
+    /// A top-level quantity pair: the QSpec FR-142 comparison schedule.
     Quantity,
     /// Every other common type: the occurrence-pair plan.
     Plan,
@@ -2251,7 +2252,7 @@ impl TypeEnvironment {
     /// [`Self::check_equality`] against one checking stage's units, which
     /// add the compound units its expressions formed. `enum_members` gives
     /// the member index of one compared enum shape: exactly its own
-    /// members. `check`'s `Scope` answers it from a table built
+    /// members. a checker's scope answers it from a table built
     /// once per shape, so an equality does not copy its enum.
     pub fn check_equality_in(
         &self,
@@ -2310,7 +2311,7 @@ impl TypeEnvironment {
                 return ill_typed(IllTypedCause::DistinctUnits)
             }
             (ValueType::Quantity(_), ValueType::Quantity(_)) => EqualitySchedule::Quantity,
-            // FR-153 names a population binding only as the direct operand of
+            // QSL FR-153 names a population binding only as the direct operand of
             // `allInstances`/`lookup`, never as an equality operand: refuse it
             // here rather than falling into the `l == r` plan schedule below,
             // which would otherwise accept `p == p` and only fail at
@@ -2318,7 +2319,7 @@ impl TypeEnvironment {
             (ValueType::Population(_), _) | (_, ValueType::Population(_)) => {
                 return ill_typed(IllTypedCause::OperatorIneligible)
             }
-            // FR-153-AC-6 / TC-198 L08: a `Reference<A>` and a
+            // QSL FR-153-AC-6 / QSL TC-198 L08: a `Reference<A>` and a
             // `Reference<B>` denote the same real object when one type
             // conforms to the other, as `lookup<A>(p, rb) = rb` does. The
             // plan compares the two references' full identity whatever
@@ -2411,7 +2412,7 @@ fn invariant() -> Stop {
     Stop::Refused(Refusal::CheckedInvariant)
 }
 
-/// Whether (`source`, `target`) is a row of the closed FR-149
+/// Whether (`source`, `target`) is a row of the closed QSpec FR-149
 /// equality-conversion table, decided from declared bounds alone and, for a
 /// quantity pair, from the units `units` resolves; an unresolved unit admits
 /// no conversion.
@@ -2676,7 +2677,7 @@ mod work_budget_tests {
     use super::WorkBudget;
     use super::{EnvironmentLimit, EnvironmentLimitKind};
 
-    /// FR-082: a denied charge names the cumulative total it would have
+    /// QSL FR-082: a denied charge names the cumulative total it would have
     /// reached: 3 spent, a budget of 4 and a charge of 2 report 5. The
     /// admitted spend is unchanged.
     #[test]

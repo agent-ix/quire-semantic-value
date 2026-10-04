@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The checking call surface: how a standalone expression is checked
 //! ([`CheckMode`]) and the node admission limits a checker declares before
-//! accepting a package ([`CheckingLimits`], NFR-011). A checker consumes these;
+//! accepting a package ([`CheckingLimits`], QSL NFR-011). A checker consumes these;
 //! a backend names them when it calls checked code.
 
 /// How a standalone expression is checked.
@@ -14,34 +14,34 @@ pub enum CheckMode {
     Kernel,
 }
 
-/// NFR-011's default checking node ceiling: twice NFR-001's default
+/// QSL NFR-011's default checking node ceiling: twice QSL NFR-001's default
 /// syntax-node ceiling (50,000). It is one budget for the typed expression
-/// nodes and FR-093's text and recursion leaves together; the factor of two
+/// nodes and QSL FR-093's text and recursion leaves together; the factor of two
 /// is the rationale for its size, not a split the checker enforces.
 pub const DEFAULT_CHECKING_NODES: u64 = 100_000;
 
-/// NFR-011's default per-declaration preimage byte ceiling: NFR-007's
+/// QSL NFR-011's default per-declaration preimage byte ceiling: QSL NFR-007's
 /// default package byte ceiling (16 MiB).
 pub const DEFAULT_CHECKING_INPUT_BYTES: u64 = 16_777_216;
 
-/// NFR-011's default checking work budget: the preimage byte ceiling
+/// QSL NFR-011's default checking work budget: the preimage byte ceiling
 /// divided by the fewest bytes one charged preimage write produces (one,
 /// for a flag). A declaration charges one work unit per write, so no single
 /// declaration reaches this budget before its preimage reaches
 /// [`DEFAULT_CHECKING_INPUT_BYTES`]. The same budget bounds the key bytes
-/// FR-093's text-leaf walk materializes: each leaf charges its path's key
+/// QSL FR-093's text-leaf walk materializes: each leaf charges its path's key
 /// bytes.
 pub const DEFAULT_CHECKING_WORK_BUDGET: u64 = DEFAULT_CHECKING_INPUT_BYTES;
 
 /// The node admission limits this checker declares before accepting a
-/// package (NFR-011). Every ceiling is used as given, above or below its
-/// default: an implementation ceiling is not a domain bound (NFR-001). A
+/// package (QSL NFR-011). Every ceiling is used as given, above or below its
+/// default: an implementation ceiling is not a domain bound (QSL NFR-001). A
 /// checked package records the limits it was checked under (the checked
 /// graph's `effective_limits`).
 ///
 /// Nesting depth is not a limit: every checking walk runs over
 /// an explicit heap stack whose growth these ceilings charge, so an
-/// expression or a type of any depth checks within them (FR-258).
+/// expression or a type of any depth checks within them (QSL FR-258).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct CheckingLimits {
     nodes: u64,
@@ -105,7 +105,7 @@ impl CheckingLimits {
 }
 
 impl Default for CheckingLimits {
-    /// NFR-011's default ceilings: [`DEFAULT_CHECKING_NODES`] nodes,
+    /// QSL NFR-011's default ceilings: [`DEFAULT_CHECKING_NODES`] nodes,
     /// [`DEFAULT_CHECKING_INPUT_BYTES`] input bytes and a
     /// [`DEFAULT_CHECKING_WORK_BUDGET`] work budget.
     fn default() -> Self {

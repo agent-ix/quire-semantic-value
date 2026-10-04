@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! FR-141 enumerations at run time: an admitted
+//! QSpec FR-141 enumerations at run time: an admitted
 //! declaration's structure ([`EnumDeclaration`]), an admitted member as an
 //! [`EnumValue`], the checked `VariantId` -> [`EnumValue`] index
-//! ([`EnumMemberIndex`]), and the FR-141 comparison schedule
+//! ([`EnumMemberIndex`]), and the QSpec FR-141 comparison schedule
 //! ([`compare_enum`]). Node identity (preimages, digests, owner join and
 //! stale-key refusal) stays with the caller.
 
@@ -44,7 +44,7 @@ pub struct EnumDeclaration {
 impl EnumDeclaration {
     /// The declaration node `key` with its member cases, in declaration
     /// order for an `ordered enum` and sorted by case name otherwise
-    /// (FR-141).
+    /// (QSpec FR-141).
     ///
     /// An empty, repeated or non-identifier member list is
     /// `NonCanonicalPreimage`; an unordered declaration whose cases are not
@@ -135,7 +135,7 @@ impl EnumValue {
         self.member
     }
 
-    /// Zero-based FR-141 canonical-list position of the member: the same
+    /// Zero-based QSpec FR-141 canonical-list position of the member: the same
     /// value `quire_exact::EnumMember::rank` carries once a caller
     /// pairs it with this member's [`Self::variant`]. A caller building an
     /// `EnumShape`/`Value::Enum` from an admitted [`EnumValue`] needs it.
@@ -167,9 +167,9 @@ impl EnumValue {
 
 /// The checked `VariantId` -> [`EnumValue`]
 /// index, built once as the checking stage admits each enum member and consulted
-/// wherever an evaluated kernel `Value::Enum` (a bare `VariantId` and rank) needs its declaration, ordered flag, position or case
-/// name back. The kernel is a leaf and carries none of this (`quire_exact::
-/// value`'s own module doc); the FR-141 enum-specific `=`/ordering schedule
+/// wherever an evaluated kernel `Value::Enum` (a bare `VariantId` and rank)
+/// needs its declaration, ordered flag, position or case name back. The kernel is a leaf and carries none of this (`quire_exact::
+/// value`'s own module doc); the QSpec FR-141 enum-specific `=`/ordering schedule
 /// ([`compare_enum`], `declaration::CheckedEquality`'s `Enum`
 /// schedule, and an evaluator's ordered-enum arm)
 /// resolves a `VariantId` back to its full [`EnumValue`] through this index
@@ -262,6 +262,10 @@ mod tests {
     use super::*;
     use alloc::vec;
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test fixture needs a NodeKey; production code mints none"
+    )]
     fn key(byte: u8) -> NodeKey {
         NodeKey::from_digest([byte; 32])
     }

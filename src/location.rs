@@ -37,18 +37,18 @@ pub enum Origin {
     /// A declared record, tuple, enum, dimension or unit type, by its
     /// declared name (a dimension's or unit's qualified name joined by
     /// `.`). Its
-    /// `declaration` occurrence is located here (FR-322), and so is the
+    /// `declaration` occurrence is located here (QSL FR-322), and so is the
     /// `generated` occurrence of a node that no function body, measure,
     /// state clause or protocol attempt reaches, when this is the least
     /// declared name that reaches it (`lowering::enclosing_declarations`). It
-    /// names the declared name's region when the FR-091 assembler read the
+    /// names the declared name's region when the QSL FR-091 assembler read the
     /// name from the unit, and no region for a type declared by hand
-    /// (FR-096).
+    /// (QSL FR-096).
     TypeDeclaration {
         /// The declared name.
         name: String,
     },
-    /// The body of the named state clause (FR-104), at this zero-based
+    /// The body of the named state clause (QSL FR-104), at this zero-based
     /// index among the unit's state clauses in source order. The clause's
     /// `claim` occurrence is located at its root.
     StateClause {
@@ -57,14 +57,14 @@ pub enum Origin {
         /// The clause's index among the package's state clauses.
         index: usize,
     },
-    /// One protocol `attempt`'s own operation binding (FR-114), by
+    /// One protocol `attempt`'s own operation binding (QSL FR-114), by
     /// the protocol's index among the package's protocols and the
     /// attempt's index among that protocol's own `attempts`, both in
     /// source order. An `operation_anchor`/`frame` node names no position
     /// of its own, so this names a real position of the unit (the
     /// attempt's own declared name) to resolve its generated occurrence's
     /// region, the same way `Origin::StateClause` does for a `pre`/`post`
-    /// clause's own anchor (FR-096).
+    /// clause's own anchor (QSL FR-096).
     ProtocolAttempt {
         /// The protocol's index among the package's protocols.
         protocol: usize,
@@ -78,9 +78,8 @@ pub enum Origin {
 ///
 /// The path is a shared parent chain: a child is the parent's chain plus one
 /// link, so [`Location::child`] costs the same at any depth and a node a
-/// hundred thousand levels down holds no copy of the path above it
-///. The index sequence is built only on output, by
-/// [`Location::path`]. Clone, equality, hash, order, debug and drop never
+/// hundred thousand levels down holds no copy of the path above it. The index
+/// sequence is built only on output, by [`Location::path`]. Clone, equality, hash, order, debug and drop never
 /// recurse with the depth.
 #[derive(Clone)]
 pub struct Location {

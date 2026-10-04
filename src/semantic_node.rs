@@ -103,11 +103,11 @@ pub fn check_terms<K: Ord>(terms: &[(K, Integer)]) -> Result<(), SemanticGraphCa
 /// crate's compound-unit id encodes under it.
 ///
 /// The encoder bounds bytes only; depth is not a limit.
-/// FR-259 B3 makes this the published default of the `identity.input_bytes`
+/// QSL FR-259 B3 makes this the published default of the `identity.input_bytes`
 /// setting, 16777216 bytes. Until that setting lands it stays `u64::MAX`:
 /// a caller's `preimage_digest` reports every encoder error as a
 /// non-canonical preimage, so a finite bound here would report a byte error
-/// as a malformed value, against FR-259 B4. Every preimage is built from
+/// as a malformed value, against QSL FR-259 B4. Every preimage is built from
 /// values an earlier stage already bounded (the intake limit, the
 /// check stage's limits, a package reader's artifact byte limit), and a caller
 /// with a tighter byte budget of its own passes its own [`Limits`] instead

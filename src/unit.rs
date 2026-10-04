@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! FR-142 dimensions, declared units, their admitted unit graph and the
+//! QSpec FR-142 dimensions, declared units, their admitted unit graph and the
 //! evaluator-owned compound-unit value, at runtime.
 //!
 //! Base dimensions and units are nominal nodes. A dimension is a sorted
@@ -209,7 +209,7 @@ impl Unit {
     }
 }
 
-/// What lowering builds a dimension's or unit's nominal node from (FR-094),
+/// What lowering builds a dimension's or unit's nominal node from (QSL FR-094),
 /// beyond the graph's topology: the node's qualified declaration name and
 /// the RFC 8785 bytes of its `quire.dimension-node/v1` or
 /// `quire.unit-node/v1` preimage, whose SHA-256 is its key. The compile
@@ -222,7 +222,7 @@ pub struct NominalDeclaration {
     pub preimage: Vec<u8>,
 }
 
-/// An admitted dimension or unit node as lowering builds it (FR-094): its
+/// An admitted dimension or unit node as lowering builds it (QSL FR-094): its
 /// key, its [`NominalDeclaration`], and the admitted nodes its preimage
 /// names, each resolved to its key.
 #[derive(Clone, Debug, Eq, PartialEq)]

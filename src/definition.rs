@@ -60,7 +60,7 @@ impl SelectionRefusalCode {
     }
 }
 
-/// The I04 diagnostic code of a definition-closure refusal.
+/// The diagnostic code of a definition-closure refusal.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum PackageRefusalCode {
     /// `invalid_package`.
@@ -76,7 +76,7 @@ impl PackageRefusalCode {
     }
 }
 
-/// The subset of the closed I04 `cause_tag` vocabulary that division admission
+/// The subset of the closed `cause_tag` vocabulary that division admission
 /// reports.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum PackageCause {

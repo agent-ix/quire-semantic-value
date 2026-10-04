@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! FR-142 quantities: exact arithmetic under normalized dimensions, explicit
+//! QSpec FR-142 quantities: exact arithmetic under normalized dimensions, explicit
 //! affine conversion through the canonical root and the named `unit.*`
 //! charges of `quire.value.accounting/v1`.
 
@@ -24,7 +24,7 @@ use quire_exact::{InexactTarget, Outcome, Refusal, Undefined};
 /// produced by multiplication, division or power.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum QuantityUnit {
-    /// An admitted I04 declared unit.
+    /// An admitted declared unit.
     Declared(Box<Unit>),
     /// An evaluator-owned `quire.value.compound-unit/v1` unit over canonical
     /// roots.
@@ -32,7 +32,8 @@ pub enum QuantityUnit {
 }
 
 impl QuantityUnit {
-    /// The kernel [`UnitId`] a quantity in this unit carries: the declared unit's node key or the compound unit's digest.
+    /// The kernel [`UnitId`] a quantity in this unit carries: the declared
+    /// unit's node key or the compound unit's digest.
     pub fn id(&self) -> UnitId {
         match self {
             Self::Declared(unit) => unit.id(),
@@ -118,11 +119,11 @@ impl IdentifiedUnit {
 }
 
 /// The unit graph over kernel [`UnitId`]s: each id's [`QuantityUnit`]. A
-/// kernel [`Quantity`] carries only its unit's id, so every FR-142 operation
+/// kernel [`Quantity`] carries only its unit's id, so every QSpec FR-142 operation
 /// reads its operands through a table (the unit graph stays in
 /// this crate). A table read from an admitted graph also holds each
 /// admitted dimension's and unit's nominal preimage bytes, which lowering
-/// builds their nodes from (FR-094).
+/// builds their nodes from (QSL FR-094).
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct UnitTable {
     units: BTreeMap<UnitId, QuantityUnit>,
@@ -164,7 +165,7 @@ impl UnitTable {
     }
 
     /// The admitted dimension or unit node whose key's digest bytes are
-    /// `id`, as lowering builds it (FR-094).
+    /// `id`, as lowering builds it (QSL FR-094).
     pub fn nominal_node(&self, id: &[u8; 32]) -> Option<&NominalUnitNode> {
         self.nominal.get(id)
     }
@@ -242,7 +243,7 @@ impl<'a> UnitScope<'a> {
         id
     }
 
-    /// Every unit this stage formed. FR-094: the check stage keeps them
+    /// Every unit this stage formed. QSL FR-094: the check stage keeps them
     /// until lowering has keyed each compound unit's type node.
     pub fn into_formed(self) -> UnitTable {
         self.formed
@@ -302,7 +303,7 @@ pub enum QuantityOperation<'a> {
 pub enum QuantityTarget {
     /// An unbounded exact rational; conversion reports no loss.
     Exact,
-    /// An FR-140 decimal type with its rounding and membership.
+    /// An QSpec FR-140 decimal type with its rounding and membership.
     Decimal(DecimalType),
     /// An integer domain, placed as a decimal target of scale zero under
     /// `rounding` and then admitted by integer-domain membership.
@@ -319,7 +320,7 @@ pub enum QuantityTarget {
 pub enum ConvertedValue {
     /// The exact converted rational.
     Exact(Rational),
-    /// The FR-140 decimal result with any loss record.
+    /// The QSpec FR-140 decimal result with any loss record.
     Decimal(DecimalResult),
     /// The admitted integer with any scale-zero loss record.
     Integer {
@@ -796,7 +797,7 @@ fn place(
     meter: &mut Meter,
 ) -> Result<Placed, Stop> {
     // An integer target's strict-`exact` refusal names the declared
-    // `Int[..]`, not the scale-zero placement type (FR-096).
+    // `Int[..]`, not the scale-zero placement type (QSL FR-096).
     let refuse = |refusal: Refusal| match (refusal, retained) {
         (Refusal::InexactDecimal { .. }, Retained::Integer(domain)) => {
             Stop::Refused(Refusal::InexactDecimal {

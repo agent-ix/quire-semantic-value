@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! FR-143 finite-value construction from a containment graph.
+//! QSpec FR-143 finite-value construction from a containment graph.
 //!
 //! A [`ValueGraph`] names constructor nodes whose slots may contain other
 //! nodes. Building a root admits nodes bottom-up: a node reached twice becomes

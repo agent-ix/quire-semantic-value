@@ -42,12 +42,12 @@ pub enum InputRefusal {
         /// The parameter index.
         parameter: usize,
     },
-    /// FR-107: `evaluate_clause`'s name resolves to no state clause of this
+    /// QSL FR-107: `evaluate_clause`'s name resolves to no state clause of this
     /// package: `missing_declaration` / `missing-name`.
     #[error("no state clause named {0}")]
     UnknownClause(String),
-    /// FR-107: `evaluate_clause`'s observations were admitted for a
-    /// different clause than the one named, or (FR-115) `evaluate_frame`'s
+    /// QSL FR-107: `evaluate_clause`'s observations were admitted for a
+    /// different clause than the one named, or (QSL FR-115) `evaluate_frame`'s
     /// invocation for a different frame: `invalid_runtime_input` /
     /// `wrong-role-mapping`.
     #[error("the observations were admitted for another clause or frame")]

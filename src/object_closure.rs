@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The core object closure of an object environment over the kernel
 //! [`ObjectReference`] (QSpec FR-143-AC-3 and AC-9). Its admission rules are
-//! FR-106-AC-10's.
+//! AC-10 of this repository's `FR-106`.
 //!
 //! A reference is terminal: its identity is the snapshot-supplied
 //! QSpec FR-009/FR-204 triple (universe, object-type declaration identity, object
@@ -10,7 +10,7 @@
 //! references resolved in an [`ObjectClosure`].
 //!
 //! The closure names only kernel ids and this crate's values, checked against
-//! this crate's [`TypeEnvironment`], so it sits beside `containment`. FR-089's
+//! this crate's [`TypeEnvironment`], so it sits beside `containment`. QSL FR-089's
 //! `PopulationId` to population-binding correspondence is not here: the binding
 //! is the caller's model's, so the caller holds that map beside the closure it
 //! builds.
@@ -63,7 +63,7 @@ impl ObjectClosure {
     ///
     /// Every reference any attribute holds must name an object of the
     /// closure, except a reference in `tolerated_dangling`: the exact
-    /// targets a caller has already decided may dangle. FR-106 admission
+    /// targets a caller has already decided may dangle. QSL FR-106 admission
     /// passes the references its check 8 skipped, because they name an
     /// incomplete population nothing requires; every other caller passes
     /// `&[]`.
@@ -97,7 +97,7 @@ impl ObjectClosure {
     }
 
     /// The closure's own reference whose universe is `universe` and
-    /// declared key is `object`, whatever its most-specific type is (FR-109:
+    /// declared key is `object`, whatever its most-specific type is (QSL FR-109:
     /// a `Function` selection's object argument names an object by
     /// population and key alone, with no declared type of its own to
     /// narrow the search). `None` when no admitted object matches, or more

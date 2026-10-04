@@ -11,11 +11,11 @@ use crate::location::Location;
 /// Information one completed operation discarded.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ValueLoss {
-    /// A rounded decimal operation or conversion (FR-140).
+    /// A rounded decimal operation or conversion (QSpec FR-140).
     Decimal(DecimalLoss),
-    /// An IEEE-to-exact conversion (FR-148).
+    /// An IEEE-to-exact conversion (QSpec FR-148).
     IeeeExact(IeeeExactLoss),
-    /// The non-empty flag set an IEEE operation raised (FR-148).
+    /// The non-empty flag set an IEEE operation raised (QSpec FR-148).
     IeeeFlags(IeeeFlags),
 }
 
