@@ -8,7 +8,7 @@ relationships: []
 
 ## Description
 
-`quire-semantic-value` SHALL NOT mint or decode a `quire_exact::NodeKey`, and SHALL NOT mint a `quire_exact::EffectiveId` or `quire_exact::PopulationId`. It resolves a node id read from a preimage by lookup among the keys a caller admitted. The successor of FR-060-AC-5 and of the T12-C and T12-D rules in `agent-ix/quire-spec-language`, whose API-surface check scanned this crate while it lived there. This repository's `FR-060` is that criterion and its two identity siblings.
+`quire-semantic-value` SHALL NOT mint a `quire_exact::NodeKey`, `quire_exact::EffectiveId` or `quire_exact::PopulationId`, nor decode a `NodeKey`. It resolves a node id read from a preimage by lookup among the keys a caller admitted. The successor of FR-060-AC-5 and of the T12-C and T12-D rules in `agent-ix/quire-spec-language`, whose API-surface check scanned this crate while it lived there. This repository's `FR-060` is that criterion and its two identity siblings.
 
 ## Use case
 
