@@ -4,7 +4,7 @@ The shared no_std semantic-value leaf: runtime semantic values over the quire-ex
 
 ## Specification
 
-This repository's `spec/` covers one requirement of the crate: FR-106-AC-10, the
+This repository's `spec/` covers two requirements of the crate: FR-106-AC-10, the
 object closure's admission rules (TC-904), and FR-060-AC-5, that the crate mints no
 `NodeKey`. The requirements of the other modules (`quantity`, `unit`, `declaration`,
 `enumeration`, `location`, `checking`, `call`, `semantic_node`, `definition`,

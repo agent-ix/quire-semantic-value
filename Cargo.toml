@@ -14,7 +14,7 @@ name = "quire_semantic_value"
 path = "src/lib.rs"
 
 [dependencies]
-quire-exact = { git = "https://github.com/agent-ix/quire-exact", branch = "task/ir582-import" }
+quire-exact = { git = "https://github.com/agent-ix/quire-exact", branch = "main" }
 # The one RFC 8785 encoder, without `std`, for the
 # `quire.value.compound-unit/v1` id.
 quire-canonical = { git = "https://github.com/agent-ix/quire-canonical", branch = "main", default-features = false }

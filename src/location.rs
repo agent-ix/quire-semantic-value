@@ -37,7 +37,7 @@ pub enum Origin {
     /// A declared record, tuple, enum, dimension or unit type, by its
     /// declared name (a dimension's or unit's qualified name joined by
     /// `.`). Its
-    /// `declaration` occurrence is located here (QSL FR-322), and so is the
+    /// `declaration` occurrence is located here (QSpec FR-322), and so is the
     /// `generated` occurrence of a node that no function body, measure,
     /// state clause or protocol attempt reaches, when this is the least
     /// declared name that reaches it (`lowering::enclosing_declarations`). It
@@ -79,8 +79,8 @@ pub enum Origin {
 /// The path is a shared parent chain: a child is the parent's chain plus one
 /// link, so [`Location::child`] costs the same at any depth and a node a
 /// hundred thousand levels down holds no copy of the path above it. The index
-/// sequence is built only on output, by [`Location::path`]. Clone, equality, hash, order, debug and drop never
-/// recurse with the depth.
+/// sequence is built only on output, by [`Location::path`]. Clone, equality,
+/// hash, order, debug and drop never recurse with the depth.
 #[derive(Clone)]
 pub struct Location {
     /// The owning declaration.

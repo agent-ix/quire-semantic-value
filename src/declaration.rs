@@ -43,7 +43,7 @@
 //! QSL FR-089-AC-6: kernel `ValueType::admits` refuses every
 //! `(ValueType::Population, Value::Population)` pair outright -- the
 //! declared-maximum comparison (QSL FR-089-AC-5) is the caller layer's own check.
-//! `Population` is QSL FR-153's own restriction: it is never nested inside a
+//! `Population` is QSpec FR-153's own restriction: it is never nested inside a
 //! record field, tuple position, option payload or collection element (every
 //! such context is refused earlier, at declaration admission, by
 //! `TypeEnvironment::type_refusal`), so none of this module's `admits()`
@@ -80,7 +80,7 @@ use quire_exact::NodeKey;
 use quire_exact::{compare_text, evaluate_decimal};
 
 /// One object-type field's identity: the object type that declares it and
-/// its declared name (QSL FR-151 field redefinition names its target this way).
+/// its declared name (QSpec FR-151 field redefinition names its target this way).
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FieldRef {
     /// The declaring object type's effective identity.
@@ -105,7 +105,7 @@ pub struct FieldDeclaration {
     name: String,
     value_type: ValueType,
     presence: Presence,
-    /// The inherited field this one redefines (QSL FR-151
+    /// The inherited field this one redefines (QSpec FR-151
     /// `quire.model.normalize.redefine/v1`), if any. Only an object-type
     /// field may carry one.
     redefines: Option<FieldRef>,
@@ -128,7 +128,7 @@ impl FieldDeclaration {
         }
     }
 
-    /// This field, redefining the inherited field `target` (QSL FR-151): the
+    /// This field, redefining the inherited field `target` (QSpec FR-151): the
     /// producer copies the domain package's own `redefines` link, which
     /// phase-4 normalization has already checked. In every object type that
     /// inherits both, `target` is hidden and this field takes its one slot.
@@ -359,7 +359,7 @@ pub struct ObjectTypeDeclaration {
     key: EffectiveId,
     name: String,
     attributes: Vec<FieldDeclaration>,
-    /// Every directly declared supertype (QSL FR-151/FR-152/FR-153
+    /// Every directly declared supertype (QSpec FR-151/FR-152/FR-153
     /// generalization), empty unless [`Self::with_supertypes`] sets it.
     supertypes: Vec<EffectiveId>,
 }
@@ -700,7 +700,7 @@ pub enum DeclarationCause {
     RedefinitionTarget(FieldRef),
     /// Two attributes of one object type's effective set both stand for
     /// this field, and neither owner is a proper descendant of the other:
-    /// QSL FR-151's conflicting redefinitions of one member reaching a type.
+    /// QSpec FR-151's conflicting redefinitions of one member reaching a type.
     RedefinitionConflict(FieldRef),
     /// A field that redefines this one widens it: an optional redefiner of
     /// a required field, or a value type admitting a value the redefined
@@ -1011,7 +1011,7 @@ impl TypeEnvironment {
                 ValueType::Reference(key) if !self.object_types.contains_key(key) => {
                     return Some(DeclarationCause::Type(IllTypedCause::TypeMismatch));
                 }
-                // QSL FR-153 names a population binding only as the direct
+                // QSpec FR-153 names a population binding only as the direct
                 // operand of `allInstances`/`lookup` (checked by
                 // `Typer::all_instances`/`Typer::lookup` themselves, which
                 // never route the population expression's own type through
@@ -1022,7 +1022,7 @@ impl TypeEnvironment {
                 // explicit refusal covers the former), an `Option` payload, a
                 // collection element, or a record/tuple/object-type member --
                 // refuses it here, never admitting a binding into a context
-                // QSL FR-153 never gives it Outputs for.
+                // QSpec FR-153 never gives it Outputs for.
                 ValueType::Population(_) => {
                     return Some(DeclarationCause::Type(IllTypedCause::OperatorIneligible));
                 }
@@ -1407,7 +1407,7 @@ impl TypeEnvironment {
 
     /// Refuse the first object-type field, in key then declaration order,
     /// whose `redefines` names no field of a proper ancestor of its owner
-    /// (QSL FR-151: the target must be inherited by the owning type).
+    /// (QSpec FR-151: the target must be inherited by the owning type).
     fn check_redefinitions(&self, table: &FieldTable<'_>) -> Result<(), InvalidDeclaration> {
         for declaration in self.object_types.values() {
             for target in declaration
@@ -1470,7 +1470,7 @@ impl TypeEnvironment {
 
     /// Every object type's effective attribute set, flattened once.
     ///
-    /// This applies QSL FR-151's phase-4 redefinition result
+    /// This applies QSpec FR-151's phase-4 redefinition result
     /// (`quire.model.normalize.redefine/v1`) to the `redefines` links a
     /// producer copies from the normalized domain package: a redefined field
     /// stays declared but is hidden in every type that also has its
@@ -1528,7 +1528,7 @@ impl TypeEnvironment {
     /// one is kept as it is. A larger group keeps only the attribute whose
     /// owner is a proper descendant of every other member's owner, with the
     /// members' lineages merged into it; a group with no such member is
-    /// QSL FR-151's conflict.
+    /// QSpec FR-151's conflict.
     fn flatten(
         &self,
         declaration: &ObjectTypeDeclaration,
@@ -2311,7 +2311,7 @@ impl TypeEnvironment {
                 return ill_typed(IllTypedCause::DistinctUnits)
             }
             (ValueType::Quantity(_), ValueType::Quantity(_)) => EqualitySchedule::Quantity,
-            // QSL FR-153 names a population binding only as the direct operand of
+            // QSpec FR-153 names a population binding only as the direct operand of
             // `allInstances`/`lookup`, never as an equality operand: refuse it
             // here rather than falling into the `l == r` plan schedule below,
             // which would otherwise accept `p == p` and only fail at
@@ -2319,7 +2319,7 @@ impl TypeEnvironment {
             (ValueType::Population(_), _) | (_, ValueType::Population(_)) => {
                 return ill_typed(IllTypedCause::OperatorIneligible)
             }
-            // QSL FR-153-AC-6 / QSL TC-198 L08: a `Reference<A>` and a
+            // QSpec FR-153-AC-6 / QSpec TC-198 L08: a `Reference<A>` and a
             // `Reference<B>` denote the same real object when one type
             // conforms to the other, as `lookup<A>(p, rb) = rb` does. The
             // plan compares the two references' full identity whatever

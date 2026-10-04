@@ -168,8 +168,9 @@ impl EnumValue {
 /// The checked `VariantId` -> [`EnumValue`]
 /// index, built once as the checking stage admits each enum member and consulted
 /// wherever an evaluated kernel `Value::Enum` (a bare `VariantId` and rank)
-/// needs its declaration, ordered flag, position or case name back. The kernel is a leaf and carries none of this (`quire_exact::
-/// value`'s own module doc); the QSpec FR-141 enum-specific `=`/ordering schedule
+/// needs its declaration, ordered flag, position or case name back. The
+/// kernel is a leaf and carries none of this (`quire_exact::value`'s own
+/// module doc); the QSpec FR-141 enum-specific `=`/ordering schedule
 /// ([`compare_enum`], `declaration::CheckedEquality`'s `Enum`
 /// schedule, and an evaluator's ordered-enum arm)
 /// resolves a `VariantId` back to its full [`EnumValue`] through this index

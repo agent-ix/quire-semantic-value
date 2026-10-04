@@ -43,3 +43,11 @@ Approve. One low finding on the reused id.
 | ID | Severity | Summary | Refs |
 | --- | --- | --- | --- |
 | FND-001 | low | `FR-106` now names two different requirements in two repos (QSL's snapshot and invocation admission; this repo's object-closure rules), and this FR's only AC is `AC-10`, with no AC-1 to AC-9. The FR explains it, but a bare "FR-106" in prose or a code comment (src/object_closure.rs:66) is ambiguous. Fix: refer to it as `ix://agent-ix/quire-semantic-value/FR-106` where a reader could confuse the two, or give this repo's requirement its own id when QSL drops its copy. | spec/functional/FR-106-object-closure-admission.md:1-34; src/object_closure.rs:66 |
+
+## Dispositions
+
+Round 1, reviewed at dd89582de14ca3a2737a216ce0de9e9e04e3a678.
+
+| FND | Outcome | sha/reason |
+| --- | --- | --- |
+| FND-001 | fixed | dd89582 |
