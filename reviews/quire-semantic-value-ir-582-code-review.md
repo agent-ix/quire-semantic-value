@@ -84,3 +84,12 @@ Round 1, reviewed at dd89582de14ca3a2737a216ce0de9e9e04e3a678 (fix commit dd8958
 | FND-004 | still-open | Per the coordinator's merge-order ruling, this stays open until quire-exact#1 merges and Cargo.toml/Cargo.lock switch to `branch = "main"`. Cargo.toml:17 still names `task/ir582-import`. |
 | FND-005 | deferred | The QSL half of IR-582 (QSL switches to the git dependency and deletes its `quire-semantic-value/`). It cannot be done in this repo. |
 | FND-006 | deferred | Awaiting the owner's clearance for workflow edits. Per the coordinator's ruling it is not a merge blocker under the no-CI policy; local `make ci` covers the no_std build and the full deny check. |
+
+Round 2, reviewed at 1b03d060915297516223127affeffc489b082ff3 (fix commit 1b03d06 over dd89582).
+
+| FND | Outcome | sha/reason |
+| --- | --- | --- |
+| FND-001 | fixed | 1b03d06 |
+| FND-002 | fixed | 1b03d06 |
+| FND-004 | fixed | 1b03d06 |
+| FND-007 | fixed | 1b03d06 |
