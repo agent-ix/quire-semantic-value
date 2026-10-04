@@ -1,0 +1,21 @@
+[package]
+name = "quire-semantic-value"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98"
+description = "The shared no_std semantic-value leaf: runtime semantic values over the quire-exact kernel."
+authors = ["Agent IX <peter@agent-ix.ai>"]
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/agent-ix/quire-semantic-value"
+
+[lib]
+name = "quire_semantic_value"
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
