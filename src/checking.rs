@@ -92,6 +92,7 @@ impl CheckingLimits {
     /// `input_bytes` refuses with a `Limit` outcome naming
     /// `CheckingLimitKind::InputBytes`, before the identity it would have
     /// minted is ever used.
+    #[must_use]
     pub fn with_input_bytes(mut self, input_bytes: u64) -> Self {
         self.input_bytes = input_bytes;
         self
@@ -106,6 +107,7 @@ impl CheckingLimits {
     /// checking has together charged more than `work_budget` work units,
     /// the next charge refuses naming `CheckingLimitKind::WorkBudget` and
     /// this bound.
+    #[must_use]
     pub fn with_work_budget(mut self, work_budget: u64) -> Self {
         self.work_budget = work_budget;
         self
@@ -142,23 +144,19 @@ mod tests {
         }
     }
 
-    /// The builders set only their own ceiling.
+    /// Each builder, applied alone to a base with distinct ceilings,
+    /// changes only its own ceiling.
     #[trace("TC-905", "FR-107-AC-1")]
     #[test]
     fn builders_set_only_their_own_ceiling() {
-        let limits = CheckingLimits::default()
+        let base = CheckingLimits::new(3)
             .with_input_bytes(7)
             .with_work_budget(9);
-        assert_eq!(limits.input_bytes(), 7);
-        assert_eq!(limits.work_budget(), 9);
-        assert_eq!(limits.nodes(), DEFAULT_CHECKING_NODES);
-
-        let limits = CheckingLimits::new(3)
-            .with_input_bytes(7)
-            .with_work_budget(9)
-            .with_nodes(5);
-        assert_eq!(limits.nodes(), 5);
-        assert_eq!(limits.input_bytes(), 7);
-        assert_eq!(limits.work_budget(), 9);
+        let read =
+            |limits: CheckingLimits| (limits.nodes(), limits.input_bytes(), limits.work_budget());
+        assert_eq!(read(base), (3, 7, 9));
+        assert_eq!(read(base.with_input_bytes(11)), (3, 11, 9));
+        assert_eq!(read(base.with_work_budget(13)), (3, 7, 13));
+        assert_eq!(read(base.with_nodes(5)), (5, 7, 9));
     }
 }

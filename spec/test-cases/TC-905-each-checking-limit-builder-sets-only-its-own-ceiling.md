@@ -16,10 +16,10 @@ Scope: FR-107-AC-1.
 
 ## Test Procedure
 
-1. Build `CheckingLimits::default()` with `with_input_bytes(7)` and `with_work_budget(9)` and read the three ceilings.
-2. Build `CheckingLimits::new(3)` with `with_input_bytes(7)`, `with_work_budget(9)` and `with_nodes(5)` and read the three ceilings.
+1. Build the base `CheckingLimits::new(3).with_input_bytes(7).with_work_budget(9)`.
+2. Apply `with_input_bytes(11)`, `with_work_budget(13)` and `with_nodes(5)` each alone to the base and read the three ceilings (nodes, input bytes, work budget).
 
 ## Expected Results
 
-- Step 1: 7 input bytes, 9 work budget, the default node ceiling.
-- Step 2: 5 nodes, 7 input bytes, 9 work budget.
+- Step 1: (3, 7, 9).
+- Step 2: (3, 11, 9), (3, 7, 13) and (5, 7, 9), in that order.
