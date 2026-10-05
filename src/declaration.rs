@@ -2294,7 +2294,7 @@ impl TypeEnvironment {
                 let Some(unit) = units.get(*id) else {
                     return ill_typed(IllTypedCause::TypeMismatch);
                 };
-                resolved.insert(unit.clone());
+                resolved.insert_held(*id, unit.clone());
             }
         }
         let (left_type, right_type) = (left.comparison_type(), right.comparison_type());

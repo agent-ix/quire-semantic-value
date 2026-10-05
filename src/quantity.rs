@@ -168,6 +168,11 @@ impl UnitTable {
         Ok(self.insert_identified(IdentifiedUnit::new(unit)?))
     }
 
+    /// Record `unit` under `id`, the id another table already holds it by.
+    pub(crate) fn insert_held(&mut self, id: UnitId, unit: QuantityUnit) {
+        self.units.entry(id).or_insert(unit);
+    }
+
     /// Move every unit of `other` into this table under the id it already
     /// has, keeping this table's entry where both hold an id.
     pub fn append(&mut self, other: Self) {

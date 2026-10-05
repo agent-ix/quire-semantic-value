@@ -778,7 +778,7 @@ mod tests {
     #[trace("TC-728", "FR-259-AC-2")]
     #[test]
     fn a_compound_unit_over_the_identity_byte_limit_refuses_with_the_limit() {
-        let (one, two) = (Integer::from(1), Integer::from(-2));
+        let (one, two) = (Integer::from(1_i64), Integer::from(-2_i64));
         let terms = || [(id(1), &one), (id(2), &two)];
         assert!(compound_unit_id(terms(), IDENTITY_LIMITS).is_ok());
         let Err(IdentityRefusal::InputBytes { bound, required }) =
