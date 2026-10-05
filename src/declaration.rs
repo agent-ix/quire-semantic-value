@@ -2710,6 +2710,10 @@ mod ancestor_steps_tests {
 
     use super::*;
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test fixture needs an EffectiveId; production code mints none"
+    )]
     fn id(byte: u8) -> EffectiveId {
         EffectiveId::from_digest([byte; 32])
     }
