@@ -103,16 +103,12 @@ pub fn check_terms<K: Ord>(terms: &[(K, Integer)]) -> Result<(), SemanticGraphCa
 /// crate's compound-unit id encodes under it.
 ///
 /// The encoder bounds bytes only; depth is not a limit.
-/// QSL FR-259 B3 makes this the published default of the `identity.input_bytes`
-/// setting, 16777216 bytes. Until that setting lands it stays `u64::MAX`:
-/// a caller's `preimage_digest` reports every encoder error as a
-/// non-canonical preimage, so a finite bound here would report a byte error
-/// as a malformed value, against QSL FR-259 B4. Every preimage is built from
-/// values an earlier stage already bounded (the intake limit, the
-/// check stage's limits, a package reader's artifact byte limit), and a caller
-/// with a tighter byte budget of its own passes its own [`Limits`] instead
-/// (the v2 reader does).
-pub const IDENTITY_LIMITS: Limits = Limits::new(u64::MAX);
+/// This is the published default of QSL's `identity.input_bytes` setting,
+/// 16777216 bytes (FR-259 B3). Every preimage is built from values an
+/// earlier stage already bounded (the intake limit, the check stage's limits,
+/// a package reader's artifact byte limit), and a caller with a tighter byte
+/// budget of its own passes its own [`Limits`] instead (the v2 reader does).
+pub const IDENTITY_LIMITS: Limits = Limits::new(16_777_216);
 
 /// The `node-identity-preimage.schema.json` node-id member every node-key
 /// and compound-unit preimage embeds: a node key's digest as 64 lowercase
@@ -158,6 +154,12 @@ impl fmt::Display for DigestHex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QSL FR-259 B3: the identity encoder's default byte bound is 16 MiB.
+    #[test]
+    fn the_identity_limits_default_is_sixteen_mebibytes() {
+        assert_eq!(IDENTITY_LIMITS.max_bytes(), 16_777_216);
+    }
 
     fn term(key: u8, exponent: i64) -> (u8, Integer) {
         (key, Integer::from(exponent))

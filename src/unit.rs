@@ -668,8 +668,8 @@ pub fn compound_unit_id<'a>(terms: impl IntoIterator<Item = ([u8; 32], &'a Integ
         version: COMPOUND_UNIT_DOMAIN,
     };
     // A struct of strings, arrays and a constant always has an RFC 8785
-    // encoding, and `IDENTITY_LIMITS` sets no byte ceiling; the one refusal
-    // left is a failed heap reservation, which the `serde_json` encoder this
+    // encoding, and a compound-unit preimage is far below `IDENTITY_LIMITS`'s byte
+    // ceiling; the one refusal left is a failed heap reservation, which the `serde_json` encoder this
     // replaced aborted the process on.
     let digest = quire_canonical::sha256(&preimage, IDENTITY_LIMITS)
         .unwrap_or_else(|error| panic!("a compound-unit preimage encodes: {error}"));
