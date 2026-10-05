@@ -46,3 +46,9 @@ three fields.
 | ID | Severity | Summary | Refs |
 | --- | --- | --- | --- |
 | FND-001 | low | `with_nodes` carries `#[must_use]` (as every builder in the lexer pattern does), but the two existing builders `with_input_bytes` and `with_work_budget` do not. A dropped `limits.with_work_budget(9);` silently keeps the old ceiling with no warning. Fix: add `#[must_use]` to both. | src/checking.rs:93-125 |
+
+## Dispositions
+
+| FND | Outcome | sha/reason |
+| --- | --- | --- |
+| FND-001 | fixed | 4892318 |

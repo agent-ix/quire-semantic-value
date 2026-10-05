@@ -35,3 +35,9 @@ Approve with one low finding.
 | ID | Severity | Summary | Refs |
 | --- | --- | --- | --- |
 | FND-001 | low | FR-107 uses "s3 limit" and `s3.nodes` unqualified. "s3" is QSL's stage-3 (checking) term and is defined nowhere in this repo, the same class as SR-001 FND-001 (unqualified QSL ids). Fix: "QSL's s3 (checking) stage" on first use, or say "checking limit". | spec/functional/FR-107-set-each-checking-limit-on-its-own.md:11,15 |
+
+## Dispositions
+
+| FND | Outcome | sha/reason |
+| --- | --- | --- |
+| FND-001 | fixed | 4892318 |
