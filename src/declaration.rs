@@ -2708,6 +2708,8 @@ mod work_budget_tests {
 mod ancestor_steps_tests {
     use alloc::format;
 
+    use ix_trace_rs::trace;
+
     use super::*;
 
     #[allow(
@@ -2735,29 +2737,33 @@ mod ancestor_steps_tests {
     }
 
     /// QSL FR-082-AC-6: `ancestor_steps` counts `supertypes` edges over a
-    /// type's closure. A diamond `D -> B, C; B -> A; C -> A` has four edges
-    /// but no chain longer than two, so it admits at 4 and stops at 3,
-    /// naming the ceiling and the edge count the walk would have reached.
+    /// type's closure, never its types or its chain depth. A diamond
+    /// `D -> B, C, A; B -> A; C -> A` has five edges over four types and no
+    /// chain longer than two, so it admits at 5 and stops at 4. The refusal
+    /// names the ceiling and, as its actual counter, the ceiling plus one:
+    /// the edge the walk would stop at.
+    #[trace("TC-220", "FR-082-AC-6")]
     #[test]
-    fn ancestor_steps_counts_the_closure_edges_not_the_chain_depth() {
+    fn ancestor_steps_counts_the_closure_edges_not_the_types_or_the_depth() {
         let diamond = || {
             vec![
                 object(1, &[]),
                 object(2, &[1]),
                 object(3, &[1]),
-                object(4, &[2, 3]),
+                object(4, &[2, 3, 1]),
             ]
         };
-        assert!(admit(diamond(), 4).is_ok());
-        let Err(EnvironmentFailure::Limit(limit)) = admit(diamond(), 3) else {
-            panic!("three edges are fewer than the diamond's four");
+        assert!(admit(diamond(), 5).is_ok());
+        let Err(EnvironmentFailure::Limit(limit)) = admit(diamond(), 4) else {
+            panic!("four edges are fewer than the diamond's five");
         };
         assert_eq!(limit.kind(), EnvironmentLimitKind::AncestorSteps);
-        assert_eq!(limit.configured_bound(), 3);
-        assert_eq!(limit.actual(), 4);
+        assert_eq!(limit.configured_bound(), 4);
+        assert_eq!(limit.actual(), 5);
     }
 
     /// A chain of `n` edges admits at `n` and stops at `n - 1`.
+    #[trace("TC-220", "FR-082-AC-6")]
     #[test]
     fn a_chain_of_n_edges_admits_at_n_and_stops_at_n_minus_one() {
         let chain = || {
@@ -2776,6 +2782,7 @@ mod ancestor_steps_tests {
     }
 
     /// The default is NFR-012's 16777216 edges.
+    #[trace("TC-220", "FR-082-AC-6")]
     #[test]
     fn the_default_ceiling_is_sixteen_million_edges() {
         assert_eq!(TypeEnvironmentLimits::default().ancestor_steps, 16_777_216);

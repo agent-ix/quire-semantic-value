@@ -31,13 +31,14 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::hash::{Hash, Hasher};
 
-use quire_canonical::FixedShape;
+use quire_canonical::{FixedShape, Limits};
 use serde::Serialize;
 
 use quire_exact::{Integer, NodeKey, Rational, UnitId, COMPOUND_UNIT_DOMAIN};
 
 use crate::semantic_node::{
-    check_terms, CanonicalNodeId, InvalidSemanticGraph, SemanticGraphCause, IDENTITY_LIMITS,
+    check_terms, CanonicalNodeId, IdentityRefusal, InvalidSemanticGraph, SemanticGraphCause,
+    IDENTITY_LIMITS,
 };
 
 /// The graph refusal of `cause`.
@@ -654,9 +655,18 @@ struct CanonicalCompound {
 /// The compound-arm [`UnitId`] of exactly these `(unit node id, exponent)`
 /// terms, each id as its 32 digest bytes: the SHA-256 of their JCS
 /// `quire.value.compound-unit/v1` preimage, encoded and hashed by
-/// `quire-canonical` (the one RFC 8785
-/// implementation).
-pub fn compound_unit_id<'a>(terms: impl IntoIterator<Item = ([u8; 32], &'a Integer)>) -> UnitId {
+/// `quire-canonical` (the one RFC 8785 implementation) under `limits`.
+///
+/// # Errors
+///
+/// [`IdentityRefusal::InputBytes`] when the preimage's canonical bytes would
+/// exceed `limits` (QSL FR-259 Behavior 4): nothing bounds the number of
+/// terms or an exponent's size, so a large enough unit reaches any byte
+/// limit. [`IdentityRefusal::Allocation`] when a heap reservation fails.
+pub fn compound_unit_id<'a>(
+    terms: impl IntoIterator<Item = ([u8; 32], &'a Integer)>,
+    limits: Limits,
+) -> Result<UnitId, IdentityRefusal> {
     let preimage = CanonicalCompound {
         terms: terms
             .into_iter()
@@ -667,13 +677,8 @@ pub fn compound_unit_id<'a>(terms: impl IntoIterator<Item = ([u8; 32], &'a Integ
             .collect(),
         version: COMPOUND_UNIT_DOMAIN,
     };
-    // A struct of strings, arrays and a constant always has an RFC 8785
-    // encoding, and a compound-unit preimage is far below `IDENTITY_LIMITS`'s byte
-    // ceiling; the one refusal left is a failed heap reservation, which the `serde_json` encoder this
-    // replaced aborted the process on.
-    let digest = quire_canonical::sha256(&preimage, IDENTITY_LIMITS)
-        .unwrap_or_else(|error| panic!("a compound-unit preimage encodes: {error}"));
-    UnitId::compound(*digest.as_bytes())
+    let digest = quire_canonical::sha256(&preimage, limits)?;
+    Ok(UnitId::compound(*digest.as_bytes()))
 }
 
 /// A normalized compound unit: canonical root-unit keys to nonzero exponents.
@@ -720,12 +725,17 @@ impl CompoundUnit {
     }
 
     /// The compound-arm [`UnitId`]: the `quire.value.compound-unit/v1`
-    /// digest of the terms, computed on each call.
-    pub fn id(&self) -> UnitId {
+    /// digest of the terms under [`IDENTITY_LIMITS`], computed on each call.
+    ///
+    /// # Errors
+    ///
+    /// As [`compound_unit_id`].
+    pub fn id(&self) -> Result<UnitId, IdentityRefusal> {
         compound_unit_id(
             self.terms
                 .iter()
                 .map(|(key, exponent)| (*key.as_bytes(), exponent)),
+            IDENTITY_LIMITS,
         )
     }
 
@@ -755,9 +765,29 @@ impl CompoundUnit {
 mod tests {
     use super::*;
     use alloc::vec;
+    use ix_trace_rs::trace;
 
     fn id(byte: u8) -> [u8; 32] {
         [byte; 32]
+    }
+
+    /// QSL FR-259 Behavior 4: a compound-unit preimage over the byte limit
+    /// it is encoded under refuses with that limit and the bytes it needed,
+    /// never a panic and never a malformed value. Under the default limit
+    /// the same terms have an id.
+    #[trace("TC-728", "FR-259-AC-2")]
+    #[test]
+    fn a_compound_unit_over_the_identity_byte_limit_refuses_with_the_limit() {
+        let (one, two) = (Integer::from(1), Integer::from(-2));
+        let terms = || [(id(1), &one), (id(2), &two)];
+        assert!(compound_unit_id(terms(), IDENTITY_LIMITS).is_ok());
+        let Err(IdentityRefusal::InputBytes { bound, required }) =
+            compound_unit_id(terms(), Limits::new(64))
+        else {
+            panic!("a two-term preimage is longer than 64 bytes");
+        };
+        assert_eq!(bound, 64);
+        assert!(required > 64, "the refusal names the bytes it needed");
     }
 
     fn rational(numerator: i64) -> Rational {

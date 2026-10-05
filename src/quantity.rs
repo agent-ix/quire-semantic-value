@@ -9,6 +9,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
+use crate::semantic_node::IdentityRefusal;
 use crate::stop::{outcome_from_stop, Stop};
 use crate::unit::{CompoundUnit, Dimension, NominalUnitNode, Unit, UnitEdge, UnitGraph};
 use quire_exact::{rational_arithmetic_bits, Rational, RationalArithmetic};
@@ -34,9 +35,13 @@ pub enum QuantityUnit {
 impl QuantityUnit {
     /// The kernel [`UnitId`] a quantity in this unit carries: the declared
     /// unit's node key or the compound unit's digest.
-    pub fn id(&self) -> UnitId {
+    ///
+    /// # Errors
+    ///
+    /// A compound unit's digest refuses as [`CompoundUnit::id`] does.
+    pub fn id(&self) -> Result<UnitId, IdentityRefusal> {
         match self {
-            Self::Declared(unit) => unit.id(),
+            Self::Declared(unit) => Ok(unit.id()),
             Self::Compound(unit) => unit.id(),
         }
     }
@@ -100,11 +105,15 @@ pub struct IdentifiedUnit {
 
 impl IdentifiedUnit {
     /// `unit` with its id.
-    pub fn new(unit: QuantityUnit) -> Self {
-        Self {
-            id: unit.id(),
+    ///
+    /// # Errors
+    ///
+    /// As [`QuantityUnit::id`].
+    pub fn new(unit: QuantityUnit) -> Result<Self, IdentityRefusal> {
+        Ok(Self {
+            id: unit.id()?,
             unit,
-        }
+        })
     }
 
     /// The unit's kernel id.
@@ -136,10 +145,13 @@ impl UnitTable {
     /// Every admitted unit of `graph`, by its declared-arm id, with every
     /// admitted dimension's and unit's nominal preimage.
     pub fn declared(graph: &UnitGraph) -> Self {
-        let mut table: Self = graph
-            .units()
-            .map(|unit| QuantityUnit::Declared(Box::new(unit.clone())))
-            .collect();
+        let mut table = Self {
+            units: graph
+                .units()
+                .map(|unit| (unit.id(), QuantityUnit::Declared(Box::new(unit.clone()))))
+                .collect(),
+            nominal: BTreeMap::new(),
+        };
         table.nominal = graph
             .nominal_nodes()
             .map(|node| (*node.key.as_bytes(), node.clone()))
@@ -148,8 +160,23 @@ impl UnitTable {
     }
 
     /// Record `unit` under its id and return the id.
-    pub fn insert(&mut self, unit: QuantityUnit) -> UnitId {
-        self.insert_identified(IdentifiedUnit::new(unit))
+    ///
+    /// # Errors
+    ///
+    /// As [`QuantityUnit::id`]; the table is left unchanged.
+    pub fn insert(&mut self, unit: QuantityUnit) -> Result<UnitId, IdentityRefusal> {
+        Ok(self.insert_identified(IdentifiedUnit::new(unit)?))
+    }
+
+    /// Move every unit of `other` into this table under the id it already
+    /// has, keeping this table's entry where both hold an id.
+    pub fn append(&mut self, other: Self) {
+        for (id, unit) in other.units {
+            self.units.entry(id).or_insert(unit);
+        }
+        for (key, node) in other.nominal {
+            self.nominal.entry(key).or_insert(node);
+        }
     }
 
     /// Record a unit whose id is already computed and return the id.
@@ -189,24 +216,6 @@ impl IntoIterator for UnitTable {
 
     fn into_iter(self) -> Self::IntoIter {
         self.units.into_values()
-    }
-}
-
-impl Extend<QuantityUnit> for UnitTable {
-    fn extend<I: IntoIterator<Item = QuantityUnit>>(&mut self, units: I) {
-        for unit in units {
-            self.insert(unit);
-        }
-    }
-}
-
-impl FromIterator<QuantityUnit> for UnitTable {
-    fn from_iter<I: IntoIterator<Item = QuantityUnit>>(units: I) -> Self {
-        let mut table = Self::default();
-        for unit in units {
-            table.insert(unit);
-        }
-        table
     }
 }
 
@@ -367,23 +376,44 @@ impl Conversion {
 /// and `-`, otherwise the canonical compound unit. Incompatible dimensions,
 /// affine-unit arithmetic and distinct units are ill-typed and consume
 /// nothing.
+///
+/// # Errors
+///
+/// [`QuantityRefusal::IllTyped`] for an ill-typed operation, and
+/// [`QuantityRefusal::Identity`] when the result's compound unit has no id
+/// under the identity byte limit.
 pub fn evaluate_quantity(
     operation: QuantityOperation<'_>,
     meter: &mut Meter,
-) -> Result<Outcome<Quantity>, IllTyped> {
+) -> Result<Outcome<Quantity>, QuantityRefusal> {
     evaluate_quantity_unit(operation, meter).map(|(outcome, _)| outcome)
 }
 
 /// [`evaluate_quantity`] with the result's unit and its id, formed once at
 /// type time and carried by the result quantity's id, for a caller that
 /// records it ([`UnitScope::form`]).
+///
+/// # Errors
+///
+/// As [`evaluate_quantity`].
 pub fn evaluate_quantity_unit(
     operation: QuantityOperation<'_>,
     meter: &mut Meter,
-) -> Result<(Outcome<Quantity>, IdentifiedUnit), IllTyped> {
-    let unit = IdentifiedUnit::new(type_check(operation)?);
+) -> Result<(Outcome<Quantity>, IdentifiedUnit), QuantityRefusal> {
+    let unit = IdentifiedUnit::new(type_check(operation)?)?;
     let outcome = outcome_from_stop(evaluate(operation, unit.id(), meter));
     Ok((outcome, unit))
+}
+
+/// Why [`evaluate_quantity`] produced no outcome.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum QuantityRefusal {
+    /// The operation is ill-typed and consumed nothing.
+    #[error(transparent)]
+    IllTyped(#[from] IllTyped),
+    /// The result's compound unit has no id (QSL FR-259 Behavior 4).
+    #[error(transparent)]
+    Identity(#[from] IdentityRefusal),
 }
 
 /// Explicitly convert `source` into `unit` with the `target` representation.
