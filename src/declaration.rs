@@ -1857,11 +1857,6 @@ impl Ancestry {
             _ => false,
         }
     }
-
-    /// How many proper ancestors `key` has.
-    fn count(&self, key: EffectiveId) -> usize {
-        self.of(key).map_or(0, <[u32]>::len)
-    }
 }
 
 /// `field`'s own attribute, declared by `owner`: it stands for itself and
@@ -2711,6 +2706,8 @@ mod work_budget_tests {
 
 #[cfg(test)]
 mod ancestor_steps_tests {
+    use alloc::format;
+
     use super::*;
 
     fn id(byte: u8) -> EffectiveId {
