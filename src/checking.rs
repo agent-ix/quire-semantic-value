@@ -69,6 +69,14 @@ impl CheckingLimits {
         }
     }
 
+    /// These limits with the node ceiling (`s3.nodes`) set to `nodes` and
+    /// every other ceiling kept.
+    #[must_use]
+    pub fn with_nodes(mut self, nodes: u64) -> Self {
+        self.nodes = nodes;
+        self
+    }
+
     /// The declared node limit.
     pub fn nodes(self) -> u64 {
         self.nodes
@@ -120,6 +128,7 @@ impl Default for CheckingLimits {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ix_trace_rs::trace;
 
     /// `new` admits any node count and keeps the default byte and work
     /// ceilings.
@@ -134,6 +143,7 @@ mod tests {
     }
 
     /// The builders set only their own ceiling.
+    #[trace("TC-905", "FR-107-AC-1")]
     #[test]
     fn builders_set_only_their_own_ceiling() {
         let limits = CheckingLimits::default()
@@ -142,5 +152,13 @@ mod tests {
         assert_eq!(limits.input_bytes(), 7);
         assert_eq!(limits.work_budget(), 9);
         assert_eq!(limits.nodes(), DEFAULT_CHECKING_NODES);
+
+        let limits = CheckingLimits::new(3)
+            .with_input_bytes(7)
+            .with_work_budget(9)
+            .with_nodes(5);
+        assert_eq!(limits.nodes(), 5);
+        assert_eq!(limits.input_bytes(), 7);
+        assert_eq!(limits.work_budget(), 9);
     }
 }
