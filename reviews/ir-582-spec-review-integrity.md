@@ -23,3 +23,11 @@ existing id.
 ## Verdict
 
 One low finding. Mergeable once it is fixed or accepted.
+
+## Dispositions
+
+Round 1, reviewed at 3aef223a34b8ba40ffdae4dc8ad142111d4c917e.
+
+| FND | Outcome | sha/reason |
+| --- | --- | --- |
+| FND-001 | fixed | 3aef223a: one SHALL names `NodeKey`, `EffectiveId` and `PopulationId` |
