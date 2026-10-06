@@ -46,3 +46,18 @@ this crate's own tests use (FND-002).
 | --- | --- | --- | --- |
 | FND-001 | medium | Nothing tests what happens when `IDENTITY_LIMITS` is reached. Before this PR the limit could not be reached, so the behaviour is new: a compound unit or node preimage over 16 MiB. FR-259 Behavior 4 requires an input-bytes limit outcome and no malformed-value refusal. Today `compound_unit_id` panics and QSL's `preimage_digest` refuses `NonCanonicalPreimage` (SR-1334 FND-001 and FND-002). Fix: add a test that encodes a compound unit over the byte limit and asserts the limit outcome, which needs the error path SR-1334 FND-001 asks for. | src/semantic_node.rs:104-111,155-163; src/unit.rs:670-675 |
 | FND-002 | low | The three new `ancestor_steps_tests` and `the_identity_limits_default_is_sixteen_mebibytes` have no `#[trace(...)]`. Other tests in this crate carry one (for example `src/object_closure.rs:239`). Their doc comments name QSL FR-082-AC-6 and FR-259 B3 in prose only. Fix: tag them with `#[trace("TC-220", "FR-082-AC-6")]` and with the FR-259 test case. | src/declaration.rs:2706-2783; src/semantic_node.rs:158-162 |
+
+## Dispositions
+
+Round 1, reviewed at 97d4970a2ffc0e84de482b35654e88a5ef19f3e4.
+
+- **FND-001:** `a_compound_unit_over_the_identity_byte_limit_refuses_with_the_limit`
+  encodes two terms under `Limits::new(64)`. It asserts `InputBytes` with
+  bound 64 and `required > 64`, and an `Ok` id under `IDENTITY_LIMITS`.
+- **FND-002:** the ancestor-steps and identity tests now carry
+  `#[trace("TC-220", "FR-082-AC-6")]` and `#[trace("TC-728", "FR-259-AC-2")]`.
+
+| FND | outcome | sha/reason |
+| --- | --- | --- |
+| FND-001 | fixed | d73ccef |
+| FND-002 | fixed | d73ccef |
