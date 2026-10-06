@@ -469,10 +469,10 @@ impl AsRef<FieldDeclaration> for EffectiveAttribute {
     }
 }
 
-/// The QSL NFR-012 default `ancestor_steps` ceiling, which [`TypeEnvironment::new`]
-/// admits under. The model's own `ModelNormalizationLimits` and
-/// `PopulationAdmissionLimits` defaults read this same value.
-pub const DEFAULT_ANCESTOR_STEPS: u64 = 100_000;
+/// The QSL NFR-012 default `ancestor_steps` ceiling, in `supertypes` edges,
+/// which [`TypeEnvironment::new`] admits under. It equals the model's own
+/// `ModelNormalizationLimits` and `PopulationAdmissionLimits` defaults.
+pub const DEFAULT_ANCESTOR_STEPS: u64 = 16_777_216;
 
 /// The QSL NFR-012 default admission `work_units` budget, the same value as the
 /// model's own `ModelNormalizationLimits::work_units` and
@@ -483,8 +483,9 @@ pub const DEFAULT_WORK_UNITS: u64 = 16_777_216;
 /// Every member is a real limit; zero is never "unlimited".
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TypeEnvironmentLimits {
-    /// QSL FR-082's `ancestor_steps`: the most types one conformance walk may
-    /// expand, the type it starts from included.
+    /// QSL FR-082's `ancestor_steps`: the most `supertypes` edges one
+    /// conformance walk may follow, an edge count over the walk's closure
+    /// and never a chain depth.
     pub ancestor_steps: u64,
     /// Cumulative work units admission may spend building the ancestor
     /// closure and flattening every object type's attributes. One unit is
@@ -578,8 +579,8 @@ impl Stopped {
 /// Which [`TypeEnvironmentLimits`] ceiling admission reached.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum EnvironmentLimitKind {
-    /// `ancestor_steps`: one object type's conformance walk would expand
-    /// more types than the ceiling, itself included (QSL FR-082).
+    /// `ancestor_steps`: one object type's conformance walk would follow
+    /// more `supertypes` edges than the ceiling (QSL FR-082).
     AncestorSteps,
     /// `work_units`: the admission's cumulative ancestor-closure and
     /// flattening work.
@@ -777,8 +778,8 @@ impl TypeEnvironment {
     ///
     /// `limits.ancestor_steps` is the QSL FR-082 ceiling the model walks this
     /// package's conformance under at evaluation (the population binding's
-    /// own `ancestor_steps`). An object type whose walk would expand more
-    /// types than that, itself included, stops admission with an
+    /// own `ancestor_steps`). An object type whose walk would follow more
+    /// `supertypes` edges than that stops admission with an
     /// [`EnvironmentLimitKind::AncestorSteps`] limit (QSL FR-082). Check time is the stricter
     /// side: every conformance question the checker answers from this
     /// environment is one evaluation completes with the same verdict.
@@ -1380,21 +1381,36 @@ impl TypeEnvironment {
     }
 
     /// Stop at the first object type, in key order, whose QSL FR-082 conformance
-    /// walk expands more than `limit` types: an [`EnvironmentLimitKind::AncestorSteps`] limit whose
-    /// actual counter is the ceiling plus one, the step the walk would stop
-    /// at (QSL FR-082). The model's walk from `S`
-    /// (`ModelIndex::conforms`) expands `S` and then each distinct ancestor
-    /// once, and stops early only when it meets its target, so `1 +` the
-    /// ancestor count is the most any walk from `S` expands. Admitting only
-    /// types within `limit` makes every walk from an admitted type complete
-    /// under the same ceiling at evaluation.
+    /// walk follows more than `limit` `supertypes` edges: an
+    /// [`EnvironmentLimitKind::AncestorSteps`] limit whose actual counter is
+    /// the ceiling plus one, the edge the walk would stop at. The model's
+    /// walk from `S` (`ModelIndex::conforms`) follows each declared edge of
+    /// `S` and of each distinct ancestor once, and stops early only when it
+    /// meets its target, so that sum is the most any walk from `S` follows.
+    /// Admitting only types within `limit` makes every walk from an admitted
+    /// type complete under the same ceiling at evaluation.
     fn check_ancestor_steps(&self, limit: u64) -> Result<(), EnvironmentLimit> {
+        let edges: Vec<u64> = self
+            .object_types
+            .values()
+            .map(|declaration| u64::try_from(declaration.supertypes.len()).unwrap_or(u64::MAX))
+            .collect();
         for declaration in self.object_types.values() {
-            let ancestors = self.ancestry.count(declaration.key);
-            let expanded = u64::try_from(ancestors)
-                .unwrap_or(u64::MAX)
-                .saturating_add(1);
-            if expanded > limit {
+            let own = self
+                .ancestry
+                .positions
+                .get(&declaration.key)
+                .and_then(|position| edges.get(*position as usize))
+                .copied()
+                .unwrap_or(0);
+            let followed = self
+                .ancestry
+                .of(declaration.key)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|position| edges.get(*position as usize))
+                .fold(own, |total, edges| total.saturating_add(*edges));
+            if followed > limit {
                 return Err(EnvironmentLimit::new(
                     EnvironmentLimitKind::AncestorSteps,
                     limit,
@@ -1841,11 +1857,6 @@ impl Ancestry {
             _ => false,
         }
     }
-
-    /// How many proper ancestors `key` has.
-    fn count(&self, key: EffectiveId) -> usize {
-        self.of(key).map_or(0, <[u32]>::len)
-    }
 }
 
 /// `field`'s own attribute, declared by `owner`: it stands for itself and
@@ -2283,7 +2294,7 @@ impl TypeEnvironment {
                 let Some(unit) = units.get(*id) else {
                     return ill_typed(IllTypedCause::TypeMismatch);
                 };
-                resolved.insert(unit.clone());
+                resolved.insert_held(*id, unit.clone());
             }
         }
         let (left_type, right_type) = (left.comparison_type(), right.comparison_type());
@@ -2690,5 +2701,90 @@ mod work_budget_tests {
         );
         assert_eq!(budget.spent, 3);
         assert_eq!(budget.charge(1), Ok(()));
+    }
+}
+
+#[cfg(test)]
+mod ancestor_steps_tests {
+    use alloc::format;
+
+    use ix_trace_rs::trace;
+
+    use super::*;
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test fixture needs an EffectiveId; production code mints none"
+    )]
+    fn id(byte: u8) -> EffectiveId {
+        EffectiveId::from_digest([byte; 32])
+    }
+
+    fn object(byte: u8, supertypes: &[u8]) -> ObjectTypeDeclaration {
+        ObjectTypeDeclaration::new(id(byte), format!("T{byte}"), vec![])
+            .with_supertypes(supertypes.iter().map(|general| id(*general)).collect())
+    }
+
+    fn admit(types: Vec<ObjectTypeDeclaration>, ancestor_steps: u64) -> Admission<TypeEnvironment> {
+        TypeEnvironment::bounded(
+            [],
+            types,
+            TypeEnvironmentLimits {
+                ancestor_steps,
+                ..TypeEnvironmentLimits::default()
+            },
+        )
+    }
+
+    /// QSL FR-082-AC-6: `ancestor_steps` counts `supertypes` edges over a
+    /// type's closure, never its types or its chain depth. A diamond
+    /// `D -> B, C, A; B -> A; C -> A` has five edges over four types and no
+    /// chain longer than two, so it admits at 5 and stops at 4. The refusal
+    /// names the ceiling and, as its actual counter, the ceiling plus one:
+    /// the edge the walk would stop at.
+    #[trace("TC-220", "FR-082-AC-6")]
+    #[test]
+    fn ancestor_steps_counts_the_closure_edges_not_the_types_or_the_depth() {
+        let diamond = || {
+            vec![
+                object(1, &[]),
+                object(2, &[1]),
+                object(3, &[1]),
+                object(4, &[2, 3, 1]),
+            ]
+        };
+        assert!(admit(diamond(), 5).is_ok());
+        let Err(EnvironmentFailure::Limit(limit)) = admit(diamond(), 4) else {
+            panic!("four edges are fewer than the diamond's five");
+        };
+        assert_eq!(limit.kind(), EnvironmentLimitKind::AncestorSteps);
+        assert_eq!(limit.configured_bound(), 4);
+        assert_eq!(limit.actual(), 5);
+    }
+
+    /// A chain of `n` edges admits at `n` and stops at `n - 1`.
+    #[trace("TC-220", "FR-082-AC-6")]
+    #[test]
+    fn a_chain_of_n_edges_admits_at_n_and_stops_at_n_minus_one() {
+        let chain = || {
+            vec![
+                object(1, &[]),
+                object(2, &[1]),
+                object(3, &[2]),
+                object(4, &[3]),
+            ]
+        };
+        assert!(admit(chain(), 3).is_ok());
+        assert!(matches!(
+            admit(chain(), 2),
+            Err(EnvironmentFailure::Limit(limit)) if limit.actual() == 3
+        ));
+    }
+
+    /// The default is NFR-012's 16777216 edges.
+    #[trace("TC-220", "FR-082-AC-6")]
+    #[test]
+    fn the_default_ceiling_is_sixteen_million_edges() {
+        assert_eq!(TypeEnvironmentLimits::default().ancestor_steps, 16_777_216);
     }
 }

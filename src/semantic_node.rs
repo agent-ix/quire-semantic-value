@@ -103,16 +103,54 @@ pub fn check_terms<K: Ord>(terms: &[(K, Integer)]) -> Result<(), SemanticGraphCa
 /// crate's compound-unit id encodes under it.
 ///
 /// The encoder bounds bytes only; depth is not a limit.
-/// QSL FR-259 B3 makes this the published default of the `identity.input_bytes`
-/// setting, 16777216 bytes. Until that setting lands it stays `u64::MAX`:
-/// a caller's `preimage_digest` reports every encoder error as a
-/// non-canonical preimage, so a finite bound here would report a byte error
-/// as a malformed value, against QSL FR-259 B4. Every preimage is built from
-/// values an earlier stage already bounded (the intake limit, the
-/// check stage's limits, a package reader's artifact byte limit), and a caller
-/// with a tighter byte budget of its own passes its own [`Limits`] instead
-/// (the v2 reader does).
-pub const IDENTITY_LIMITS: Limits = Limits::new(u64::MAX);
+/// This is the published default of QSL's `identity.input_bytes` setting,
+/// 16777216 bytes (FR-259 B3). Every preimage is built from values an
+/// earlier stage already bounded (the intake limit, the check stage's limits,
+/// a package reader's artifact byte limit), and a caller with a tighter byte
+/// budget of its own passes its own [`Limits`] instead (the v2 reader does).
+pub const IDENTITY_LIMITS: Limits = Limits::new(16_777_216);
+
+/// Why an identity preimage has no digest.
+///
+/// QSL FR-259 Behavior 4: a byte limit reached while encoding is the
+/// calling stage's input-bytes limit (QSL's `identity.input_bytes`), never a
+/// malformed value. Behavior 6: a failed heap reservation is its own
+/// outcome, naming no bound.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, thiserror::Error)]
+pub enum IdentityRefusal {
+    /// The preimage's canonical bytes would exceed the byte limit it was
+    /// encoded under.
+    #[error("identity preimage needs {required} bytes, over the bound of {bound}")]
+    InputBytes {
+        /// The byte limit the preimage was encoded under.
+        bound: u64,
+        /// The bytes it needed when the encoder refused it; always more
+        /// than `bound`.
+        required: u64,
+    },
+    /// A heap reservation for the canonical bytes failed.
+    #[error("allocation of {requested} bytes for an identity preimage failed")]
+    Allocation {
+        /// The size in bytes of the reservation that failed.
+        requested: usize,
+    },
+    /// The preimage has no RFC 8785 encoding.
+    #[error("the identity preimage has no RFC 8785 encoding")]
+    NonCanonical,
+}
+
+impl From<quire_canonical::Error> for IdentityRefusal {
+    fn from(error: quire_canonical::Error) -> Self {
+        match error {
+            quire_canonical::Error::Limit(limit) => Self::InputBytes {
+                bound: limit.bound,
+                required: limit.required,
+            },
+            quire_canonical::Error::Allocation { requested } => Self::Allocation { requested },
+            _ => Self::NonCanonical,
+        }
+    }
+}
 
 /// The `node-identity-preimage.schema.json` node-id member every node-key
 /// and compound-unit preimage embeds: a node key's digest as 64 lowercase
@@ -157,7 +195,17 @@ impl fmt::Display for DigestHex {
 
 #[cfg(test)]
 mod tests {
+    use ix_trace_rs::trace;
+
     use super::*;
+
+    /// QSL FR-259 Behavior 3: the identity encoder's default byte bound is
+    /// 16 MiB.
+    #[trace("TC-728", "FR-259-AC-2")]
+    #[test]
+    fn the_identity_limits_default_is_sixteen_mebibytes() {
+        assert_eq!(IDENTITY_LIMITS.max_bytes(), 16_777_216);
+    }
 
     fn term(key: u8, exponent: i64) -> (u8, Integer) {
         (key, Integer::from(exponent))
