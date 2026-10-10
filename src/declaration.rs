@@ -128,7 +128,7 @@ mod storage_reservation_tests {
             declarations(),
             [],
             TypeEnvironmentLimits::default(),
-            &quire_exact::Cancel::new(),
+            None,
             &deny,
         );
         let request = deny.seen.get().expect("registry made a reservation");
@@ -189,6 +189,96 @@ mod storage_reservation_tests {
                 .identity(),
             FieldRef::new(a, "x")
         );
+    }
+
+    struct DenyPhase {
+        target: StoragePhase,
+        current: Cell<Option<StoragePhase>>,
+        denied: Cell<Option<StorageRequest>>,
+    }
+
+    impl ReservationPolicy for DenyPhase {
+        fn phase(&self, phase: StoragePhase) {
+            self.current.set(Some(phase));
+        }
+
+        fn permit(&self, request: StorageRequest) -> bool {
+            if self.current.get() == Some(self.target) && self.denied.get().is_none() {
+                self.denied.set(Some(request));
+                false
+            } else {
+                true
+            }
+        }
+    }
+
+    /// Trace: FR-108-AC-1, FR-108-AC-3, FR-108-AC-5
+    #[trace("TC-907", "FR-108-AC-1", "FR-108-AC-3", "FR-108-AC-5")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked identities without minting them in production"
+    )]
+    #[test]
+    fn denial_at_each_admission_phase_is_atomic_and_retryable() {
+        let declarations = || {
+            (
+                [
+                    CompositeDeclaration::new(
+                        NodeKey::from_digest([3; 32]),
+                        "R",
+                        CompositeShape::Record(vec![FieldDeclaration::new(
+                            "field",
+                            ValueType::Integer,
+                            Presence::Required,
+                        )]),
+                    ),
+                    CompositeDeclaration::new(
+                        NodeKey::from_digest([4; 32]),
+                        "T",
+                        CompositeShape::Tuple(vec![ValueType::Boolean]),
+                    ),
+                ],
+                [ObjectTypeDeclaration::new(
+                    EffectiveId::from_digest([5; 32]),
+                    "O",
+                    vec![FieldDeclaration::new(
+                        "x",
+                        ValueType::Integer,
+                        Presence::Required,
+                    )],
+                )],
+            )
+        };
+        let (composites, objects) = declarations();
+        let expected = TypeEnvironment::new(composites, objects).expect("fixture admits");
+        for target in [
+            StoragePhase::Registry,
+            StoragePhase::MemberTypes,
+            StoragePhase::Traversal,
+            StoragePhase::Ancestors,
+            StoragePhase::FieldIndex,
+            StoragePhase::Sealing,
+            StoragePhase::KeyJoin,
+        ] {
+            let policy = DenyPhase {
+                target,
+                current: Cell::new(None),
+                denied: Cell::new(None),
+            };
+            let (composites, objects) = declarations();
+            let denied = TypeEnvironment::bounded_with_reservations(
+                composites,
+                objects,
+                TypeEnvironmentLimits::default(),
+                None,
+                &policy,
+            );
+            let request = policy.denied.get().expect("phase reached a reservation");
+            assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+            let (composites, objects) = declarations();
+            let retried = TypeEnvironment::new(composites, objects).expect("retry admits");
+            assert_eq!(retried, expected);
+        }
     }
 }
 
@@ -669,14 +759,14 @@ impl Default for TypeEnvironmentLimits {
 }
 
 /// The admission work meter: charges fail once `limit` units are spent.
-struct WorkBudget {
+struct WorkBudget<'a> {
     spent: u64,
     limit: u64,
-    cancel: quire_exact::Cancel,
+    cancel: Option<&'a quire_exact::Cancel>,
 }
 
-impl WorkBudget {
-    fn new(limit: u64, cancel: quire_exact::Cancel) -> Self {
+impl<'a> WorkBudget<'a> {
+    fn new(limit: u64, cancel: Option<&'a quire_exact::Cancel>) -> Self {
         Self {
             spent: 0,
             limit,
@@ -692,7 +782,7 @@ impl WorkBudget {
         // A cancelled handle (QSL FR-276) denies the charge as an exhausted
         // budget does; the caller that owns the handle reports the
         // cancellation.
-        let cancelled = self.cancel.poll();
+        let cancelled = self.cancel.is_some_and(quire_exact::Cancel::poll);
         match self.spent.checked_add(units) {
             Some(spent) if spent <= self.limit && !cancelled => {
                 self.spent = spent;
@@ -736,14 +826,18 @@ impl From<EnvironmentFailure> for Stopped {
 impl Stopped {
     /// This stop as the admission's stage failure, a refusal naming
     /// `declaration`.
-    fn at(self, declaration: &str) -> EnvironmentFailure {
+    fn at<R: ReservationPolicy>(
+        self,
+        declaration: &str,
+        reserve: &R,
+    ) -> Admission<EnvironmentFailure> {
         match self {
-            Self::Refused(cause) => EnvironmentFailure::Refused(InvalidDeclaration {
-                declaration: declaration.to_owned(),
+            Self::Refused(cause) => Ok(EnvironmentFailure::Refused(InvalidDeclaration {
+                declaration: try_clone_str(declaration, reserve)?,
                 cause,
-            }),
-            Self::Limit(limit) => EnvironmentFailure::Limit(limit),
-            Self::Storage(failure) => failure,
+            })),
+            Self::Limit(limit) => Ok(EnvironmentFailure::Limit(limit)),
+            Self::Storage(failure) => Ok(failure),
         }
     }
 }
@@ -857,6 +951,19 @@ impl EnvironmentFailure {
 /// Injects denial at the same reservation boundary used in production.
 trait ReservationPolicy {
     fn permit(&self, request: StorageRequest) -> bool;
+
+    fn phase(&self, _phase: StoragePhase) {}
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StoragePhase {
+    Registry,
+    MemberTypes,
+    Traversal,
+    Ancestors,
+    FieldIndex,
+    Sealing,
+    KeyJoin,
 }
 
 struct GlobalReservations;
@@ -908,6 +1015,44 @@ fn try_extend_copy<T: Copy, R: ReservationPolicy>(
     Ok(())
 }
 
+fn reserve_bytes<R: ReservationPolicy>(
+    value: &mut String,
+    additional: usize,
+    policy: &R,
+) -> Admission<()> {
+    let request = StorageRequest::new(additional, StorageUnit::Bytes);
+    let required = value
+        .len()
+        .checked_add(additional)
+        .ok_or(EnvironmentFailure::Capacity(request))?;
+    if required > isize::MAX as usize {
+        return Err(EnvironmentFailure::Capacity(request));
+    }
+    if required <= value.capacity() {
+        return Ok(());
+    }
+    if !policy.permit(request) {
+        return Err(EnvironmentFailure::Allocation(request));
+    }
+    value
+        .try_reserve_exact(additional)
+        .map_err(|_| EnvironmentFailure::Allocation(request))
+}
+
+fn try_clone_str<R: ReservationPolicy>(value: &str, policy: &R) -> Admission<String> {
+    let mut owned = String::new();
+    reserve_bytes(&mut owned, value.len(), policy)?;
+    owned.push_str(value);
+    Ok(owned)
+}
+
+fn try_clone_field_ref<R: ReservationPolicy>(value: &FieldRef, policy: &R) -> Admission<FieldRef> {
+    Ok(FieldRef {
+        owner: value.owner,
+        name: try_clone_str(&value.name, policy)?,
+    })
+}
+
 /// Ordered index whose growth is reserved before it changes. It has the
 /// same ascending iteration and binary-search lookup as the old tree index.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -931,12 +1076,30 @@ impl<K: Ord, V> OrderedIndex<K, V> {
             .map(|at| &self.entries[at].1)
     }
 
+    fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.entries
+            .binary_search_by(|(item, _)| item.cmp(key))
+            .ok()
+            .map(|at| &mut self.entries[at].1)
+    }
+
     fn contains_key(&self, key: &K) -> bool {
         self.get(key).is_some()
     }
 
+    fn remove(&mut self, key: &K) -> Option<V> {
+        self.entries
+            .binary_search_by(|(item, _)| item.cmp(key))
+            .ok()
+            .map(|at| self.entries.remove(at).1)
+    }
+
     fn values(&self) -> impl Iterator<Item = &V> {
         self.entries.iter().map(|(_, value)| value)
+    }
+
+    fn value_at(&self, position: usize) -> Option<&V> {
+        self.entries.get(position).map(|(_, value)| value)
     }
 
     fn keys(&self) -> impl Iterator<Item = &K> {
@@ -1120,12 +1283,7 @@ impl TypeEnvironment {
         object_types: impl IntoIterator<Item = ObjectTypeDeclaration>,
         limits: TypeEnvironmentLimits,
     ) -> Admission<Self> {
-        Self::bounded_with_cancel(
-            composites,
-            object_types,
-            limits,
-            &quire_exact::Cancel::new(),
-        )
+        Self::bounded_with_reservations(composites, object_types, limits, None, &GlobalReservations)
     }
 
     /// [`Self::bounded`] with the caller's [`quire_exact::Cancel`] handle
@@ -1142,7 +1300,7 @@ impl TypeEnvironment {
             composites,
             object_types,
             limits,
-            cancel,
+            Some(cancel),
             &GlobalReservations,
         )
     }
@@ -1151,81 +1309,79 @@ impl TypeEnvironment {
         composites: impl IntoIterator<Item = CompositeDeclaration>,
         object_types: impl IntoIterator<Item = ObjectTypeDeclaration>,
         limits: TypeEnvironmentLimits,
-        cancel: &quire_exact::Cancel,
+        cancel: Option<&quire_exact::Cancel>,
         reserve: &R,
     ) -> Admission<Self> {
         let mut environment = Self::default();
+        reserve.phase(StoragePhase::Registry);
         for declaration in composites {
-            let refuse = |cause| {
-                EnvironmentFailure::Refused(InvalidDeclaration {
-                    declaration: declaration.name.clone(),
+            let refuse = |cause| -> Admission<EnvironmentFailure> {
+                Ok(EnvironmentFailure::Refused(InvalidDeclaration {
+                    declaration: try_clone_str(&declaration.name, reserve)?,
                     cause,
-                })
+                }))
             };
             if let CompositeShape::Record(fields) = &declaration.shape {
-                if let Some(name) = duplicate_name(fields) {
-                    return Err(refuse(DeclarationCause::DuplicateMember(name)));
+                if let Some(name) = duplicate_name(fields, reserve)? {
+                    return Err(refuse(DeclarationCause::DuplicateMember(try_clone_str(
+                        name, reserve,
+                    )?))?);
                 }
                 if let Some(target) = fields.iter().find_map(FieldDeclaration::redefines) {
-                    return Err(refuse(DeclarationCause::RedefinitionTarget(target.clone())));
+                    return Err(refuse(DeclarationCause::RedefinitionTarget(
+                        try_clone_field_ref(target, reserve)?,
+                    ))?);
                 }
             }
             if environment.composites.contains_key(&declaration.key) {
-                return Err(refuse(DeclarationCause::DuplicateKey));
+                return Err(refuse(DeclarationCause::DuplicateKey)?);
             }
             environment
                 .composites
                 .try_insert(declaration.key, declaration, reserve)?;
         }
         for declaration in object_types {
-            let refuse = |cause| {
-                EnvironmentFailure::Refused(InvalidDeclaration {
-                    declaration: declaration.name.clone(),
+            let refuse = |cause| -> Admission<EnvironmentFailure> {
+                Ok(EnvironmentFailure::Refused(InvalidDeclaration {
+                    declaration: try_clone_str(&declaration.name, reserve)?,
                     cause,
-                })
+                }))
             };
-            if let Some(name) = duplicate_name(&declaration.attributes) {
-                return Err(refuse(DeclarationCause::DuplicateMember(name)));
+            if let Some(name) = duplicate_name(&declaration.attributes, reserve)? {
+                return Err(refuse(DeclarationCause::DuplicateMember(try_clone_str(
+                    name, reserve,
+                )?))?);
             }
             if environment.object_types.contains_key(&declaration.key) {
-                return Err(refuse(DeclarationCause::DuplicateKey));
+                return Err(refuse(DeclarationCause::DuplicateKey)?);
             }
             environment
                 .object_types
                 .try_insert(declaration.key, declaration, reserve)?;
         }
-        environment
-            .check_member_types()
-            .map_err(EnvironmentFailure::Refused)?;
-        environment
-            .check_recursion(RecursionEdges::Unnamed)
-            .map_err(EnvironmentFailure::Refused)?;
-        environment
-            .check_recursion(RecursionEdges::NonEscaping)
-            .map_err(EnvironmentFailure::Refused)?;
-        let mut budget = WorkBudget::new(limits.work_units, cancel.clone());
-        environment.check_supertypes(&mut budget)?;
-        environment.ancestry = environment.compute_ancestors(&mut budget)?;
+        reserve.phase(StoragePhase::MemberTypes);
+        environment.check_member_types(reserve)?;
+        reserve.phase(StoragePhase::Traversal);
+        environment.check_recursion(RecursionEdges::Unnamed, reserve)?;
+        environment.check_recursion(RecursionEdges::NonEscaping, reserve)?;
+        let mut budget = WorkBudget::new(limits.work_units, cancel);
+        environment.check_supertypes(&mut budget, reserve)?;
+        reserve.phase(StoragePhase::Ancestors);
+        environment.ancestry = environment.compute_ancestors(&mut budget, reserve)?;
         environment
             .check_ancestor_steps(limits.ancestor_steps)
             .map_err(EnvironmentFailure::Limit)?;
-        let table = FieldTable::new(&environment.object_types);
-        environment
-            .check_redefinitions(&table)
-            .map_err(EnvironmentFailure::Refused)?;
+        reserve.phase(StoragePhase::FieldIndex);
+        let table = FieldTable::new(&environment.object_types, reserve)?;
+        environment.check_redefinitions(&table, reserve)?;
+        reserve.phase(StoragePhase::Sealing);
         let storage = environment.compute_effective(&table, &mut budget, reserve)?;
         environment.effective = storage.index;
         environment.attribute_slots = storage.slots;
+        reserve.phase(StoragePhase::KeyJoin);
         reserve_elements(&mut environment.field_keys, table.fields.len(), reserve)?;
-        for (owner, field, _) in &table.fields {
-            if let Some(index) = environment.object_types.get(owner).and_then(|declaration| {
-                declaration
-                    .attributes
-                    .iter()
-                    .position(|entry| core::ptr::eq(entry, *field))
-            }) {
-                environment.field_keys.push((*owner, index));
-            }
+        for (owner, _, _, index) in &table.fields {
+            environment.field_keys.push((*owner, *index));
         }
         Ok(environment)
     }
@@ -1446,67 +1602,194 @@ impl TypeEnvironment {
         None
     }
 
-    fn check_member_types(&self) -> Result<(), InvalidDeclaration> {
-        let composites = self.composites.values().map(|declaration| {
-            let types: Vec<&ValueType> = match &declaration.shape {
-                CompositeShape::Record(fields) => {
-                    fields.iter().map(FieldDeclaration::value_type).collect()
+    fn contains_ieee_admission<R: ReservationPolicy>(
+        &self,
+        value_type: &ValueType,
+        reserve: &R,
+    ) -> Admission<bool> {
+        let mut visited: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
+        let mut pending = Vec::new();
+        try_push(&mut pending, value_type, reserve)?;
+        while let Some(value_type) = pending.pop() {
+            match value_type {
+                ValueType::Float(_) => return Ok(true),
+                ValueType::Option(payload) => try_push(&mut pending, payload, reserve)?,
+                ValueType::Collection(collection) => {
+                    try_push(&mut pending, collection.element(), reserve)?;
                 }
-                CompositeShape::Tuple(positions) => positions.iter().collect(),
+                ValueType::Composite(key) => {
+                    if visited.contains_key(key) {
+                        continue;
+                    }
+                    visited.try_insert(*key, (), reserve)?;
+                    match self
+                        .composites
+                        .get(key)
+                        .map(|declaration| &declaration.shape)
+                    {
+                        Some(CompositeShape::Record(fields)) => {
+                            for field in fields {
+                                try_push(&mut pending, field.value_type(), reserve)?;
+                            }
+                        }
+                        Some(CompositeShape::Tuple(positions)) => {
+                            for position in positions {
+                                try_push(&mut pending, position, reserve)?;
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                ValueType::Boolean
+                | ValueType::Integer
+                | ValueType::Int(_)
+                | ValueType::Rational(_)
+                | ValueType::Decimal(_)
+                | ValueType::Quantity(_)
+                | ValueType::Text(_)
+                | ValueType::Enum(_)
+                | ValueType::Reference(_)
+                | ValueType::Population(_) => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn type_refusal_admission<R: ReservationPolicy>(
+        &self,
+        value_type: &ValueType,
+        reserve: &R,
+    ) -> Admission<Option<DeclarationCause>> {
+        let mut pending = Vec::new();
+        try_push(&mut pending, value_type, reserve)?;
+        while let Some(value_type) = pending.pop() {
+            match value_type {
+                ValueType::Composite(key) if !self.composites.contains_key(key) => {
+                    return Ok(Some(DeclarationCause::UnknownDeclaration(*key)));
+                }
+                ValueType::Reference(key) if !self.object_types.contains_key(key) => {
+                    return Ok(Some(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
+                }
+                ValueType::Population(_) => {
+                    return Ok(Some(DeclarationCause::Type(
+                        IllTypedCause::OperatorIneligible,
+                    )));
+                }
+                ValueType::Option(payload) => try_push(&mut pending, payload, reserve)?,
+                ValueType::Collection(collection) => {
+                    if collection.kind() != CollectionKind::Sequence
+                        && self.contains_ieee_admission(collection.element(), reserve)?
+                    {
+                        return Ok(Some(DeclarationCause::Type(
+                            IllTypedCause::OperatorIneligible,
+                        )));
+                    }
+                    try_push(&mut pending, collection.element(), reserve)?;
+                }
+                ValueType::Boolean
+                | ValueType::Integer
+                | ValueType::Int(_)
+                | ValueType::Rational(_)
+                | ValueType::Decimal(_)
+                | ValueType::Float(_)
+                | ValueType::Quantity(_)
+                | ValueType::Text(_)
+                | ValueType::Enum(_)
+                | ValueType::Composite(_)
+                | ValueType::Reference(_) => {}
+            }
+        }
+        Ok(None)
+    }
+
+    fn check_member_types<R: ReservationPolicy>(&self, reserve: &R) -> Admission<()> {
+        for declaration in self.composites.values() {
+            let types: &[_] = match &declaration.shape {
+                CompositeShape::Record(_) => &[],
+                CompositeShape::Tuple(positions) => positions,
             };
-            (&declaration.name, types)
-        });
-        let object_types = self.object_types.values().map(|declaration| {
-            let types = declaration
-                .attributes
-                .iter()
-                .map(FieldDeclaration::value_type)
-                .collect();
-            (&declaration.name, types)
-        });
-        for (name, types) in composites.chain(object_types) {
-            if let Some(cause) = types.into_iter().find_map(|ty| self.type_refusal(ty)) {
-                return Err(InvalidDeclaration {
-                    declaration: name.clone(),
-                    cause,
-                });
+            for value_type in types {
+                if let Some(cause) = self.type_refusal_admission(value_type, reserve)? {
+                    return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        declaration: try_clone_str(&declaration.name, reserve)?,
+                        cause,
+                    }));
+                }
+            }
+            if let CompositeShape::Record(fields) = &declaration.shape {
+                for field in fields {
+                    if let Some(cause) = self.type_refusal_admission(field.value_type(), reserve)? {
+                        return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                            declaration: try_clone_str(&declaration.name, reserve)?,
+                            cause,
+                        }));
+                    }
+                }
+            }
+        }
+        for declaration in self.object_types.values() {
+            for field in &declaration.attributes {
+                if let Some(cause) = self.type_refusal_admission(field.value_type(), reserve)? {
+                    return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        declaration: try_clone_str(&declaration.name, reserve)?,
+                        cause,
+                    }));
+                }
             }
         }
         Ok(())
     }
 
     /// The recursion-rule edges leaving one declaration.
-    fn edges(declaration: &CompositeDeclaration) -> Vec<Edge> {
-        let members: Vec<(&ValueType, bool, bool)> = match &declaration.shape {
-            CompositeShape::Record(fields) => fields
-                .iter()
-                .map(|field| {
-                    (
-                        field.value_type(),
-                        true,
-                        field.presence() == Presence::Optional,
-                    )
-                })
-                .collect(),
-            CompositeShape::Tuple(positions) => {
-                positions.iter().map(|ty| (ty, false, false)).collect()
+    fn edges<R: ReservationPolicy>(
+        declaration: &CompositeDeclaration,
+        reserve: &R,
+    ) -> Admission<Vec<Edge>> {
+        let mut members: Vec<(&ValueType, bool, bool)> = Vec::new();
+        match &declaration.shape {
+            CompositeShape::Record(fields) => {
+                for field in fields {
+                    try_push(
+                        &mut members,
+                        (
+                            field.value_type(),
+                            true,
+                            field.presence() == Presence::Optional,
+                        ),
+                        reserve,
+                    )?;
+                }
             }
-        };
+            CompositeShape::Tuple(positions) => {
+                for ty in positions {
+                    try_push(&mut members, (ty, false, false), reserve)?;
+                }
+            }
+        }
         let mut edges = Vec::new();
         for (value_type, named, escapes) in members {
-            let mut pending = vec![(value_type, escapes)];
+            let mut pending = Vec::new();
+            try_push(&mut pending, (value_type, escapes), reserve)?;
             while let Some((value_type, escapes)) = pending.pop() {
                 match value_type {
-                    ValueType::Composite(target) => edges.push(Edge {
-                        target: *target,
-                        named,
-                        escapes,
-                    }),
-                    ValueType::Option(payload) => pending.push((payload, true)),
-                    ValueType::Collection(collection) => pending.push((
-                        collection.element(),
-                        escapes || collection.bound().is_none_or(|bound| bound.minimum() == 0),
-                    )),
+                    ValueType::Composite(target) => try_push(
+                        &mut edges,
+                        Edge {
+                            target: *target,
+                            named,
+                            escapes,
+                        },
+                        reserve,
+                    )?,
+                    ValueType::Option(payload) => try_push(&mut pending, (payload, true), reserve)?,
+                    ValueType::Collection(collection) => try_push(
+                        &mut pending,
+                        (
+                            collection.element(),
+                            escapes || collection.bound().is_none_or(|bound| bound.minimum() == 0),
+                        ),
+                        reserve,
+                    )?,
                     ValueType::Boolean
                     | ValueType::Integer
                     | ValueType::Int(_)
@@ -1523,60 +1806,66 @@ impl TypeEnvironment {
                 }
             }
         }
-        edges
+        Ok(edges)
     }
 
     /// Refuse the first cycle, in declaration-key order, of one recursion-rule
     /// subgraph.
-    fn check_recursion(&self, subgraph: RecursionEdges) -> Result<(), InvalidDeclaration> {
-        let graph: BTreeMap<NodeKey, Vec<NodeKey>> = self
-            .composites
-            .values()
-            .map(|declaration| {
-                let targets = Self::edges(declaration)
-                    .into_iter()
-                    .filter(|edge| match subgraph {
-                        RecursionEdges::Unnamed => !edge.named,
-                        RecursionEdges::NonEscaping => !edge.escapes,
-                    })
-                    .map(|edge| edge.target)
-                    .collect();
-                (declaration.key, targets)
-            })
-            .collect();
+    fn check_recursion<R: ReservationPolicy>(
+        &self,
+        subgraph: RecursionEdges,
+        reserve: &R,
+    ) -> Admission<()> {
+        let mut graph: OrderedIndex<NodeKey, Vec<NodeKey>> = OrderedIndex::default();
+        for declaration in self.composites.values() {
+            let mut targets = Vec::new();
+            for edge in Self::edges(declaration, reserve)? {
+                let included = match subgraph {
+                    RecursionEdges::Unnamed => !edge.named,
+                    RecursionEdges::NonEscaping => !edge.escapes,
+                };
+                if included {
+                    try_push(&mut targets, edge.target, reserve)?;
+                }
+            }
+            graph.try_insert(declaration.key, targets, reserve)?;
+        }
         let name = |key: &NodeKey| {
             self.composites
                 .get(key)
-                .map_or_else(String::new, |declaration| declaration.name.clone())
+                .map_or("", |declaration| declaration.name.as_str())
         };
-        let mut finished = BTreeSet::new();
+        let mut finished: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
         for root in graph.keys() {
-            if finished.contains(root) {
+            if finished.contains_key(root) {
                 continue;
             }
-            let mut path: Vec<(NodeKey, usize)> = vec![(*root, 0)];
+            let mut path: Vec<(NodeKey, usize)> = Vec::new();
+            try_push(&mut path, (*root, 0), reserve)?;
             while let Some((node, next)) = path.last_mut() {
                 let node = *node;
                 let Some(target) = graph.get(&node).and_then(|targets| targets.get(*next)) else {
-                    finished.insert(node);
+                    finished.try_insert(node, (), reserve)?;
                     path.pop();
                     continue;
                 };
                 *next += 1;
                 if let Some(start) = path.iter().position(|(on_path, _)| on_path == target) {
-                    let mut cycle: Vec<String> =
-                        path.iter().skip(start).map(|(key, _)| name(key)).collect();
-                    cycle.push(name(target));
-                    return Err(InvalidDeclaration {
-                        declaration: name(target),
+                    let mut cycle = Vec::new();
+                    for (key, _) in path.iter().skip(start) {
+                        try_push(&mut cycle, try_clone_str(name(key), reserve)?, reserve)?;
+                    }
+                    try_push(&mut cycle, try_clone_str(name(target), reserve)?, reserve)?;
+                    return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        declaration: try_clone_str(name(target), reserve)?,
                         cause: DeclarationCause::Recursion {
                             edges: subgraph,
                             cycle,
                         },
-                    });
+                    }));
                 }
-                if !finished.contains(target) {
-                    path.push((*target, 0));
+                if !finished.contains_key(target) {
+                    try_push(&mut path, (*target, 0), reserve)?;
                 }
             }
         }
@@ -1592,30 +1881,35 @@ impl TypeEnvironment {
     /// Each type is marked while it is on the walk's path, so a back edge is
     /// found without scanning the path, and `budget` is charged each edge
     /// the walk follows.
-    fn check_supertypes(&self, budget: &mut WorkBudget) -> Admission<()> {
+    fn check_supertypes<R: ReservationPolicy>(
+        &self,
+        budget: &mut WorkBudget,
+        reserve: &R,
+    ) -> Admission<()> {
         let name = |key: &EffectiveId| {
             self.object_types
                 .get(key)
-                .map_or_else(String::new, |declaration| declaration.name.clone())
+                .map_or("", |declaration| declaration.name.as_str())
         };
         for declaration in self.object_types.values() {
             for supertype in &declaration.supertypes {
                 if !self.object_types.contains_key(supertype) {
                     return Err(EnvironmentFailure::Refused(InvalidDeclaration {
-                        declaration: declaration.name.clone(),
+                        declaration: try_clone_str(&declaration.name, reserve)?,
                         cause: DeclarationCause::UnknownObjectType(*supertype),
                     }));
                 }
             }
         }
-        let mut finished: BTreeSet<EffectiveId> = BTreeSet::new();
-        let mut on_path: BTreeSet<EffectiveId> = BTreeSet::new();
+        let mut finished: OrderedIndex<EffectiveId, ()> = OrderedIndex::default();
+        let mut on_path: OrderedIndex<EffectiveId, ()> = OrderedIndex::default();
         for root in self.object_types.keys() {
-            if finished.contains(root) {
+            if finished.contains_key(root) {
                 continue;
             }
-            let mut path: Vec<(EffectiveId, usize)> = vec![(*root, 0)];
-            on_path.insert(*root);
+            let mut path: Vec<(EffectiveId, usize)> = Vec::new();
+            try_push(&mut path, (*root, 0), reserve)?;
+            on_path.try_insert(*root, (), reserve)?;
             while let Some((node, next)) = path.last_mut() {
                 let node = *node;
                 let Some(target) = self
@@ -1623,30 +1917,32 @@ impl TypeEnvironment {
                     .get(&node)
                     .and_then(|declaration| declaration.supertypes.get(*next))
                 else {
-                    finished.insert(node);
+                    finished.try_insert(node, (), reserve)?;
                     on_path.remove(&node);
                     path.pop();
                     continue;
                 };
                 *next += 1;
                 budget.charge(1).map_err(EnvironmentFailure::Limit)?;
-                if on_path.contains(target) {
+                if on_path.contains_key(target) {
                     // Found once, on the refusal path only.
                     let start = path
                         .iter()
                         .position(|(on_path, _)| on_path == target)
                         .unwrap_or_default();
-                    let mut cycle: Vec<String> =
-                        path.iter().skip(start).map(|(key, _)| name(key)).collect();
-                    cycle.push(name(target));
+                    let mut cycle = Vec::new();
+                    for (key, _) in path.iter().skip(start) {
+                        try_push(&mut cycle, try_clone_str(name(key), reserve)?, reserve)?;
+                    }
+                    try_push(&mut cycle, try_clone_str(name(target), reserve)?, reserve)?;
                     return Err(EnvironmentFailure::Refused(InvalidDeclaration {
-                        declaration: name(target),
+                        declaration: try_clone_str(name(target), reserve)?,
                         cause: DeclarationCause::GeneralizationCycle { cycle },
                     }));
                 }
-                if !finished.contains(target) {
-                    on_path.insert(*target);
-                    path.push((*target, 0));
+                if !finished.contains_key(target) {
+                    on_path.try_insert(*target, (), reserve)?;
+                    try_push(&mut path, (*target, 0), reserve)?;
                 }
             }
         }
@@ -1665,7 +1961,11 @@ impl TypeEnvironment {
     /// closure costs the sum of every type's ancestor count; `budget` is
     /// charged that, a supertype and its ancestors at a time, before the
     /// copy is made.
-    fn compute_ancestors(&self, budget: &mut WorkBudget) -> Admission<Ancestry> {
+    fn compute_ancestors<R: ReservationPolicy>(
+        &self,
+        budget: &mut WorkBudget,
+        reserve: &R,
+    ) -> Admission<Ancestry> {
         // Positions are `u32`: a package with more object types than that
         // could never be flattened within any budget either. Flattening
         // charges at least one unit a type, so the count is the least the
@@ -1678,13 +1978,13 @@ impl TypeEnvironment {
                 types.max(u128::from(budget.limit) + 1),
             )));
         }
-        let positions: BTreeMap<EffectiveId, u32> = self
-            .object_types
-            .keys()
-            .zip(0_u32..)
-            .map(|(key, position)| (*key, position))
-            .collect();
-        let mut ancestors: Vec<Option<Vec<u32>>> = vec![None; self.object_types.len()];
+        let mut positions = OrderedIndex::default();
+        for (key, position) in self.object_types.keys().zip(0_u32..) {
+            positions.try_insert(*key, position, reserve)?;
+        }
+        let mut ancestors: Vec<Option<Vec<u32>>> = Vec::new();
+        reserve_elements(&mut ancestors, self.object_types.len(), reserve)?;
+        ancestors.resize_with(self.object_types.len(), || None);
         let finished = |ancestors: &[Option<Vec<u32>>], key: &EffectiveId| {
             positions
                 .get(key)
@@ -1695,21 +1995,21 @@ impl TypeEnvironment {
             if finished(&ancestors, &root.key) {
                 continue;
             }
-            let mut path: Vec<(&ObjectTypeDeclaration, usize)> = vec![(root, 0)];
+            let mut path: Vec<(&ObjectTypeDeclaration, usize)> = Vec::new();
+            try_push(&mut path, (root, 0), reserve)?;
             while let Some((node, next)) = path.last_mut() {
                 let node = *node;
                 if let Some(target) = node.supertypes.get(*next) {
                     *next += 1;
                     if !finished(&ancestors, target) {
                         if let Some(general) = self.object_types.get(target) {
-                            path.push((general, 0));
+                            try_push(&mut path, (general, 0), reserve)?;
                         }
                     }
                     continue;
                 }
                 path.pop();
-                let own = Self::own_ancestors(node, &positions, &ancestors, budget)
-                    .map_err(EnvironmentFailure::Limit)?;
+                let own = Self::own_ancestors(node, &positions, &ancestors, budget, reserve)?;
                 if let Some(slot) = positions
                     .get(&node.key)
                     .and_then(|position| ancestors.get_mut(*position as usize))
@@ -1718,12 +2018,12 @@ impl TypeEnvironment {
                 }
             }
         }
+        let mut complete = Vec::new();
+        reserve_elements(&mut complete, ancestors.len(), reserve)?;
+        complete.extend(ancestors.into_iter().map(Option::unwrap_or_default));
         Ok(Ancestry {
             positions,
-            ancestors: ancestors
-                .into_iter()
-                .map(Option::unwrap_or_default)
-                .collect(),
+            ancestors: complete,
         })
     }
 
@@ -1732,12 +2032,13 @@ impl TypeEnvironment {
     /// count before that set is copied; with several supertypes, the
     /// gathered positions are sorted and deduplicated once, and that sort
     /// is charged too (`k` units a doubling of the `k` gathered).
-    fn own_ancestors(
+    fn own_ancestors<R: ReservationPolicy>(
         node: &ObjectTypeDeclaration,
-        positions: &BTreeMap<EffectiveId, u32>,
+        positions: &OrderedIndex<EffectiveId, u32>,
         ancestors: &[Option<Vec<u32>>],
         budget: &mut WorkBudget,
-    ) -> Result<Vec<u32>, EnvironmentLimit> {
+        reserve: &R,
+    ) -> Admission<Vec<u32>> {
         let mut own: Vec<u32> = Vec::new();
         for supertype in &node.supertypes {
             let Some(position) = positions.get(supertype).copied() else {
@@ -1747,9 +2048,11 @@ impl TypeEnvironment {
                 .get(position as usize)
                 .and_then(Option::as_deref)
                 .unwrap_or_default();
-            budget.charge(further.len().saturating_add(1))?;
-            own.push(position);
-            own.extend_from_slice(further);
+            budget
+                .charge(further.len().saturating_add(1))
+                .map_err(EnvironmentFailure::Limit)?;
+            try_push(&mut own, position, reserve)?;
+            try_extend_copy(&mut own, further, reserve)?;
         }
         match node.supertypes.len() {
             // No supertype, or one: its set is already ascending, and only
@@ -1768,7 +2071,9 @@ impl TypeEnvironment {
                 let doublings = usize::try_from(gathered.max(1).ilog2())
                     .unwrap_or(usize::MAX)
                     .saturating_add(1);
-                budget.charge(gathered.saturating_mul(doublings))?;
+                budget
+                    .charge(gathered.saturating_mul(doublings))
+                    .map_err(EnvironmentFailure::Limit)?;
                 own.sort_unstable();
                 own.dedup();
             }
@@ -1786,26 +2091,25 @@ impl TypeEnvironment {
     /// Admitting only types within `limit` makes every walk from an admitted
     /// type complete under the same ceiling at evaluation.
     fn check_ancestor_steps(&self, limit: u64) -> Result<(), EnvironmentLimit> {
-        let edges: Vec<u64> = self
-            .object_types
-            .values()
-            .map(|declaration| u64::try_from(declaration.supertypes.len()).unwrap_or(u64::MAX))
-            .collect();
+        let edges = |position: u32| {
+            self.object_types
+                .value_at(position as usize)
+                .map(|declaration| u64::try_from(declaration.supertypes.len()).unwrap_or(u64::MAX))
+        };
         for declaration in self.object_types.values() {
             let own = self
                 .ancestry
                 .positions
                 .get(&declaration.key)
-                .and_then(|position| edges.get(*position as usize))
-                .copied()
+                .and_then(|position| edges(*position))
                 .unwrap_or(0);
             let followed = self
                 .ancestry
                 .of(declaration.key)
                 .unwrap_or_default()
                 .iter()
-                .filter_map(|position| edges.get(*position as usize))
-                .fold(own, |total, edges| total.saturating_add(*edges));
+                .filter_map(|position| edges(*position))
+                .fold(own, |total, edges| total.saturating_add(edges));
             if followed > limit {
                 return Err(EnvironmentLimit::new(
                     EnvironmentLimitKind::AncestorSteps,
@@ -1820,7 +2124,11 @@ impl TypeEnvironment {
     /// Refuse the first object-type field, in key then declaration order,
     /// whose `redefines` names no field of a proper ancestor of its owner
     /// (QSpec FR-151: the target must be inherited by the owning type).
-    fn check_redefinitions(&self, table: &FieldTable<'_>) -> Result<(), InvalidDeclaration> {
+    fn check_redefinitions<R: ReservationPolicy>(
+        &self,
+        table: &FieldTable<'_>,
+        reserve: &R,
+    ) -> Admission<()> {
         for declaration in self.object_types.values() {
             for target in declaration
                 .attributes
@@ -1830,10 +2138,12 @@ impl TypeEnvironment {
                 let inherited = self.ancestry.is_ancestor(declaration.key, target.owner)
                     && table.position(target).is_some();
                 if !inherited {
-                    return Err(InvalidDeclaration {
-                        declaration: declaration.name.clone(),
-                        cause: DeclarationCause::RedefinitionTarget(target.clone()),
-                    });
+                    return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        declaration: try_clone_str(&declaration.name, reserve)?,
+                        cause: DeclarationCause::RedefinitionTarget(try_clone_field_ref(
+                            target, reserve,
+                        )?),
+                    }));
                 }
             }
         }
@@ -1845,25 +2155,29 @@ impl TypeEnvironment {
     /// must be required where that field's is, and every value its type
     /// admits that field's type must admit ([`Self::narrows`]). Otherwise
     /// the read would yield a value its checked type does not describe.
-    fn widened(
+    fn widened<R: ReservationPolicy>(
         &self,
         index: usize,
         slots: &[AttributeSlot],
         table: &FieldTable<'_>,
-    ) -> Option<FieldRef> {
-        let attribute = slots.get(index)?;
-        let field = table.field(attribute.identity)?;
-        attribute
-            .members
-            .iter()
-            .find(|member| {
-                table.field(**member).is_some_and(|redefined| {
-                    (field.presence == Presence::Optional
-                        && redefined.presence == Presence::Required)
-                        || !Self::narrows(&field.value_type, &redefined.value_type)
-                })
+        reserve: &R,
+    ) -> Admission<Option<FieldRef>> {
+        let Some(attribute) = slots.get(index) else {
+            return Ok(None);
+        };
+        let Some(field) = table.field(attribute.identity) else {
+            return Ok(None);
+        };
+        let found = attribute.members.iter().find(|member| {
+            table.field(**member).is_some_and(|redefined| {
+                (field.presence == Presence::Optional && redefined.presence == Presence::Required)
+                    || !Self::narrows(&field.value_type, &redefined.value_type)
             })
-            .and_then(|member| table.reference(*member))
+        });
+        match found {
+            Some(member) => table.reference(*member, reserve),
+            None => Ok(None),
+        }
     }
 
     /// Whether every value `narrower` admits, `wider` admits *and*
@@ -1911,35 +2225,37 @@ impl TypeEnvironment {
     ) -> Admission<EffectiveStorage> {
         let mut effective: OrderedIndex<EffectiveId, Vec<usize>> = OrderedIndex::default();
         let mut slots = Vec::new();
-        let mut scratch = Scratch::new(table.len(), table.name_count());
+        let mut scratch = Scratch::new(table.len(), table.name_count(), reserve)?;
         for (root, declaration) in &self.object_types {
             if effective.contains_key(root) {
                 continue;
             }
-            let mut path: Vec<(&ObjectTypeDeclaration, usize)> = vec![(declaration, 0)];
+            let mut path: Vec<(&ObjectTypeDeclaration, usize)> = Vec::new();
+            try_push(&mut path, (declaration, 0), reserve)?;
             while let Some((node, next)) = path.last_mut() {
                 let node = *node;
                 if let Some(supertype) = node.supertypes.get(*next) {
                     *next += 1;
                     if !effective.contains_key(supertype) {
                         if let Some(general) = self.object_types.get(supertype) {
-                            path.push((general, 0));
+                            try_push(&mut path, (general, 0), reserve)?;
                         }
                     }
                     continue;
                 }
                 path.pop();
-                let attributes = self
-                    .flatten(
-                        node,
-                        &effective,
-                        table,
-                        &mut scratch,
-                        budget,
-                        &mut slots,
-                        reserve,
-                    )
-                    .map_err(|stopped| stopped.at(&node.name))?;
+                let attributes = match self.flatten(
+                    node,
+                    &effective,
+                    table,
+                    &mut scratch,
+                    budget,
+                    &mut slots,
+                    reserve,
+                ) {
+                    Ok(attributes) => attributes,
+                    Err(stopped) => return Err(stopped.at(&node.name, reserve)?),
+                };
                 effective.try_insert(node.key, attributes, reserve)?;
             }
         }
@@ -2027,7 +2343,7 @@ impl TypeEnvironment {
             }
         }
 
-        let mut groups = UnionFind::new(candidates.len());
+        let mut groups = UnionFind::new(candidates.len(), reserve)?;
         for (index, &attribute) in candidates.iter().enumerate() {
             let Some(slot) = slots.get(attribute) else {
                 continue;
@@ -2041,17 +2357,23 @@ impl TypeEnvironment {
             }
         }
 
-        let mut members_of: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-        let mut roots = Vec::with_capacity(candidates.len());
+        let mut members_of: OrderedIndex<usize, Vec<usize>> = OrderedIndex::default();
+        let mut roots = Vec::new();
         for index in 0..candidates.len() {
             let root = groups.find(index);
-            roots.push(root);
+            try_push(&mut roots, root, reserve)?;
             if groups.size(root) > 1 {
-                members_of.entry(root).or_default().push(index);
+                if let Some(members) = members_of.get_mut(&root) {
+                    try_push(members, index, reserve)?;
+                } else {
+                    let mut members = Vec::new();
+                    try_push(&mut members, index, reserve)?;
+                    members_of.try_insert(root, members, reserve)?;
+                }
             }
         }
         // Each group's surviving position, and its (possibly merged) attribute.
-        let mut survivors: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
+        let mut survivors: OrderedIndex<usize, (usize, usize)> = OrderedIndex::default();
         for (root, members) in &members_of {
             budget.charge(members.len())?;
             let owner = |index: usize| {
@@ -2080,15 +2402,16 @@ impl TypeEnvironment {
                 // A group of two or more was joined over a common field, so
                 // `shared` is always set; the winner's own field is named
                 // otherwise, never an invented one.
-                let Some(shared) = groups
-                    .shared(*root)
-                    .and_then(|position| table.reference(position))
-                    .or_else(|| {
-                        slots
-                            .get(winner)
-                            .and_then(|slot| table.reference(slot.identity))
-                    })
-                else {
+                let mut shared = match groups.shared(*root) {
+                    Some(position) => table.reference(position, reserve)?,
+                    None => None,
+                };
+                if shared.is_none() {
+                    if let Some(slot) = slots.get(winner) {
+                        shared = table.reference(slot.identity, reserve)?;
+                    }
+                }
+                let Some(shared) = shared else {
                     continue;
                 };
                 return Err(DeclarationCause::RedefinitionConflict(shared).into());
@@ -2105,7 +2428,7 @@ impl TypeEnvironment {
             if let Some(flag) = fresh.get_mut(best) {
                 *flag |= merged != winner;
             }
-            survivors.insert(*root, (best, merged));
+            survivors.try_insert(*root, (best, merged), reserve)?;
         }
 
         let mut attributes = Vec::new();
@@ -2127,13 +2450,12 @@ impl TypeEnvironment {
         }
         // An attribute a supertype already admitted unchanged was checked
         // there; only this type's own and merged attributes can widen.
-        if let Some(widened) = attributes
-            .iter()
-            .zip(&checked)
-            .filter(|(_, fresh)| **fresh)
-            .find_map(|(attribute, _)| self.widened(*attribute, slots, table))
-        {
-            return Err(DeclarationCause::RedefinitionWidens(widened).into());
+        for (&attribute, &fresh) in attributes.iter().zip(&checked) {
+            if fresh {
+                if let Some(widened) = self.widened(attribute, slots, table, reserve)? {
+                    return Err(DeclarationCause::RedefinitionWidens(widened).into());
+                }
+            }
         }
         budget.charge(attributes.len())?;
         for &attribute in &attributes {
@@ -2149,7 +2471,9 @@ impl TypeEnvironment {
                     .get(attribute)
                     .and_then(|slot| table.field(slot.identity))
                     .map_or("", FieldDeclaration::name);
-                return Err(DeclarationCause::DuplicateMember(name.to_owned()).into());
+                return Err(
+                    DeclarationCause::DuplicateMember(try_clone_str(name, reserve)?).into(),
+                );
             }
         }
         Ok(attributes)
@@ -2293,7 +2617,7 @@ impl TypeEnvironment {
 /// small.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct Ancestry {
-    positions: BTreeMap<EffectiveId, u32>,
+    positions: OrderedIndex<EffectiveId, u32>,
     /// By position: that type's proper ancestors, ascending.
     ancestors: Vec<Vec<u32>>,
 }
@@ -2326,18 +2650,30 @@ fn own_attribute<R: ReservationPolicy>(
     slots: &mut Vec<AttributeSlot>,
     reserve: &R,
 ) -> Result<usize, Stopped> {
-    let own = FieldRef::new(owner, field.name());
-    let identity = table
-        .position(&own)
-        .ok_or_else(|| DeclarationCause::RedefinitionTarget(own.clone()))?;
+    let identity = match table.position_parts(owner, field.name()) {
+        Some(identity) => identity,
+        None => {
+            return Err(DeclarationCause::RedefinitionTarget(FieldRef {
+                owner,
+                name: try_clone_str(field.name(), reserve)?,
+            })
+            .into())
+        }
+    };
     let mut members = Vec::new();
     try_push(&mut members, identity, reserve)?;
     let mut next = field.redefines();
     while let Some(target) = next {
         budget.charge(1)?;
-        let position = table
-            .position(target)
-            .ok_or_else(|| DeclarationCause::RedefinitionTarget(target.clone()))?;
+        let position = match table.position(target) {
+            Some(position) => position,
+            None => {
+                return Err(DeclarationCause::RedefinitionTarget(try_clone_field_ref(
+                    target, reserve,
+                )?)
+                .into())
+            }
+        };
         try_push(&mut members, position, reserve)?;
         next = table.field(position).and_then(FieldDeclaration::redefines);
     }
@@ -2402,34 +2738,45 @@ fn merge<R: ReservationPolicy>(
 /// list of the fields they name line up. Names are numbered too, for the
 /// duplicate-member check.
 struct FieldTable<'e> {
-    positions: BTreeMap<(EffectiveId, &'e str), usize>,
     /// By position: the owner, the declaration and the name's number.
-    fields: Vec<(EffectiveId, &'e FieldDeclaration, usize)>,
+    fields: Vec<(EffectiveId, &'e FieldDeclaration, usize, usize)>,
     names: usize,
 }
 
 impl<'e> FieldTable<'e> {
-    fn new(object_types: &'e OrderedIndex<EffectiveId, ObjectTypeDeclaration>) -> Self {
-        let mut sorted: BTreeMap<(EffectiveId, &'e str), &'e FieldDeclaration> = BTreeMap::new();
+    fn new<R: ReservationPolicy>(
+        object_types: &'e OrderedIndex<EffectiveId, ObjectTypeDeclaration>,
+        reserve: &R,
+    ) -> Admission<Self> {
+        let mut fields = Vec::new();
         for declaration in object_types.values() {
-            for field in &declaration.attributes {
-                sorted.insert((declaration.key, field.name()), field);
+            for (field_index, field) in declaration.attributes.iter().enumerate() {
+                try_push(
+                    &mut fields,
+                    (declaration.key, field, 0, field_index),
+                    reserve,
+                )?;
             }
         }
-        let mut names: BTreeMap<&'e str, usize> = BTreeMap::new();
-        let mut positions = BTreeMap::new();
-        let mut fields = Vec::with_capacity(sorted.len());
-        for (position, ((owner, name), field)) in sorted.into_iter().enumerate() {
-            let next = names.len();
-            let number = *names.entry(name).or_insert(next);
-            positions.insert((owner, name), position);
-            fields.push((owner, field, number));
+        fields.sort_unstable_by(
+            |(left_owner, left_field, _, _), (right_owner, right_field, _, _)| {
+                (left_owner, left_field.name()).cmp(&(right_owner, right_field.name()))
+            },
+        );
+        let mut names: Vec<&str> = Vec::new();
+        reserve_elements(&mut names, fields.len(), reserve)?;
+        names.extend(fields.iter().map(|(_, field, _, _)| field.name()));
+        names.sort_unstable();
+        names.dedup();
+        for (_, field, number, _) in &mut fields {
+            if let Ok(position) = names.binary_search(&field.name()) {
+                *number = position;
+            }
         }
-        Self {
-            positions,
+        Ok(Self {
             fields,
             names: names.len(),
-        }
+        })
     }
 
     fn len(&self) -> usize {
@@ -2441,23 +2788,39 @@ impl<'e> FieldTable<'e> {
     }
 
     fn position(&self, field: &FieldRef) -> Option<usize> {
-        self.positions
-            .get(&(field.owner, field.name.as_str()))
-            .copied()
+        self.position_parts(field.owner, field.name.as_str())
+    }
+
+    fn position_parts(&self, owner: EffectiveId, name: &str) -> Option<usize> {
+        self.fields
+            .binary_search_by(|(stored_owner, declared, _, _)| {
+                (stored_owner, declared.name()).cmp(&(&owner, name))
+            })
+            .ok()
     }
 
     fn field(&self, position: usize) -> Option<&'e FieldDeclaration> {
-        self.fields.get(position).map(|(_, field, _)| *field)
+        self.fields.get(position).map(|(_, field, _, _)| *field)
     }
 
     fn name_of(&self, position: usize) -> Option<usize> {
-        self.fields.get(position).map(|(_, _, name)| *name)
+        self.fields.get(position).map(|(_, _, name, _)| *name)
     }
 
-    fn reference(&self, position: usize) -> Option<FieldRef> {
+    fn reference<R: ReservationPolicy>(
+        &self,
+        position: usize,
+        reserve: &R,
+    ) -> Admission<Option<FieldRef>> {
         self.fields
             .get(position)
-            .map(|(owner, field, _)| FieldRef::new(*owner, field.name()))
+            .map(|(owner, field, _, _)| {
+                Ok(FieldRef {
+                    owner: *owner,
+                    name: try_clone_str(field.name(), reserve)?,
+                })
+            })
+            .transpose()
     }
 }
 
@@ -2475,13 +2838,22 @@ struct Scratch {
 }
 
 impl Scratch {
-    fn new(fields: usize, names: usize) -> Self {
-        Self {
+    fn new<R: ReservationPolicy>(fields: usize, names: usize, reserve: &R) -> Admission<Self> {
+        let mut identities = Vec::new();
+        reserve_elements(&mut identities, fields, reserve)?;
+        identities.resize(fields, (0, 0));
+        let mut holders = Vec::new();
+        reserve_elements(&mut holders, fields, reserve)?;
+        holders.resize(fields, (0, 0));
+        let mut marks = Vec::new();
+        reserve_elements(&mut marks, names, reserve)?;
+        marks.resize(names, 0);
+        Ok(Self {
             epoch: 0,
-            identities: vec![(0, 0); fields],
-            holders: vec![(0, 0); fields],
-            names: vec![0; names],
-        }
+            identities,
+            holders,
+            names: marks,
+        })
     }
 
     fn next_type(&mut self) {
@@ -2538,12 +2910,21 @@ struct UnionFind {
 }
 
 impl UnionFind {
-    fn new(len: usize) -> Self {
-        Self {
-            parent: (0..len).collect(),
-            size: vec![1; len],
-            shared: vec![None; len],
-        }
+    fn new<R: ReservationPolicy>(len: usize, reserve: &R) -> Admission<Self> {
+        let mut parent = Vec::new();
+        reserve_elements(&mut parent, len, reserve)?;
+        parent.extend(0..len);
+        let mut size = Vec::new();
+        reserve_elements(&mut size, len, reserve)?;
+        size.resize(len, 1);
+        let mut shared = Vec::new();
+        reserve_elements(&mut shared, len, reserve)?;
+        shared.resize(len, None);
+        Ok(Self {
+            parent,
+            size,
+            shared,
+        })
     }
 
     fn find(&mut self, mut node: usize) -> usize {
@@ -2593,12 +2974,17 @@ impl UnionFind {
     }
 }
 
-fn duplicate_name(fields: &[FieldDeclaration]) -> Option<String> {
-    let mut seen = BTreeSet::new();
-    fields
-        .iter()
-        .find(|field| !seen.insert(field.name()))
-        .map(|field| field.name().to_owned())
+fn duplicate_name<'a, R: ReservationPolicy>(
+    fields: &'a [FieldDeclaration],
+    reserve: &R,
+) -> Admission<Option<&'a str>> {
+    let mut seen: OrderedIndex<&str, ()> = OrderedIndex::default();
+    for field in fields {
+        if seen.try_insert(field.name(), (), reserve)?.is_some() {
+            return Ok(Some(field.name()));
+        }
+    }
+    Ok(None)
 }
 
 /// The completed value of a deferred expression, which a checked program
@@ -3754,7 +4140,8 @@ mod work_budget_tests {
     /// admitted spend is unchanged.
     #[test]
     fn a_denied_charge_reports_the_total_it_would_have_reached() {
-        let mut budget = WorkBudget::new(4, quire_exact::Cancel::new());
+        let cancel = quire_exact::Cancel::new();
+        let mut budget = WorkBudget::new(4, Some(&cancel));
         assert_eq!(budget.charge(3), Ok(()));
         assert_eq!(
             budget.charge(2),
