@@ -158,7 +158,7 @@ fn final_key_collisions_cannot_alias_records_or_another_union() {
 #[test]
 fn ieee_and_named_escape_checks_run_before_any_binding_exists() {
     let env = TypeEnvironment::new([CompositeDeclaration::new(key(1), "Tree", CompositeShape::Union(vec![
-        resolved("Leaf", vec![ValueType::Float(FloatType::exact(IeeeWidth::Binary64)))]),
+        resolved("Leaf", vec![ValueType::Float(FloatType::exact(IeeeWidth::Binary64))]),
         resolved("Node", vec![ValueType::option(ValueType::Composite(key(1)))]),
     ]))], []).unwrap();
     assert_eq!(env.union_key(key(1)), None);

@@ -110,7 +110,10 @@ fn supplied_trusted_carriers_still_require_registry_admission() {
     let env = TypeEnvironment::new([shape()], []).unwrap();
     let ty = ValueType::Composite(key(1));
     let supplied = |decl, id, name, payload| {
-        UnionValue::from_admitted(member(decl, id, name, vec![]).member().unwrap().clone(), payload)
+        UnionValue::from_admitted(
+            member(decl, id, name, vec![]).member().unwrap().clone(),
+            payload,
+        )
     };
     for bad in [
         supplied(key(2), 12, "Rect", vec![integer(2), integer(3)]),

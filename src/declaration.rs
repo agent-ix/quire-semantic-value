@@ -317,14 +317,22 @@ pub struct UnionMemberDeclaration {
 impl UnionMemberDeclaration {
     /// Resolve an authored member without granting runtime value admission.
     pub fn resolved(identifier: Identifier, positions: Vec<ValueType>) -> Self {
-        Self { identifier, member: None, positions }
+        Self {
+            identifier,
+            member: None,
+            positions,
+        }
     }
 
     /// Retain an already verified declaration/key/identifier triple and its
     /// declared payload types for a final-keyed checked-package declaration.
     /// Environment admission checks ownership, completeness and duplicates.
     pub fn from_verified(member: UnionMember, positions: Vec<ValueType>) -> Self {
-        Self { identifier: member.identifier().clone(), member: Some(member), positions }
+        Self {
+            identifier: member.identifier().clone(),
+            member: Some(member),
+            positions,
+        }
     }
 
     /// The exact authored identifier, available before member-key verification.
@@ -959,12 +967,22 @@ impl TypeEnvironment {
                     }
                     if sealed {
                         let Some(binding) = member.member() else {
-                            return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
+                            return Err(refuse(DeclarationCause::Type(
+                                IllTypedCause::TypeMismatch,
+                            )));
                         };
-                        if binding.declaration() != declaration.key || binding.identifier() != member.identifier() {
-                            return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
+                        if binding.declaration() != declaration.key
+                            || binding.identifier() != member.identifier()
+                        {
+                            return Err(refuse(DeclarationCause::Type(
+                                IllTypedCause::TypeMismatch,
+                            )));
                         }
-                        if environment.union_members.insert((declaration.key, binding.variant()), position).is_some() {
+                        if environment
+                            .union_members
+                            .insert((declaration.key, binding.variant()), position)
+                            .is_some()
+                        {
                             return Err(refuse(DeclarationCause::DuplicateKey));
                         }
                     }
@@ -992,8 +1010,12 @@ impl TypeEnvironment {
                     }
                 }
                 if sealed {
-                    environment.union_keys.insert(declaration.key, declaration.key);
-                    environment.union_handles.insert(declaration.key, declaration.key);
+                    environment
+                        .union_keys
+                        .insert(declaration.key, declaration.key);
+                    environment
+                        .union_handles
+                        .insert(declaration.key, declaration.key);
                 }
             }
             if environment.composites.contains_key(&declaration.key) {
@@ -1133,7 +1155,11 @@ impl TypeEnvironment {
         bindings: Vec<UnionMember>,
     ) -> Admission<()> {
         self.seal_union_verified_with_cancel(
-            handle, final_key, bindings, DEFAULT_WORK_UNITS, &quire_exact::Cancel::new(),
+            handle,
+            final_key,
+            bindings,
+            DEFAULT_WORK_UNITS,
+            &quire_exact::Cancel::new(),
         )
     }
 
@@ -1149,16 +1175,21 @@ impl TypeEnvironment {
     ) -> Admission<()> {
         let Some(declaration) = self.composites.get(&handle) else {
             return Err(EnvironmentFailure::Refused(InvalidDeclaration {
-                declaration: String::new(), cause: DeclarationCause::UnknownDeclaration(handle),
+                declaration: String::new(),
+                cause: DeclarationCause::UnknownDeclaration(handle),
             }));
         };
-        let refuse = |cause| EnvironmentFailure::Refused(InvalidDeclaration {
-            declaration: declaration.name.clone(), cause,
-        });
+        let refuse = |cause| {
+            EnvironmentFailure::Refused(InvalidDeclaration {
+                declaration: declaration.name.clone(),
+                cause,
+            })
+        };
         let CompositeShape::Union(members) = &declaration.shape else {
             return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
         };
-        if self.union_keys.contains_key(&handle) || self.union_handles.contains_key(&final_key)
+        if self.union_keys.contains_key(&handle)
+            || self.union_handles.contains_key(&final_key)
             || (final_key != handle && self.composites.contains_key(&final_key))
         {
             return Err(refuse(DeclarationCause::DuplicateKey));
@@ -1170,7 +1201,8 @@ impl TypeEnvironment {
         let mut keys = BTreeSet::new();
         for (member, binding) in members.iter().zip(&bindings) {
             budget.charge(1).map_err(EnvironmentFailure::Limit)?;
-            if member.member().is_some() || binding.declaration() != final_key
+            if member.member().is_some()
+                || binding.declaration() != final_key
                 || binding.identifier() != member.identifier()
             {
                 return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
@@ -1183,7 +1215,8 @@ impl TypeEnvironment {
         // declaration remains in this registry; only its verified attachment changes.
         let Some(declaration) = self.composites.get_mut(&handle) else {
             return Err(EnvironmentFailure::Refused(InvalidDeclaration {
-                declaration: String::new(), cause: DeclarationCause::UnknownDeclaration(handle),
+                declaration: String::new(),
+                cause: DeclarationCause::UnknownDeclaration(handle),
             }));
         };
         let CompositeShape::Union(members) = &mut declaration.shape else {
@@ -1193,7 +1226,8 @@ impl TypeEnvironment {
             }));
         };
         for (position, (member, binding)) in members.iter_mut().zip(bindings).enumerate() {
-            self.union_members.insert((handle, binding.variant()), position);
+            self.union_members
+                .insert((handle, binding.variant()), position);
             member.member = Some(binding);
         }
         self.union_keys.insert(handle, final_key);
@@ -1207,19 +1241,38 @@ impl TypeEnvironment {
         let (mut left, mut right) = (left, right);
         loop {
             match (left, right) {
-                (ValueType::Option(a), ValueType::Option(b)) => { left = a; right = b; }
+                (ValueType::Option(a), ValueType::Option(b)) => {
+                    left = a;
+                    right = b;
+                }
                 (ValueType::Collection(a), ValueType::Collection(b)) => {
-                    if a.kind() != b.kind() || a.bound() != b.bound() { return false; }
-                    left = a.element(); right = b.element();
+                    if a.kind() != b.kind() || a.bound() != b.bound() {
+                        return false;
+                    }
+                    left = a.element();
+                    right = b.element();
                 }
                 (ValueType::Composite(a), ValueType::Composite(b)) => {
-                    return self.union_handles.get(a).unwrap_or(a) == self.union_handles.get(b).unwrap_or(b);
+                    return self.union_handles.get(a).unwrap_or(a)
+                        == self.union_handles.get(b).unwrap_or(b);
                 }
-                (ValueType::Boolean | ValueType::Integer | ValueType::Int(_)
-                | ValueType::Rational(_) | ValueType::Decimal(_) | ValueType::Float(_)
-                | ValueType::Quantity(_) | ValueType::Text(_) | ValueType::Enum(_)
-                | ValueType::Composite(_) | ValueType::Reference(_) | ValueType::Option(_)
-                | ValueType::Collection(_) | ValueType::Population(_), _) => return left == right,
+                (
+                    ValueType::Boolean
+                    | ValueType::Integer
+                    | ValueType::Int(_)
+                    | ValueType::Rational(_)
+                    | ValueType::Decimal(_)
+                    | ValueType::Float(_)
+                    | ValueType::Quantity(_)
+                    | ValueType::Text(_)
+                    | ValueType::Enum(_)
+                    | ValueType::Composite(_)
+                    | ValueType::Reference(_)
+                    | ValueType::Option(_)
+                    | ValueType::Collection(_)
+                    | ValueType::Population(_),
+                    _,
+                ) => return left == right,
             }
         }
     }
@@ -1232,39 +1285,78 @@ impl TypeEnvironment {
         let mut wrappers = Vec::new();
         loop {
             match link {
-                ValueType::Option(payload) => { wrappers.push(link); link = payload; }
-                ValueType::Collection(collection) => { wrappers.push(link); link = collection.element(); }
-                ValueType::Boolean | ValueType::Integer | ValueType::Int(_)
-                | ValueType::Rational(_) | ValueType::Decimal(_) | ValueType::Float(_)
-                | ValueType::Quantity(_) | ValueType::Text(_) | ValueType::Enum(_)
-                | ValueType::Composite(_) | ValueType::Reference(_) | ValueType::Population(_) => break,
+                ValueType::Option(payload) => {
+                    wrappers.push(link);
+                    link = payload;
+                }
+                ValueType::Collection(collection) => {
+                    wrappers.push(link);
+                    link = collection.element();
+                }
+                ValueType::Boolean
+                | ValueType::Integer
+                | ValueType::Int(_)
+                | ValueType::Rational(_)
+                | ValueType::Decimal(_)
+                | ValueType::Float(_)
+                | ValueType::Quantity(_)
+                | ValueType::Text(_)
+                | ValueType::Enum(_)
+                | ValueType::Composite(_)
+                | ValueType::Reference(_)
+                | ValueType::Population(_) => break,
             }
         }
         let mut resolved = match link {
             ValueType::Composite(key) => {
                 let declaration = self.composite(*key)?;
                 match declaration.shape() {
-                    CompositeShape::Union(_) => ValueType::Composite(self.union_key(declaration.key())?),
-                    CompositeShape::Record(_) | CompositeShape::Tuple(_) => return Some(value_type.clone()),
+                    CompositeShape::Union(_) => {
+                        ValueType::Composite(self.union_key(declaration.key())?)
+                    }
+                    CompositeShape::Record(_) | CompositeShape::Tuple(_) => {
+                        return Some(value_type.clone())
+                    }
                 }
             }
-            ValueType::Boolean | ValueType::Integer | ValueType::Int(_)
-            | ValueType::Rational(_) | ValueType::Decimal(_) | ValueType::Float(_)
-            | ValueType::Quantity(_) | ValueType::Text(_) | ValueType::Enum(_)
-            | ValueType::Reference(_) | ValueType::Population(_) => return Some(value_type.clone()),
+            ValueType::Boolean
+            | ValueType::Integer
+            | ValueType::Int(_)
+            | ValueType::Rational(_)
+            | ValueType::Decimal(_)
+            | ValueType::Float(_)
+            | ValueType::Quantity(_)
+            | ValueType::Text(_)
+            | ValueType::Enum(_)
+            | ValueType::Reference(_)
+            | ValueType::Population(_) => return Some(value_type.clone()),
             ValueType::Option(_) | ValueType::Collection(_) => return None,
         };
-        if &resolved == link { return Some(value_type.clone()); }
+        if &resolved == link {
+            return Some(value_type.clone());
+        }
         while let Some(wrapper) = wrappers.pop() {
             resolved = match wrapper {
                 ValueType::Option(_) => ValueType::option(resolved),
-                ValueType::Collection(collection) => ValueType::collection(quire_exact::CollectionType::new(
-                    collection.kind(), resolved, collection.bound(),
-                )),
-                ValueType::Boolean | ValueType::Integer | ValueType::Int(_)
-                | ValueType::Rational(_) | ValueType::Decimal(_) | ValueType::Float(_)
-                | ValueType::Quantity(_) | ValueType::Text(_) | ValueType::Enum(_)
-                | ValueType::Composite(_) | ValueType::Reference(_) | ValueType::Population(_) => return None,
+                ValueType::Collection(collection) => {
+                    ValueType::collection(quire_exact::CollectionType::new(
+                        collection.kind(),
+                        resolved,
+                        collection.bound(),
+                    ))
+                }
+                ValueType::Boolean
+                | ValueType::Integer
+                | ValueType::Int(_)
+                | ValueType::Rational(_)
+                | ValueType::Decimal(_)
+                | ValueType::Float(_)
+                | ValueType::Quantity(_)
+                | ValueType::Text(_)
+                | ValueType::Enum(_)
+                | ValueType::Composite(_)
+                | ValueType::Reference(_)
+                | ValueType::Population(_) => return None,
             };
         }
         Some(resolved)
@@ -1277,7 +1369,11 @@ impl TypeEnvironment {
         declaration: NodeKey,
         variant: VariantId,
     ) -> Option<(usize, &UnionMemberDeclaration)> {
-        let declaration = self.union_handles.get(&declaration).copied().unwrap_or(declaration);
+        let declaration = self
+            .union_handles
+            .get(&declaration)
+            .copied()
+            .unwrap_or(declaration);
         self.union_key(declaration)?;
         let position = *self.union_members.get(&(declaration, variant))?;
         let CompositeShape::Union(members) = self.shape(declaration)? else {
@@ -1385,8 +1481,10 @@ impl TypeEnvironment {
                 }
                 (ValueType::Collection(declared), Value::Collection(collection)) => {
                     let actual = collection.collection_type();
-                    if actual.kind() != declared.kind() || actual.bound() != declared.bound()
-                        || !self.same_type(actual.element(), declared.element()) {
+                    if actual.kind() != declared.kind()
+                        || actual.bound() != declared.bound()
+                        || !self.same_type(actual.element(), declared.element())
+                    {
                         return Ok(false);
                     }
                     if let Some(bound) = declared.bound() {
@@ -1457,8 +1555,7 @@ impl TypeEnvironment {
                     if !visited.insert(*key) {
                         continue;
                     }
-                    match self.composite(*key).map(|declaration| &declaration.shape)
-                    {
+                    match self.composite(*key).map(|declaration| &declaration.shape) {
                         Some(CompositeShape::Record(fields)) => {
                             pending.extend(fields.iter().map(FieldDeclaration::value_type));
                         }
@@ -2777,7 +2874,9 @@ impl TypeEnvironment {
             }
         }
         let runtime_operand = |operand: EqualityOperand| -> Result<EqualityOperand, IllTyped> {
-            let mismatch = || IllTyped { cause: IllTypedCause::TypeMismatch };
+            let mismatch = || IllTyped {
+                cause: IllTypedCause::TypeMismatch,
+            };
             let source = self.runtime_type(&operand.source).ok_or_else(mismatch)?;
             let target = match operand.target {
                 Some(target) => Some(self.runtime_type(&target).ok_or_else(mismatch)?),
