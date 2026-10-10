@@ -77,14 +77,14 @@ fn ordered_resolution_and_real_construction_validate_positions() {
         .union(key(1), variant(12), vec![integer(2), integer(3)])
         .unwrap();
     assert!(env.admits(&ValueType::Composite(key(1)), &value));
-    assert_eq!(value.occ(), Integer::from(3));
+    assert_eq!(value.occ(), Integer::from(3_u64));
     let Value::Union(value) = value else {
         panic!("union carrier required");
     };
     assert_eq!(value.member().identifier().as_str(), "Rect");
     assert_eq!(value.payload().len(), 2);
-    assert!(matches!(&value.payload()[0], Value::Integer(n) if n == &Integer::from(2)));
-    assert!(matches!(&value.payload()[1], Value::Integer(n) if n == &Integer::from(3)));
+    assert!(matches!(&value.payload()[0], Value::Integer(n) if n == &Integer::from(2_u64)));
+    assert!(matches!(&value.payload()[1], Value::Integer(n) if n == &Integer::from(3_u64)));
     let wrong = env
         .union(key(1), variant(12), vec![integer(2)])
         .unwrap_err();
@@ -380,13 +380,13 @@ fn ten_thousand_supplied_union_links_are_admitted_on_small_stack() {
                 quire_exact::plan_equality(&value, &independent)
                     .unwrap()
                     .pair_events(),
-                &Integer::from(20_001)
+                &Integer::from(20_001_u64)
             );
             assert_eq!(
                 quire_exact::compare_keys(&value, &independent),
                 Some(std::cmp::Ordering::Equal)
             );
-            assert_eq!(value.occ(), Integer::from(20_001));
+            assert_eq!(value.occ(), Integer::from(20_001_u64));
             assert!(env.admits(&ty, &value));
             assert_eq!(env.admits_bounded(&ty, &value, 20_001), Ok(true));
             let limit = env.admits_bounded(&ty, &value, 20_000).unwrap_err();
@@ -677,7 +677,7 @@ fn registry_evaluation_orders_payloads_and_propagates_first_stop() {
         panic!("completed registry construction required");
     };
     assert_eq!(*visits.borrow(), vec![0, 1]);
-    assert_eq!(value.occ(), Integer::from(3));
+    assert_eq!(value.occ(), Integer::from(3_u64));
     visits.borrow_mut().clear();
     let stop = |_: &mut Meter| {
         visits.borrow_mut().push(0);
