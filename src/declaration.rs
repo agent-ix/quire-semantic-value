@@ -155,6 +155,59 @@ mod storage_reservation_tests {
         );
     }
 
+    /// Trace: FR-108-AC-1, FR-108-AC-2
+    #[trace("TC-907", "FR-108-AC-1", "FR-108-AC-2")]
+    #[test]
+    fn byte_reservation_reports_its_native_request() {
+        let deny = DenyFirst {
+            seen: Cell::new(None),
+        };
+        assert_eq!(
+            try_clone_str("field", &deny),
+            Err(EnvironmentFailure::Allocation(StorageRequest::new(
+                5,
+                StorageUnit::Bytes,
+            )))
+        );
+        assert_eq!(
+            deny.seen.get(),
+            Some(StorageRequest::new(5, StorageUnit::Bytes))
+        );
+    }
+
+    /// Trace: FR-108-AC-4
+    #[trace("TC-907", "FR-108-AC-4")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies a checked identity without minting it in production"
+    )]
+    #[test]
+    fn cancellation_keeps_the_work_limit_classification() {
+        let cancel = quire_exact::Cancel::new();
+        cancel.cancel(quire_exact::CancelCause::Requested);
+        let denied = TypeEnvironment::bounded_with_cancel(
+            [],
+            [ObjectTypeDeclaration::new(
+                EffectiveId::from_digest([8; 32]),
+                "O",
+                vec![FieldDeclaration::new(
+                    "field",
+                    ValueType::Boolean,
+                    Presence::Required,
+                )],
+            )],
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        );
+        let Err(EnvironmentFailure::Limit(limit)) = denied else {
+            panic!("cancelled admission must keep the work-limit classification");
+        };
+        assert_eq!(limit.kind(), EnvironmentLimitKind::WorkUnits);
+        assert_eq!(limit.configured_bound(), DEFAULT_WORK_UNITS);
+        assert_eq!(limit.actual(), 1);
+        assert_eq!(cancel.tripped(), Some(quire_exact::CancelCause::Requested));
+    }
+
     /// Trace: FR-108-AC-3, FR-108-AC-5
     #[trace("TC-907", "FR-108-AC-3", "FR-108-AC-5")]
     #[allow(
