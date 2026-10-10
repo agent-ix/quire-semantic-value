@@ -2810,6 +2810,87 @@ mod checked_invariant_tests {
     #[trace("TC-906", "FR-369-AC-9")]
     #[allow(
         clippy::disallowed_methods,
+        reason = "the test supplies checked declaration identities without minting them in production"
+    )]
+    #[test]
+    fn deferred_record_and_tuple_evaluation_preserve_admission_and_prior_refusal() {
+        let record = NodeKey::from_digest([21; 32]);
+        let tuple = NodeKey::from_digest([22; 32]);
+        let environment = TypeEnvironment::new(
+            [
+                CompositeDeclaration::new(
+                    record,
+                    "R",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "flag",
+                        ValueType::Boolean,
+                        Presence::Required,
+                    )]),
+                ),
+                CompositeDeclaration::new(
+                    tuple,
+                    "T",
+                    CompositeShape::Tuple(vec![ValueType::Boolean]),
+                ),
+            ],
+            [],
+        )
+        .unwrap();
+
+        let good =
+            FieldExpression::Evaluate(Box::new(|_| Outcome::Completed(Value::Boolean(true))));
+        let result = environment
+            .evaluate_record(record, vec![("flag", good)], &mut meter())
+            .unwrap();
+        assert!(matches!(
+            result,
+            Outcome::Completed(Value::Composite(composite))
+                if composite.declaration() == record
+                    && matches!(composite.slots(), [FieldValue::Present(Value::Boolean(true))])
+        ));
+        let bad = FieldExpression::Evaluate(Box::new(|_| {
+            Outcome::Completed(Value::Integer(Integer::one()))
+        }));
+        assert!(matches!(
+            environment.evaluate_record(record, vec![("flag", bad)], &mut meter()),
+            Ok(Outcome::Refused(Refusal::CheckedInvariant {
+                cause: CheckedInvariantCause::DeferredResultNotAdmitted
+            }))
+        ));
+
+        let result = environment
+            .evaluate_tuple(
+                tuple,
+                vec![Box::new(|_| Outcome::Completed(Value::Boolean(true)))],
+                &mut meter(),
+            )
+            .unwrap();
+        assert!(matches!(
+            result,
+            Outcome::Completed(Value::Composite(composite))
+                if composite.declaration() == tuple
+                    && matches!(composite.slots(), [FieldValue::Present(Value::Boolean(true))])
+        ));
+        let prior = Refusal::IntegerOutOfDomain {
+            target: Box::new(quire_exact::IntegerInterval::spanning(
+                Integer::zero(),
+                Integer::one(),
+            )),
+        };
+        let result = environment
+            .evaluate_tuple(
+                tuple,
+                vec![Box::new(|_| Outcome::Refused(prior.clone()))],
+                &mut meter(),
+            )
+            .unwrap();
+        assert!(matches!(result, Outcome::Refused(actual) if actual == prior));
+    }
+
+    /// Trace: FR-369-AC-9
+    #[trace("TC-906", "FR-369-AC-9")]
+    #[allow(
+        clippy::disallowed_methods,
         reason = "the test supplies a checked unit identity without minting one in production"
     )]
     #[test]
@@ -2982,6 +3063,35 @@ mod checked_invariant_tests {
     #[trace("TC-906", "FR-369-AC-9")]
     #[allow(
         clippy::disallowed_methods,
+        reason = "the test supplies a checked enum identity without minting it in production"
+    )]
+    #[test]
+    fn scheduled_comparison_keeps_an_earlier_charge_stop() {
+        let member = EnumDeclaration::new(NodeKey::from_digest([31; 32]), true, vec!["A".into()])
+            .unwrap()
+            .member("A", NodeKey::from_digest([32; 32]))
+            .unwrap();
+        let mut equality = checked(
+            EqualitySchedule::Enum,
+            EqualityOperand::typed(ValueType::Enum(EnumShape::new(true, [member.variant()]))),
+            EqualityOperand::typed(ValueType::Enum(EnumShape::new(true, [member.variant()]))),
+        );
+        equality.enum_members.record(member.clone());
+        let value = Value::Enum(EnumMember::new(member.variant(), 0));
+        let mut meter = meter().with_injected_denial(quire_exact::InjectedDenial {
+            point: ChargePoint::EnumIdentityRead,
+            occurrence: core::num::NonZeroU64::new(1).unwrap(),
+        });
+        assert!(matches!(
+            equality.evaluate(&value, &value, &mut meter),
+            Outcome::Incomplete(record) if record.charge_point == ChargePoint::EnumIdentityRead
+        ));
+    }
+
+    /// Trace: FR-369-AC-9
+    #[trace("TC-906", "FR-369-AC-9")]
+    #[allow(
+        clippy::disallowed_methods,
         reason = "the test supplies checked unit identities without minting them in production"
     )]
     #[test]
@@ -3042,6 +3152,87 @@ mod checked_invariant_tests {
                 cause: IllTypedCause::IncompatibleDimensions,
             },
         );
+    }
+
+    /// Trace: FR-369-AC-9
+    #[trace("TC-906", "FR-369-AC-9")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test supplies checked unit identities without minting them in production"
+    )]
+    #[test]
+    fn quantity_conversion_keeps_charge_stop_and_places_integer_successfully() {
+        let dimension = NodeKey::from_digest([41; 32]);
+        let source = UnitId::declared(NodeKey::from_digest([42; 32]));
+        let target = UnitId::declared(NodeKey::from_digest([43; 32]));
+        let dimensions = BTreeMap::from([(
+            dimension,
+            DimensionNode::checked(vec![], NominalDeclaration::default()).unwrap(),
+        )]);
+        let units = BTreeMap::from([
+            (
+                NodeKey::from_digest([42; 32]),
+                UnitNode::checked(
+                    [41; 32],
+                    None,
+                    Rational::from_integer(Integer::one()),
+                    Rational::from_integer(Integer::zero()),
+                    NominalDeclaration::default(),
+                )
+                .unwrap(),
+            ),
+            (
+                NodeKey::from_digest([43; 32]),
+                UnitNode::checked(
+                    [41; 32],
+                    Some([42; 32]),
+                    Rational::from_integer(Integer::one()),
+                    Rational::from_integer(Integer::zero()),
+                    NominalDeclaration::default(),
+                )
+                .unwrap(),
+            ),
+        ]);
+        let graph = UnitGraph::from_checked_nodes(&dimensions, &units).unwrap();
+        let table = UnitTable::declared(&graph);
+        let scope = UnitScope::new(&table);
+        let quantity = Quantity::new(Rational::from_integer(Integer::one()), source);
+        let mut denied = meter().with_injected_denial(quire_exact::InjectedDenial {
+            point: ChargePoint::UnitIdentityRead,
+            occurrence: core::num::NonZeroU64::new(1).unwrap(),
+        });
+        assert!(matches!(
+            operand_value(
+                &EqualityOperand::converted(
+                    ValueType::Quantity(source),
+                    ValueType::Quantity(target),
+                ),
+                &Value::Quantity(quantity.clone()),
+                &scope,
+                &mut denied,
+            ),
+            Err(Stop::Incomplete(record)) if record.charge_point == ChargePoint::UnitIdentityRead
+        ));
+
+        let conversion = convert_quantity(
+            scope.resolve(&quantity).unwrap(),
+            scope.get(target).unwrap(),
+            &QuantityTarget::Integer {
+                domain: quire_exact::IntegerInterval::spanning(
+                    Integer::zero(),
+                    Integer::from(10_i64),
+                ),
+                rounding: quire_exact::RoundingMode::Exact,
+            },
+            &mut meter(),
+        )
+        .unwrap();
+        assert!(matches!(
+            conversion,
+            Outcome::Completed(value)
+                if matches!(value.value(), ConvertedValue::Integer { value, loss: None }
+                    if value.value() == &Integer::one())
+        ));
     }
 }
 
