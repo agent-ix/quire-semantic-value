@@ -18,6 +18,7 @@ use quire_semantic_value::declaration::{
 };
 use quire_semantic_value::object_closure::{ObjectClosure, ObjectClosureCause};
 
+#[allow(clippy::disallowed_methods, reason = "fixture supplies producer identities; production mints none")]
 fn key(n: u64) -> NodeKey {
     let mut bytes = [0; 32];
     bytes[..8].copy_from_slice(&n.to_be_bytes());
