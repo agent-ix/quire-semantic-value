@@ -68,7 +68,7 @@ fn ordered_resolution_and_real_construction_validate_positions() {
     let (position, rect) = env.union_member_named(key(1), "Rect").unwrap();
     assert_eq!(position, 0);
     assert_eq!(rect.positions(), &[ValueType::Integer, ValueType::Integer]);
-    assert_eq!(rect.member().variant(), variant(12));
+    assert_eq!(rect.member().unwrap().variant(), variant(12));
     assert_eq!(env.union_member(key(1), variant(10)).unwrap().0, 1);
     assert!(env.union_member_named(key(1), "rect").is_none());
     let empty = env.union(key(1), variant(10), vec![]).unwrap();
@@ -110,7 +110,7 @@ fn supplied_trusted_carriers_still_require_registry_admission() {
     let env = TypeEnvironment::new([shape()], []).unwrap();
     let ty = ValueType::Composite(key(1));
     let supplied = |decl, id, name, payload| {
-        UnionValue::from_admitted(member(decl, id, name, vec![]).member().clone(), payload)
+        UnionValue::from_admitted(member(decl, id, name, vec![]).member().unwrap().clone(), payload)
     };
     for bad in [
         supplied(key(2), 12, "Rect", vec![integer(2), integer(3)]),
@@ -354,12 +354,14 @@ fn ten_thousand_supplied_union_links_are_admitted_on_small_stack() {
                 .unwrap()
                 .1
                 .member()
+                .unwrap()
                 .clone();
             let node = env
                 .union_member_named(key(1), "Node")
                 .unwrap()
                 .1
                 .member()
+                .unwrap()
                 .clone();
             // Deliberately bypass checked construction to exercise supplied-value validation.
             let mut value = UnionValue::from_admitted(leaf, vec![]);
@@ -631,6 +633,7 @@ fn nested_union_admission_traverses_record_tuple_option_and_collection() {
             .unwrap()
             .1
             .member()
+            .unwrap()
             .clone(),
         vec![Value::Boolean(true)],
     ));

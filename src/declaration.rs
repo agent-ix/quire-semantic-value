@@ -77,7 +77,7 @@ use quire_exact::CollectionKind;
 use quire_exact::EffectiveId;
 use quire_exact::EnumShape;
 use quire_exact::NodeKey;
-use quire_exact::{compare_text, evaluate_decimal, UnionMember, UnionValue, VariantId};
+use quire_exact::{compare_text, evaluate_decimal, Identifier, UnionMember, UnionValue, VariantId};
 
 /// One object-type field's identity: the object type that declares it and
 /// its declared name (QSpec FR-151 field redefinition names its target this way).
@@ -305,24 +305,36 @@ fn composite(declaration: NodeKey, slots: Box<[FieldValue]>) -> Value {
     from_admitted_slots(declaration, slots)
 }
 
-/// One ordered union member, with an identity verified by the package producer.
-/// This retains the FR-441 binding; it neither hashes nor accepts runtime labels.
+/// One resolved union member's topology, optionally sealed to a verified identity.
+/// Names and position types are available before canonical declaration lowering.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UnionMemberDeclaration {
-    member: UnionMember,
+    identifier: Identifier,
+    member: Option<UnionMember>,
     positions: Vec<ValueType>,
 }
 
 impl UnionMemberDeclaration {
-    /// Retain an already verified declaration/key/identifier triple and its
-    /// declared payload types. Environment admission checks ownership and duplicates.
-    pub fn from_verified(member: UnionMember, positions: Vec<ValueType>) -> Self {
-        Self { member, positions }
+    /// Resolve an authored member without granting runtime value admission.
+    pub fn resolved(identifier: Identifier, positions: Vec<ValueType>) -> Self {
+        Self { identifier, member: None, positions }
     }
 
-    /// The authoritative member binding, including its ASCII identifier.
-    pub fn member(&self) -> &UnionMember {
-        &self.member
+    /// Retain an already verified declaration/key/identifier triple and its
+    /// declared payload types for a final-keyed checked-package declaration.
+    /// Environment admission checks ownership, completeness and duplicates.
+    pub fn from_verified(member: UnionMember, positions: Vec<ValueType>) -> Self {
+        Self { identifier: member.identifier().clone(), member: Some(member), positions }
+    }
+
+    /// The exact authored identifier, available before member-key verification.
+    pub fn identifier(&self) -> &Identifier {
+        &self.identifier
+    }
+
+    /// The authoritative binding, absent until the entire union is sealed.
+    pub fn member(&self) -> Option<&UnionMember> {
+        self.member.as_ref()
     }
 
     /// Payload types in declared position order, empty for a nullary member.
@@ -338,7 +350,7 @@ pub enum CompositeShape {
     Record(Vec<FieldDeclaration>),
     /// A tuple of exactly these position types.
     Tuple(Vec<ValueType>),
-    /// Union members in declaration order, each retaining verified identity.
+    /// Resolved union members in declaration order, with optional verified bindings.
     Union(Vec<UnionMemberDeclaration>),
 }
 
@@ -782,6 +794,10 @@ pub struct TypeEnvironment {
     /// The units a `ValueType::Quantity` of this package names by id.
     units: UnitTable,
     union_members: BTreeMap<(NodeKey, VariantId), usize>,
+    /// Explicit internal declaration handle to settled canonical union key join.
+    union_keys: BTreeMap<NodeKey, NodeKey>,
+    /// The inverse join, used only for sealed unions; Record/Tuple keys stay intact.
+    union_handles: BTreeMap<NodeKey, NodeKey>,
 }
 
 /// One containment edge of the recursion rule.
@@ -809,7 +825,10 @@ impl TypeEnvironment {
                 );
             }
         }
-        Ok(UnionValue::from_admitted(member.member.clone(), payload))
+        let Some(binding) = member.member() else {
+            return refuse(Component::Value, ConstructionCause::TypeMismatch);
+        };
+        Ok(UnionValue::from_admitted(binding.clone(), payload))
     }
 
     /// Evaluate payload positions in order, propagating the first stopped outcome,
@@ -822,6 +841,9 @@ impl TypeEnvironment {
         meter: &mut Meter,
     ) -> Result<Outcome<Value>, ConstructionRefusal> {
         let member = self.union_positions(declaration, variant, payload.len())?;
+        let Some(binding) = member.member() else {
+            return refuse(Component::Value, ConstructionCause::TypeMismatch);
+        };
         let mut values = Vec::with_capacity(member.positions.len());
         for (ty, expression) in member.positions.iter().zip(payload) {
             let value = match outcome_into_stop(expression(meter)) {
@@ -836,7 +858,7 @@ impl TypeEnvironment {
             values.push(value);
         }
         Ok(retain_composite(
-            UnionValue::from_admitted(member.member.clone(), values),
+            UnionValue::from_admitted(binding.clone(), values),
             meter,
         ))
     }
@@ -927,22 +949,24 @@ impl TypeEnvironment {
             }
             if let CompositeShape::Union(members) = &declaration.shape {
                 let mut names = BTreeSet::new();
+                let sealed = members.iter().any(|member| member.member.is_some());
                 for (position, member) in members.iter().enumerate() {
                     budget.charge(1).map_err(EnvironmentFailure::Limit)?;
-                    if member.member.declaration() != declaration.key {
-                        return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
-                    }
-                    if !names.insert(member.member.identifier().as_str()) {
+                    if !names.insert(member.identifier().as_str()) {
                         return Err(refuse(DeclarationCause::DuplicateMember(
-                            member.member.identifier().as_str().to_owned(),
+                            member.identifier().as_str().to_owned(),
                         )));
                     }
-                    if environment
-                        .union_members
-                        .insert((declaration.key, member.member.variant()), position)
-                        .is_some()
-                    {
-                        return Err(refuse(DeclarationCause::DuplicateKey));
+                    if sealed {
+                        let Some(binding) = member.member() else {
+                            return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
+                        };
+                        if binding.declaration() != declaration.key || binding.identifier() != member.identifier() {
+                            return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
+                        }
+                        if environment.union_members.insert((declaration.key, binding.variant()), position).is_some() {
+                            return Err(refuse(DeclarationCause::DuplicateKey));
+                        }
                     }
                     for ty in &member.positions {
                         let mut link = ty;
@@ -966,6 +990,10 @@ impl TypeEnvironment {
                             }
                         }
                     }
+                }
+                if sealed {
+                    environment.union_keys.insert(declaration.key, declaration.key);
+                    environment.union_handles.insert(declaration.key, declaration.key);
                 }
             }
             if environment.composites.contains_key(&declaration.key) {
@@ -1043,7 +1071,8 @@ impl TypeEnvironment {
 
     /// The admitted record, tuple or union declaration with this key.
     pub fn composite(&self, key: NodeKey) -> Option<&CompositeDeclaration> {
-        self.composites.get(&key)
+        let handle = self.union_handles.get(&key).copied().unwrap_or(key);
+        self.composites.get(&handle)
     }
 
     /// Every admitted record, tuple and union declaration in key order.
@@ -1080,13 +1109,176 @@ impl TypeEnvironment {
             .unwrap_or(false)
     }
 
-    /// Resolve a member key only within this union; returns declaration position
-    /// and the retained authoritative binding and payload types.
+    /// The settled canonical key explicitly attached to this internal union handle.
+    /// Returns `None` before sealing; no temporary handle is promoted implicitly.
+    pub fn union_key(&self, handle: NodeKey) -> Option<NodeKey> {
+        self.union_keys.get(&handle).copied()
+    }
+
+    /// The original declaration handle for a verified final union key.
+    pub fn union_handle(&self, final_key: NodeKey) -> Option<NodeKey> {
+        self.union_handles.get(&final_key).copied()
+    }
+
+    /// Attach a settled canonical key and producer-verified FR-441 bindings to
+    /// an already resolved union. The caller must verify the final key against
+    /// its settled canonical type node, and each binding against that node and
+    /// the exact declared identifier. This method hashes nothing.
+    /// Failed validation leaves the resolved registry unchanged. Bindings must
+    /// cover every member once, in declaration order; resealing is refused.
+    pub fn seal_union_verified(
+        &mut self,
+        handle: NodeKey,
+        final_key: NodeKey,
+        bindings: Vec<UnionMember>,
+    ) -> Admission<()> {
+        self.seal_union_verified_with_cancel(
+            handle, final_key, bindings, DEFAULT_WORK_UNITS, &quire_exact::Cancel::new(),
+        )
+    }
+
+    /// Seal under the caller's environment work budget and cancellation handle.
+    /// Each verified binding comparison charges one work unit before attachment.
+    pub fn seal_union_verified_with_cancel(
+        &mut self,
+        handle: NodeKey,
+        final_key: NodeKey,
+        bindings: Vec<UnionMember>,
+        work_units: u64,
+        cancel: &quire_exact::Cancel,
+    ) -> Admission<()> {
+        let Some(declaration) = self.composites.get(&handle) else {
+            return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                declaration: String::new(), cause: DeclarationCause::UnknownDeclaration(handle),
+            }));
+        };
+        let refuse = |cause| EnvironmentFailure::Refused(InvalidDeclaration {
+            declaration: declaration.name.clone(), cause,
+        });
+        let CompositeShape::Union(members) = &declaration.shape else {
+            return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
+        };
+        if self.union_keys.contains_key(&handle) || self.union_handles.contains_key(&final_key)
+            || (final_key != handle && self.composites.contains_key(&final_key))
+        {
+            return Err(refuse(DeclarationCause::DuplicateKey));
+        }
+        if members.len() != bindings.len() {
+            return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
+        }
+        let mut budget = WorkBudget::new(work_units, cancel.clone());
+        let mut keys = BTreeSet::new();
+        for (member, binding) in members.iter().zip(&bindings) {
+            budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+            if member.member().is_some() || binding.declaration() != final_key
+                || binding.identifier() != member.identifier()
+            {
+                return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
+            }
+            if !keys.insert(binding.variant()) {
+                return Err(refuse(DeclarationCause::DuplicateKey));
+            }
+        }
+        // Validation completes before the first mutation. The exact same
+        // declaration remains in this registry; only its verified attachment changes.
+        let Some(declaration) = self.composites.get_mut(&handle) else {
+            return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                declaration: String::new(), cause: DeclarationCause::UnknownDeclaration(handle),
+            }));
+        };
+        let CompositeShape::Union(members) = &mut declaration.shape else {
+            return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                declaration: declaration.name.clone(),
+                cause: DeclarationCause::Type(IllTypedCause::TypeMismatch),
+            }));
+        };
+        for (position, (member, binding)) in members.iter_mut().zip(bindings).enumerate() {
+            self.union_members.insert((handle, binding.variant()), position);
+            member.member = Some(binding);
+        }
+        self.union_keys.insert(handle, final_key);
+        self.union_handles.insert(final_key, handle);
+        Ok(())
+    }
+
+    /// Compare resolved types using the explicit sealed union handle/key join.
+    /// Option and collection nesting is iterative. Record/Tuple identity is unchanged.
+    pub fn same_type(&self, left: &ValueType, right: &ValueType) -> bool {
+        let (mut left, mut right) = (left, right);
+        loop {
+            match (left, right) {
+                (ValueType::Option(a), ValueType::Option(b)) => { left = a; right = b; }
+                (ValueType::Collection(a), ValueType::Collection(b)) => {
+                    if a.kind() != b.kind() || a.bound() != b.bound() { return false; }
+                    left = a.element(); right = b.element();
+                }
+                (ValueType::Composite(a), ValueType::Composite(b)) => {
+                    return self.union_handles.get(a).unwrap_or(a) == self.union_handles.get(b).unwrap_or(b);
+                }
+                (ValueType::Boolean | ValueType::Integer | ValueType::Int(_)
+                | ValueType::Rational(_) | ValueType::Decimal(_) | ValueType::Float(_)
+                | ValueType::Quantity(_) | ValueType::Text(_) | ValueType::Enum(_)
+                | ValueType::Composite(_) | ValueType::Reference(_) | ValueType::Option(_)
+                | ValueType::Collection(_) | ValueType::Population(_), _) => return left == right,
+            }
+        }
+    }
+
+    /// Resolve union handles in a runtime type through verified final-key joins.
+    /// Unsealed union leaves return `None`. Other declaration keys stay unchanged.
+    /// Nested options/collections are rebuilt iteratively only when a key changes.
+    pub fn runtime_type(&self, value_type: &ValueType) -> Option<ValueType> {
+        let mut link = value_type;
+        let mut wrappers = Vec::new();
+        loop {
+            match link {
+                ValueType::Option(payload) => { wrappers.push(link); link = payload; }
+                ValueType::Collection(collection) => { wrappers.push(link); link = collection.element(); }
+                ValueType::Boolean | ValueType::Integer | ValueType::Int(_)
+                | ValueType::Rational(_) | ValueType::Decimal(_) | ValueType::Float(_)
+                | ValueType::Quantity(_) | ValueType::Text(_) | ValueType::Enum(_)
+                | ValueType::Composite(_) | ValueType::Reference(_) | ValueType::Population(_) => break,
+            }
+        }
+        let mut resolved = match link {
+            ValueType::Composite(key) => {
+                let declaration = self.composite(*key)?;
+                match declaration.shape() {
+                    CompositeShape::Union(_) => ValueType::Composite(self.union_key(declaration.key())?),
+                    CompositeShape::Record(_) | CompositeShape::Tuple(_) => return Some(value_type.clone()),
+                }
+            }
+            ValueType::Boolean | ValueType::Integer | ValueType::Int(_)
+            | ValueType::Rational(_) | ValueType::Decimal(_) | ValueType::Float(_)
+            | ValueType::Quantity(_) | ValueType::Text(_) | ValueType::Enum(_)
+            | ValueType::Reference(_) | ValueType::Population(_) => return Some(value_type.clone()),
+            ValueType::Option(_) | ValueType::Collection(_) => return None,
+        };
+        if &resolved == link { return Some(value_type.clone()); }
+        while let Some(wrapper) = wrappers.pop() {
+            resolved = match wrapper {
+                ValueType::Option(_) => ValueType::option(resolved),
+                ValueType::Collection(collection) => ValueType::collection(quire_exact::CollectionType::new(
+                    collection.kind(), resolved, collection.bound(),
+                )),
+                ValueType::Boolean | ValueType::Integer | ValueType::Int(_)
+                | ValueType::Rational(_) | ValueType::Decimal(_) | ValueType::Float(_)
+                | ValueType::Quantity(_) | ValueType::Text(_) | ValueType::Enum(_)
+                | ValueType::Composite(_) | ValueType::Reference(_) | ValueType::Population(_) => return None,
+            };
+        }
+        Some(resolved)
+    }
+
+    /// Resolve a member only after sealing, by internal handle or final key.
+    /// Returns declaration position and the same retained descriptor and binding.
     pub fn union_member(
         &self,
         declaration: NodeKey,
         variant: VariantId,
     ) -> Option<(usize, &UnionMemberDeclaration)> {
+        let declaration = self.union_handles.get(&declaration).copied().unwrap_or(declaration);
+        self.union_key(declaration)?;
         let position = *self.union_members.get(&(declaration, variant))?;
         let CompositeShape::Union(members) = self.shape(declaration)? else {
             return None;
@@ -1094,7 +1286,7 @@ impl TypeEnvironment {
         Some((position, members.get(position)?))
     }
 
-    /// Resolve an authored identifier to one declared union member.
+    /// Resolve an authored identifier to topology, before or after sealing.
     pub fn union_member_named(
         &self,
         declaration: NodeKey,
@@ -1106,7 +1298,7 @@ impl TypeEnvironment {
         members
             .iter()
             .enumerate()
-            .find(|(_, member)| member.member.identifier().as_str() == name)
+            .find(|(_, member)| member.identifier().as_str() == name)
     }
 
     /// Iterative supplied-value membership checking. One work unit per value
@@ -1127,13 +1319,14 @@ impl TypeEnvironment {
             budget.charge(1)?;
             match (ty, value) {
                 (ValueType::Composite(key), Value::Union(union)) => {
-                    if union.declaration() != *key {
+                    let handle = self.union_handles.get(key).copied().unwrap_or(*key);
+                    if self.union_key(handle) != Some(union.declaration()) {
                         return Ok(false);
                     }
                     let Some((_, member)) = self.union_member(*key, union.variant()) else {
                         return Ok(false);
                     };
-                    if union.member() != member.member()
+                    if Some(union.member()) != member.member()
                         || union.payload().len() != member.positions.len()
                     {
                         return Ok(false);
@@ -1183,7 +1376,7 @@ impl TypeEnvironment {
                     }
                 }
                 (ValueType::Option(payload), Value::Option(option)) => {
-                    if option.payload_type() != &**payload {
+                    if !self.same_type(option.payload_type(), payload) {
                         return Ok(false);
                     }
                     if let Some(value) = option.payload() {
@@ -1191,7 +1384,9 @@ impl TypeEnvironment {
                     }
                 }
                 (ValueType::Collection(declared), Value::Collection(collection)) => {
-                    if collection.collection_type() != &**declared {
+                    let actual = collection.collection_type();
+                    if actual.kind() != declared.kind() || actual.bound() != declared.bound()
+                        || !self.same_type(actual.element(), declared.element()) {
                         return Ok(false);
                     }
                     if let Some(bound) = declared.bound() {
@@ -1262,10 +1457,7 @@ impl TypeEnvironment {
                     if !visited.insert(*key) {
                         continue;
                     }
-                    match self
-                        .composites
-                        .get(key)
-                        .map(|declaration| &declaration.shape)
+                    match self.composite(*key).map(|declaration| &declaration.shape)
                     {
                         Some(CompositeShape::Record(fields)) => {
                             pending.extend(fields.iter().map(FieldDeclaration::value_type));
@@ -1298,7 +1490,7 @@ impl TypeEnvironment {
         let mut pending = vec![value_type];
         while let Some(value_type) = pending.pop() {
             match value_type {
-                ValueType::Composite(key) if !self.composites.contains_key(key) => {
+                ValueType::Composite(key) if self.composite(*key).is_none() => {
                     return Some(DeclarationCause::UnknownDeclaration(*key));
                 }
                 // QSpec FR-143: `T` in `Reference<T>` must name a model object
@@ -2134,7 +2326,7 @@ impl TypeEnvironment {
     }
 
     fn shape(&self, declaration: NodeKey) -> Option<&CompositeShape> {
-        self.composites.get(&declaration).map(|d| &d.shape)
+        self.composite(declaration).map(|d| &d.shape)
     }
 }
 
@@ -2584,6 +2776,17 @@ impl TypeEnvironment {
                 self.check_type(target)?;
             }
         }
+        let runtime_operand = |operand: EqualityOperand| -> Result<EqualityOperand, IllTyped> {
+            let mismatch = || IllTyped { cause: IllTypedCause::TypeMismatch };
+            let source = self.runtime_type(&operand.source).ok_or_else(mismatch)?;
+            let target = match operand.target {
+                Some(target) => Some(self.runtime_type(&target).ok_or_else(mismatch)?),
+                None => None,
+            };
+            Ok(EqualityOperand { source, target })
+        };
+        let left = runtime_operand(left)?;
+        let right = runtime_operand(right)?;
         for operand in [&left, &right] {
             if let Some(target) = &operand.target {
                 if !admits_equality_conversion(&operand.source, target, units) {
@@ -2651,7 +2854,7 @@ impl TypeEnvironment {
             {
                 EqualitySchedule::Plan
             }
-            (l, r) if l == r => EqualitySchedule::Plan,
+            (l, r) if self.same_type(l, r) => EqualitySchedule::Plan,
             _ => return ill_typed(IllTypedCause::TypeMismatch),
         };
         // Retain only the compared enum declaration's own
