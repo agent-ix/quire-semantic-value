@@ -166,6 +166,8 @@ impl ObjectClosure {
                 | Value::Float(_)
                 | Value::Quantity(_)
                 | Value::Text(_)
+                | Value::Uuid(_)
+                | Value::Timestamp(_)
                 | Value::Enum(_)
                 | Value::Population(_) => {}
             }
@@ -184,10 +186,12 @@ fn present(slots: &[FieldValue]) -> impl Iterator<Item = &Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::declaration::{FieldDeclaration, ObjectTypeDeclaration};
+    use crate::declaration::{
+        Component, ConstructionCause, FieldDeclaration, ObjectTypeDeclaration,
+    };
     use alloc::vec;
     use ix_trace_rs::trace;
-    use quire_exact::{EffectiveId, ObjectId, Presence, ValueType};
+    use quire_exact::{EffectiveId, ObjectId, Presence, Timestamp, Uuid, ValueType};
 
     #[allow(
         clippy::disallowed_methods,
@@ -278,5 +282,65 @@ mod tests {
         let both = ObjectClosure::new(&types(), [object(&a), object(&b)], &[]).unwrap();
         assert!(both.contains(&a) && both.contains(&b));
         assert_eq!(both.find(universe, "k"), None);
+    }
+
+    /// Native leaves are admitted as their own attribute kinds and do not
+    /// contribute a dangling reference to closure traversal.
+    #[trace("FR-370-AC-1", "FR-106-AC-10")]
+    #[test]
+    fn native_attributes_admit_and_wrong_kinds_refuse() {
+        let native_type = object_type(4);
+        let types = TypeEnvironment::new(
+            [],
+            [ObjectTypeDeclaration::new(
+                native_type,
+                "Native",
+                vec![
+                    FieldDeclaration::new("u", ValueType::Uuid, Presence::Required),
+                    FieldDeclaration::new("t", ValueType::Timestamp, Presence::Required),
+                ],
+            )],
+        )
+        .expect("native leaf attributes admit as declarations");
+        let owner = reference(4, "native");
+        let expected_uuid = Uuid::from_canonical_text("00112233-4455-6677-8899-aabbccddeeff")
+            .expect("canonical UUID");
+        let expected_timestamp = Timestamp::from_canonical_text("-1").expect("canonical timestamp");
+        let uuid = Value::Uuid(expected_uuid);
+        let timestamp = Value::Timestamp(expected_timestamp);
+        let attributes = |u, t| vec![("u", FieldValue::Present(u)), ("t", FieldValue::Present(t))];
+        let closure = ObjectClosure::new(
+            &types,
+            [(owner.clone(), attributes(uuid.clone(), timestamp.clone()))],
+            &[],
+        )
+        .expect("native leaves close without referenced objects");
+        assert!(matches!(
+            closure.attribute(&types, &owner, &FieldRef::new(native_type, "u")),
+            Some(FieldValue::Present(Value::Uuid(actual))) if *actual == expected_uuid
+        ));
+        assert!(matches!(
+            closure.attribute(&types, &owner, &FieldRef::new(native_type, "t")),
+            Some(FieldValue::Present(Value::Timestamp(actual))) if *actual == expected_timestamp
+        ));
+
+        for (u, t, field) in [
+            (timestamp.clone(), timestamp.clone(), "u"),
+            (uuid.clone(), uuid.clone(), "t"),
+            (Value::Integer(1_i64.into()), timestamp.clone(), "u"),
+            (uuid.clone(), Value::Integer(1_i64.into()), "t"),
+        ] {
+            assert_eq!(
+                ObjectClosure::new(&types, [(owner.clone(), attributes(u, t))], &[])
+                    .expect_err("wrong attribute kind must refuse"),
+                ObjectClosureRefusal {
+                    object: Box::new(owner.clone()),
+                    cause: ObjectClosureCause::Attribute(ConstructionRefusal {
+                        component: Component::Field(field.into()),
+                        cause: ConstructionCause::TypeMismatch,
+                    }),
+                }
+            );
+        }
     }
 }

@@ -989,6 +989,8 @@ impl TypeEnvironment {
                 | ValueType::Decimal(_)
                 | ValueType::Quantity(_)
                 | ValueType::Text(_)
+                | ValueType::Uuid
+                | ValueType::Timestamp
                 | ValueType::Enum(_)
                 | ValueType::Reference(_)
                 | ValueType::Population(_) => {}
@@ -1044,6 +1046,8 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::Text(_)
+                | ValueType::Uuid
+                | ValueType::Timestamp
                 | ValueType::Enum(_)
                 | ValueType::Composite(_)
                 | ValueType::Reference(_) => {}
@@ -1121,6 +1125,8 @@ impl TypeEnvironment {
                     | ValueType::Float(_)
                     | ValueType::Quantity(_)
                     | ValueType::Text(_)
+                    | ValueType::Uuid
+                    | ValueType::Timestamp
                     | ValueType::Enum(_)
                     | ValueType::Reference(_)
                     | ValueType::Population(_) => {}
@@ -2509,12 +2515,50 @@ fn integer_source_admits(lower: &Integer, upper: &Integer, target: &ValueType) -
         | ValueType::Float(_)
         | ValueType::Quantity(_)
         | ValueType::Text(_)
+        | ValueType::Uuid
+        | ValueType::Timestamp
         | ValueType::Enum(_)
         | ValueType::Option(_)
         | ValueType::Composite(_)
         | ValueType::Collection(_)
         | ValueType::Reference(_)
         | ValueType::Population(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod native_type_tests {
+    use super::*;
+    use ix_trace_rs::trace;
+    use quire_exact::{Timestamp, Uuid};
+
+    /// Native kinds are valid declared leaves and admit only their own values.
+    #[trace("FR-370-AC-1")]
+    #[test]
+    fn native_type_admission_preserves_distinct_kinds() {
+        let types = TypeEnvironment::new([], []).expect("empty environment");
+        let uuid = Value::Uuid(
+            Uuid::from_canonical_text("00112233-4455-6677-8899-aabbccddeeff")
+                .expect("canonical UUID"),
+        );
+        let timestamp =
+            Value::Timestamp(Timestamp::from_canonical_text("1").expect("canonical timestamp"));
+
+        for value_type in [ValueType::Uuid, ValueType::Timestamp] {
+            assert_eq!(types.check_type(&value_type), Ok(()));
+            assert!(!types.contains_ieee(&value_type));
+            assert!(!admits_equality_conversion(
+                &ValueType::Integer,
+                &value_type,
+                &UnitScope::new(types.units()),
+            ));
+        }
+        assert!(types.admits(&ValueType::Uuid, &uuid));
+        assert!(types.admits(&ValueType::Timestamp, &timestamp));
+        assert!(!types.admits(&ValueType::Uuid, &timestamp));
+        assert!(!types.admits(&ValueType::Timestamp, &uuid));
+        assert!(!types.admits(&ValueType::Uuid, &Value::Integer(Integer::one())));
+        assert!(!types.admits(&ValueType::Timestamp, &Value::Integer(Integer::one())));
     }
 }
 

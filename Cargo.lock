@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "allocator-api2"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -135,8 +141,9 @@ dependencies = [
 [[package]]
 name = "quire-exact"
 version = "0.1.0"
-source = "git+https://github.com/agent-ix/quire-exact?branch=main#dc7891740d04a3ff4c76c1315e94216f0bdc15ec"
+source = "git+https://github.com/agent-ix/quire-exact?branch=main#34003703d4dd345ac8e2d787930275027ccab867"
 dependencies = [
+ "allocator-api2",
  "num-bigint",
  "num-integer",
  "num-traits",
