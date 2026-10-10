@@ -56,7 +56,6 @@ use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -153,6 +152,42 @@ mod storage_reservation_tests {
                 usize::MAX,
                 StorageUnit::AdditionalElements,
             )))
+        );
+    }
+
+    /// Trace: FR-108-AC-3, FR-108-AC-5
+    #[trace("TC-907", "FR-108-AC-3", "FR-108-AC-5")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked type identities without minting them in production"
+    )]
+    #[test]
+    fn inherited_attribute_view_resolves_the_original_field() {
+        let a = EffectiveId::from_digest([1; 32]);
+        let b = EffectiveId::from_digest([2; 32]);
+        let parent = ObjectTypeDeclaration::new(
+            a,
+            "A",
+            vec![FieldDeclaration::new(
+                "x",
+                ValueType::Integer,
+                Presence::Required,
+            )],
+        );
+        let child = ObjectTypeDeclaration::new(b, "B", vec![]).with_supertypes(vec![a]);
+        let environment = TypeEnvironment::new([], [child, parent]).expect("inheritance admits");
+        let attributes = environment.attributes(b).expect("child has admitted type");
+        assert_eq!(attributes.len(), 1);
+        let inherited = attributes.iter().next().expect("one inherited attribute");
+        assert_eq!(inherited.owner(), a);
+        assert_eq!(inherited.field().name(), "x");
+        assert!(inherited.stands_for(&FieldRef::new(a, "x")));
+        assert_eq!(
+            environment
+                .attribute(b, "x")
+                .expect("name lookup")
+                .identity(),
+            FieldRef::new(a, "x")
         );
     }
 }
@@ -309,14 +344,18 @@ fn refuse<T>(component: Component, cause: ConstructionCause) -> Result<T, Constr
 /// repeated name. This module's own `TypeEnvironment::evaluate_record` uses
 /// it to match supplied `FieldExpression`s to declared fields the same way
 /// [`fill_slots`] matches supplied `FieldValue`s.
-fn match_names<'n, F: AsRef<FieldDeclaration>, T>(
-    declared: &[F],
-    supplied: Vec<(&'n str, T)>,
-) -> Result<BTreeMap<&'n str, T>, ConstructionRefusal> {
+fn match_names<F: AsRef<FieldDeclaration>, D: Clone + IntoIterator<Item = F>, T>(
+    declared: D,
+    supplied: Vec<(&str, T)>,
+) -> Result<BTreeMap<&str, T>, ConstructionRefusal> {
     let mut by_name = BTreeMap::new();
     for (name, entry) in supplied {
         let component = || Component::Field(name.to_owned());
-        if !declared.iter().any(|field| field.as_ref().name == name) {
+        if !declared
+            .clone()
+            .into_iter()
+            .any(|field| field.as_ref().name == name)
+        {
             return refuse(component(), ConstructionCause::UndeclaredField);
         }
         if by_name.insert(name, entry).is_some() {
@@ -331,13 +370,13 @@ fn match_names<'n, F: AsRef<FieldDeclaration>, T>(
 /// ([`TypeEnvironment::attributes`]), so an inherited field has a slot. A
 /// present value must be admitted by its field's type under `types`'
 /// conformance ([`TypeEnvironment::admits`]).
-pub fn fill_slots<F: AsRef<FieldDeclaration>>(
+pub fn fill_slots<F: AsRef<FieldDeclaration>, D: Clone + IntoIterator<Item = F>>(
     types: &TypeEnvironment,
-    declared: &[F],
+    declared: D,
     supplied: Vec<(&str, FieldValue)>,
 ) -> Result<Box<[FieldValue]>, ConstructionRefusal> {
-    let mut by_name = match_names(declared, supplied)?;
-    let mut slots = Vec::with_capacity(declared.len());
+    let mut by_name = match_names(declared.clone(), supplied)?;
+    let mut slots = Vec::with_capacity(declared.clone().into_iter().count());
     for field in declared {
         let field = field.as_ref();
         let component = || Component::Field(field.name.clone());
@@ -486,54 +525,111 @@ impl ObjectTypeDeclaration {
 /// type declares or inherits and that no other field of the set redefines.
 /// It is one storage slot of every object of that type.
 ///
-/// A cheap handle: every descendant that inherits the attribute unchanged
-/// shares the one allocation its declaring type made, so a deep chain holds
-/// each field's declaration once, not once per descendant.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EffectiveAttribute(Arc<AttributeSlot>);
+/// A borrowed view of a stored attribute. The declaration is owned once by
+/// the environment and is never cloned while admission flattens inheritance.
+#[derive(Clone, Copy, Debug)]
+pub struct EffectiveAttribute<'a> {
+    environment: &'a TypeEnvironment,
+    slot: &'a AttributeSlot,
+    field: &'a FieldDeclaration,
+}
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct AttributeSlot {
     owner: EffectiveId,
-    field: FieldDeclaration,
-    /// This field and every field it stands in for: those it redefines,
-    /// transitively, and those a more derived redefinition of the same
-    /// target hid. Ascending, so [`EffectiveAttribute::stands_for`] is a
-    /// binary search.
-    lineage: Vec<FieldRef>,
-    /// The same fields as `lineage`, as positions in the admission's
-    /// [`FieldTable`], ascending.
+    /// Position in the owner's declared attributes.
+    field_index: usize,
+    /// Every field this slot stands for, as positions in [`FieldTable`].
     members: Vec<usize>,
     /// This field's own position in the admission's [`FieldTable`].
     identity: usize,
 }
 
-impl EffectiveAttribute {
+struct EffectiveStorage {
+    index: OrderedIndex<EffectiveId, Vec<usize>>,
+    slots: Vec<AttributeSlot>,
+}
+
+impl EffectiveAttribute<'_> {
     /// The object type that declares this field.
     pub fn owner(&self) -> EffectiveId {
-        self.0.owner
+        self.slot.owner
     }
 
     /// The field's declaration.
     pub fn field(&self) -> &FieldDeclaration {
-        &self.0.field
+        self.field
     }
 
     /// This field's own identity.
     pub fn identity(&self) -> FieldRef {
-        FieldRef::new(self.0.owner, self.0.field.name())
+        FieldRef::new(self.slot.owner, self.field.name())
     }
 
     /// Whether this slot holds `field`: `field` is this attribute, or a field
     /// it redefines or hides.
     pub fn stands_for(&self, field: &FieldRef) -> bool {
-        self.0.lineage.binary_search(field).is_ok()
+        self.environment
+            .field_position(field)
+            .is_some_and(|position| self.slot.members.binary_search(&position).is_ok())
     }
 }
 
-impl AsRef<FieldDeclaration> for EffectiveAttribute {
+impl AsRef<FieldDeclaration> for EffectiveAttribute<'_> {
     fn as_ref(&self) -> &FieldDeclaration {
-        &self.0.field
+        self.field
+    }
+}
+
+/// One object type's effective attributes in slot order.
+#[derive(Clone, Copy)]
+pub struct AttributeSet<'a> {
+    environment: &'a TypeEnvironment,
+    slots: &'a [usize],
+}
+
+impl<'a> AttributeSet<'a> {
+    /// The number of storage slots.
+    pub fn len(self) -> usize {
+        self.slots.len()
+    }
+
+    /// Whether the object type has no attributes.
+    pub fn is_empty(self) -> bool {
+        self.slots.is_empty()
+    }
+
+    /// Iterate attributes in their declared slot order.
+    pub fn iter(self) -> AttributeIter<'a> {
+        AttributeIter {
+            environment: self.environment,
+            slots: self.slots.iter(),
+        }
+    }
+}
+
+/// Iterator over one effective attribute set.
+#[derive(Clone)]
+pub struct AttributeIter<'a> {
+    environment: &'a TypeEnvironment,
+    slots: core::slice::Iter<'a, usize>,
+}
+
+impl<'a> Iterator for AttributeIter<'a> {
+    type Item = EffectiveAttribute<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.slots
+            .find_map(|index| self.environment.attribute_view(*index))
+    }
+}
+
+impl<'a> IntoIterator for AttributeSet<'a> {
+    type Item = EffectiveAttribute<'a>;
+    type IntoIter = AttributeIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -616,6 +712,7 @@ impl WorkBudget {
 enum Stopped {
     Refused(DeclarationCause),
     Limit(EnvironmentLimit),
+    Storage(EnvironmentFailure),
 }
 
 impl From<DeclarationCause> for Stopped {
@@ -630,6 +727,12 @@ impl From<EnvironmentLimit> for Stopped {
     }
 }
 
+impl From<EnvironmentFailure> for Stopped {
+    fn from(failure: EnvironmentFailure) -> Self {
+        Self::Storage(failure)
+    }
+}
+
 impl Stopped {
     /// This stop as the admission's stage failure, a refusal naming
     /// `declaration`.
@@ -640,6 +743,7 @@ impl Stopped {
                 cause,
             }),
             Self::Limit(limit) => EnvironmentFailure::Limit(limit),
+            Self::Storage(failure) => failure,
         }
     }
 }
@@ -786,6 +890,22 @@ fn reserve_elements<T, R: ReservationPolicy>(
     values
         .try_reserve_exact(additional)
         .map_err(|_| EnvironmentFailure::Allocation(request))
+}
+
+fn try_push<T, R: ReservationPolicy>(values: &mut Vec<T>, value: T, policy: &R) -> Admission<()> {
+    reserve_elements(values, 1, policy)?;
+    values.push(value);
+    Ok(())
+}
+
+fn try_extend_copy<T: Copy, R: ReservationPolicy>(
+    values: &mut Vec<T>,
+    source: &[T],
+    policy: &R,
+) -> Admission<()> {
+    reserve_elements(values, source.len(), policy)?;
+    values.extend_from_slice(source);
+    Ok(())
 }
 
 /// Ordered index whose growth is reserved before it changes. It has the
@@ -956,7 +1076,9 @@ pub struct TypeEnvironment {
     /// redefines. Computed once in [`TypeEnvironment::bounded`]; an object's
     /// storage slots are exactly this set, so an attribute lookup never
     /// walks ancestors.
-    effective: BTreeMap<EffectiveId, Vec<EffectiveAttribute>>,
+    effective: OrderedIndex<EffectiveId, Vec<usize>>,
+    attribute_slots: Vec<AttributeSlot>,
+    field_keys: Vec<(EffectiveId, usize)>,
     /// The units a `ValueType::Quantity` of this package names by id.
     units: UnitTable,
 }
@@ -1091,8 +1213,20 @@ impl TypeEnvironment {
         environment
             .check_redefinitions(&table)
             .map_err(EnvironmentFailure::Refused)?;
-        let effective = environment.compute_effective(&table, &mut budget)?;
-        environment.effective = effective;
+        let storage = environment.compute_effective(&table, &mut budget, reserve)?;
+        environment.effective = storage.index;
+        environment.attribute_slots = storage.slots;
+        reserve_elements(&mut environment.field_keys, table.fields.len(), reserve)?;
+        for (owner, field, _) in &table.fields {
+            if let Some(index) = environment.object_types.get(owner).and_then(|declaration| {
+                declaration
+                    .attributes
+                    .iter()
+                    .position(|entry| core::ptr::eq(entry, *field))
+            }) {
+                environment.field_keys.push((*owner, index));
+            }
+        }
         Ok(environment)
     }
 
@@ -1102,15 +1236,47 @@ impl TypeEnvironment {
     /// appears once; a field a more derived attribute of the set stands for
     /// is left out, and that attribute keeps its own place. `None` for a key
     /// that is no admitted object type.
-    pub fn attributes(&self, object_type: EffectiveId) -> Option<&[EffectiveAttribute]> {
-        self.effective.get(&object_type).map(Vec::as_slice)
+    pub fn attributes(&self, object_type: EffectiveId) -> Option<AttributeSet<'_>> {
+        self.effective.get(&object_type).map(|slots| AttributeSet {
+            environment: self,
+            slots,
+        })
     }
 
     /// The attribute `name` resolves to in the object type's effective set.
-    pub fn attribute(&self, object_type: EffectiveId, name: &str) -> Option<&EffectiveAttribute> {
+    pub fn attribute(
+        &self,
+        object_type: EffectiveId,
+        name: &str,
+    ) -> Option<EffectiveAttribute<'_>> {
         self.attributes(object_type)?
             .iter()
             .find(|attribute| attribute.field().name() == name)
+    }
+
+    fn attribute_view(&self, index: usize) -> Option<EffectiveAttribute<'_>> {
+        let slot = self.attribute_slots.get(index)?;
+        let field = self
+            .object_types
+            .get(&slot.owner)?
+            .attributes
+            .get(slot.field_index)?;
+        Some(EffectiveAttribute {
+            environment: self,
+            slot,
+            field,
+        })
+    }
+
+    fn field_position(&self, target: &FieldRef) -> Option<usize> {
+        self.field_keys.iter().position(|(owner, field_index)| {
+            *owner == target.owner
+                && self
+                    .object_types
+                    .get(owner)
+                    .and_then(|declaration| declaration.attributes.get(*field_index))
+                    .is_some_and(|field| field.name() == target.name)
+        })
     }
 
     /// This environment with `units` as its quantity unit table.
@@ -1679,21 +1845,25 @@ impl TypeEnvironment {
     /// must be required where that field's is, and every value its type
     /// admits that field's type must admit ([`Self::narrows`]). Otherwise
     /// the read would yield a value its checked type does not describe.
-    fn widened(&self, attribute: &EffectiveAttribute, table: &FieldTable<'_>) -> Option<FieldRef> {
-        let field = attribute.field();
+    fn widened(
+        &self,
+        index: usize,
+        slots: &[AttributeSlot],
+        table: &FieldTable<'_>,
+    ) -> Option<FieldRef> {
+        let attribute = slots.get(index)?;
+        let field = table.field(attribute.identity)?;
         attribute
-            .0
             .members
             .iter()
-            .zip(&attribute.0.lineage)
-            .find(|(member, _)| {
+            .find(|member| {
                 table.field(**member).is_some_and(|redefined| {
                     (field.presence == Presence::Optional
                         && redefined.presence == Presence::Required)
                         || !Self::narrows(&field.value_type, &redefined.value_type)
                 })
             })
-            .map(|(_, hidden)| hidden.clone())
+            .and_then(|member| table.reference(*member))
     }
 
     /// Whether every value `narrower` admits, `wider` admits *and*
@@ -1733,12 +1903,14 @@ impl TypeEnvironment {
     /// no type re-walks its ancestors and an inherited attribute is shared,
     /// not copied. `budget` is charged every attribute and lineage field a
     /// type's flattening reads.
-    fn compute_effective(
+    fn compute_effective<R: ReservationPolicy>(
         &self,
         table: &FieldTable<'_>,
         budget: &mut WorkBudget,
-    ) -> Admission<BTreeMap<EffectiveId, Vec<EffectiveAttribute>>> {
-        let mut effective: BTreeMap<EffectiveId, Vec<EffectiveAttribute>> = BTreeMap::new();
+        reserve: &R,
+    ) -> Admission<EffectiveStorage> {
+        let mut effective: OrderedIndex<EffectiveId, Vec<usize>> = OrderedIndex::default();
+        let mut slots = Vec::new();
         let mut scratch = Scratch::new(table.len(), table.name_count());
         for (root, declaration) in &self.object_types {
             if effective.contains_key(root) {
@@ -1758,12 +1930,23 @@ impl TypeEnvironment {
                 }
                 path.pop();
                 let attributes = self
-                    .flatten(node, &effective, table, &mut scratch, budget)
+                    .flatten(
+                        node,
+                        &effective,
+                        table,
+                        &mut scratch,
+                        budget,
+                        &mut slots,
+                        reserve,
+                    )
                     .map_err(|stopped| stopped.at(&node.name))?;
-                effective.insert(node.key, attributes);
+                effective.try_insert(node.key, attributes, reserve)?;
             }
         }
-        Ok(effective)
+        Ok(EffectiveStorage {
+            index: effective,
+            slots,
+        })
     }
 
     /// One object type's effective attribute set, from its own fields and
@@ -1775,47 +1958,64 @@ impl TypeEnvironment {
     /// owner is a proper descendant of every other member's owner, with the
     /// members' lineages merged into it; a group with no such member is
     /// QSpec FR-151's conflict.
-    fn flatten(
+    fn flatten<R: ReservationPolicy>(
         &self,
         declaration: &ObjectTypeDeclaration,
-        effective: &BTreeMap<EffectiveId, Vec<EffectiveAttribute>>,
+        effective: &OrderedIndex<EffectiveId, Vec<usize>>,
         table: &FieldTable<'_>,
         scratch: &mut Scratch,
         budget: &mut WorkBudget,
-    ) -> Result<Vec<EffectiveAttribute>, Stopped> {
+        slots: &mut Vec<AttributeSlot>,
+        reserve: &R,
+    ) -> Result<Vec<usize>, Stopped> {
         scratch.next_type();
-        let mut candidates: Vec<EffectiveAttribute> =
-            Vec::with_capacity(declaration.attributes.len());
-        let mut fresh: Vec<bool> = Vec::with_capacity(declaration.attributes.len());
-        for field in &declaration.attributes {
-            let attribute = own_attribute(declaration.key, field, table, budget)?;
-            scratch.claim_identity(attribute.0.identity, candidates.len());
-            candidates.push(attribute);
-            fresh.push(true);
+        let mut candidates: Vec<usize> = Vec::new();
+        let mut fresh: Vec<bool> = Vec::new();
+        for (field_index, field) in declaration.attributes.iter().enumerate() {
+            let attribute = own_attribute(
+                declaration.key,
+                field_index,
+                field,
+                table,
+                budget,
+                slots,
+                reserve,
+            )?;
+            if let Some(slot) = slots.get(attribute) {
+                scratch.claim_identity(slot.identity, candidates.len());
+            }
+            try_push(&mut candidates, attribute, reserve)?;
+            try_push(&mut fresh, true, reserve)?;
         }
         for supertype in &declaration.supertypes {
             let inherited = effective.get(supertype).map_or(&[][..], Vec::as_slice);
             budget.charge(inherited.len())?;
-            for attribute in inherited {
+            for &attribute in inherited {
                 // A diamond passes one field down two paths: keep it once,
                 // with both paths' lineages when they differ.
-                match scratch.identity(attribute.0.identity) {
+                let Some(inherited_slot) = slots.get(attribute) else {
+                    continue;
+                };
+                match scratch.identity(inherited_slot.identity) {
                     None => {
-                        scratch.claim_identity(attribute.0.identity, candidates.len());
-                        candidates.push(attribute.clone());
-                        fresh.push(false);
+                        scratch.claim_identity(inherited_slot.identity, candidates.len());
+                        try_push(&mut candidates, attribute, reserve)?;
+                        try_push(&mut fresh, false, reserve)?;
                     }
                     Some(kept) => {
-                        let Some(existing) = candidates.get(kept) else {
+                        let Some(&existing) = candidates.get(kept) else {
                             continue;
                         };
-                        budget.charge(attribute.0.members.len())?;
-                        if Arc::ptr_eq(&existing.0, &attribute.0)
-                            || existing.0.members == attribute.0.members
+                        budget.charge(inherited_slot.members.len())?;
+                        if existing == attribute
+                            || slots
+                                .get(existing)
+                                .is_some_and(|slot| slot.members == inherited_slot.members)
                         {
                             continue;
                         }
-                        let merged = merge(existing, [existing, attribute], table, budget)?;
+                        let merged =
+                            merge(existing, [existing, attribute], slots, budget, reserve)?;
                         if let (Some(slot), Some(flag)) =
                             (candidates.get_mut(kept), fresh.get_mut(kept))
                         {
@@ -1828,9 +2028,12 @@ impl TypeEnvironment {
         }
 
         let mut groups = UnionFind::new(candidates.len());
-        for (index, attribute) in candidates.iter().enumerate() {
-            budget.charge(attribute.0.members.len())?;
-            for &member in &attribute.0.members {
+        for (index, &attribute) in candidates.iter().enumerate() {
+            let Some(slot) = slots.get(attribute) else {
+                continue;
+            };
+            budget.charge(slot.members.len())?;
+            for &member in &slot.members {
                 match scratch.holder(member) {
                     Some(holder) => groups.union(holder, index, member),
                     None => scratch.hold(member, index),
@@ -1848,10 +2051,15 @@ impl TypeEnvironment {
             }
         }
         // Each group's surviving position, and its (possibly merged) attribute.
-        let mut survivors: BTreeMap<usize, (usize, EffectiveAttribute)> = BTreeMap::new();
+        let mut survivors: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
         for (root, members) in &members_of {
             budget.charge(members.len())?;
-            let owner = |index: usize| candidates.get(index).map(EffectiveAttribute::owner);
+            let owner = |index: usize| {
+                candidates
+                    .get(index)
+                    .and_then(|slot| slots.get(*slot))
+                    .map(|slot| slot.owner)
+            };
             let properly = |sub: usize, sup: usize| match (owner(sub), owner(sup)) {
                 (Some(sub), Some(sup)) => sub != sup && self.conforms(sub, sup),
                 _ => false,
@@ -1865,45 +2073,55 @@ impl TypeEnvironment {
             let conflict = members
                 .iter()
                 .any(|&member| member != best && !properly(best, member));
-            let Some(winner) = candidates.get(best) else {
+            let Some(&winner) = candidates.get(best) else {
                 continue;
             };
             if conflict {
                 // A group of two or more was joined over a common field, so
                 // `shared` is always set; the winner's own field is named
                 // otherwise, never an invented one.
-                let shared = groups
+                let Some(shared) = groups
                     .shared(*root)
                     .and_then(|position| table.reference(position))
-                    .unwrap_or_else(|| winner.identity());
+                    .or_else(|| {
+                        slots
+                            .get(winner)
+                            .and_then(|slot| table.reference(slot.identity))
+                    })
+                else {
+                    continue;
+                };
                 return Err(DeclarationCause::RedefinitionConflict(shared).into());
             }
             let merged = merge(
                 winner,
-                members.iter().filter_map(|&member| candidates.get(member)),
-                table,
+                members
+                    .iter()
+                    .filter_map(|&member| candidates.get(member).copied()),
+                slots,
                 budget,
+                reserve,
             )?;
             if let Some(flag) = fresh.get_mut(best) {
-                *flag |= !Arc::ptr_eq(&merged.0, &winner.0);
+                *flag |= merged != winner;
             }
             survivors.insert(*root, (best, merged));
         }
 
-        let mut attributes = Vec::with_capacity(candidates.len());
-        let mut checked = Vec::with_capacity(candidates.len());
+        let mut attributes = Vec::new();
+        let mut checked = Vec::new();
         for (index, attribute) in candidates.into_iter().enumerate() {
             let root = roots.get(index).copied().unwrap_or(index);
             let is_fresh = fresh.get(index).copied().unwrap_or(true);
             match survivors.get(&root) {
                 Some((best, merged)) if *best == index => {
-                    attributes.push(merged.clone());
-                    checked.push(is_fresh);
+                    try_push(&mut attributes, *merged, reserve)?;
+                    try_push(&mut checked, is_fresh, reserve)?;
                 }
                 Some(_) => {}
                 None => {
-                    attributes.push(attribute);
-                    checked.push(is_fresh);
+                    try_push(&mut attributes, attribute, reserve)?;
+                    try_push(&mut checked, is_fresh, reserve)?;
                 }
             }
         }
@@ -1913,19 +2131,25 @@ impl TypeEnvironment {
             .iter()
             .zip(&checked)
             .filter(|(_, fresh)| **fresh)
-            .find_map(|(attribute, _)| self.widened(attribute, table))
+            .find_map(|(attribute, _)| self.widened(*attribute, slots, table))
         {
             return Err(DeclarationCause::RedefinitionWidens(widened).into());
         }
         budget.charge(attributes.len())?;
-        for attribute in &attributes {
+        for &attribute in &attributes {
             let taken = table
-                .name_of(attribute.0.identity)
+                .name_of(
+                    slots
+                        .get(attribute)
+                        .map_or(usize::MAX, |slot| slot.identity),
+                )
                 .is_some_and(|name| !scratch.claim_name(name));
             if taken {
-                return Err(
-                    DeclarationCause::DuplicateMember(attribute.field().name().to_owned()).into(),
-                );
+                let name = slots
+                    .get(attribute)
+                    .and_then(|slot| table.field(slot.identity))
+                    .map_or("", FieldDeclaration::name);
+                return Err(DeclarationCause::DuplicateMember(name.to_owned()).into());
             }
         }
         Ok(attributes)
@@ -2093,64 +2317,84 @@ impl Ancestry {
 /// every field it redefines, transitively. [`TypeEnvironment::check_redefinitions`]
 /// has admitted every link, and each one moves to a proper ancestor of an
 /// acyclic graph; `budget` is charged each link all the same.
-fn own_attribute(
+fn own_attribute<R: ReservationPolicy>(
     owner: EffectiveId,
+    field_index: usize,
     field: &FieldDeclaration,
     table: &FieldTable<'_>,
     budget: &mut WorkBudget,
-) -> Result<EffectiveAttribute, Stopped> {
+    slots: &mut Vec<AttributeSlot>,
+    reserve: &R,
+) -> Result<usize, Stopped> {
     let own = FieldRef::new(owner, field.name());
     let identity = table
         .position(&own)
         .ok_or_else(|| DeclarationCause::RedefinitionTarget(own.clone()))?;
-    let mut members = vec![identity];
+    let mut members = Vec::new();
+    try_push(&mut members, identity, reserve)?;
     let mut next = field.redefines();
     while let Some(target) = next {
         budget.charge(1)?;
         let position = table
             .position(target)
             .ok_or_else(|| DeclarationCause::RedefinitionTarget(target.clone()))?;
-        members.push(position);
+        try_push(&mut members, position, reserve)?;
         next = table.field(position).and_then(FieldDeclaration::redefines);
     }
     members.sort_unstable();
     members.dedup();
-    Ok(EffectiveAttribute(Arc::new(AttributeSlot {
-        owner,
-        field: field.clone(),
-        lineage: table.references(&members),
-        members,
-        identity,
-    })))
+    let index = slots.len();
+    try_push(
+        slots,
+        AttributeSlot {
+            owner,
+            field_index,
+            members,
+            identity,
+        },
+        reserve,
+    )?;
+    Ok(index)
 }
 
 /// `winner` standing for every field any of `group` stands for. `winner`
 /// itself, shared, when it already does.
-fn merge<'a>(
-    winner: &EffectiveAttribute,
-    group: impl IntoIterator<Item = &'a EffectiveAttribute>,
-    table: &FieldTable<'_>,
+fn merge<R: ReservationPolicy>(
+    winner: usize,
+    group: impl IntoIterator<Item = usize>,
+    slots: &mut Vec<AttributeSlot>,
     budget: &mut WorkBudget,
-) -> Result<EffectiveAttribute, EnvironmentLimit> {
+    reserve: &R,
+) -> Result<usize, Stopped> {
     let mut members: Vec<usize> = Vec::new();
-    for attribute in group {
-        budget.charge(attribute.0.members.len())?;
-        members.extend_from_slice(&attribute.0.members);
+    for index in group {
+        if let Some(attribute) = slots.get(index) {
+            budget.charge(attribute.members.len())?;
+            try_extend_copy(&mut members, &attribute.members, reserve)?;
+        }
     }
-    budget.charge(winner.0.members.len())?;
-    members.extend_from_slice(&winner.0.members);
+    let Some(winner_slot) = slots.get(winner) else {
+        return Ok(winner);
+    };
+    budget.charge(winner_slot.members.len())?;
+    try_extend_copy(&mut members, &winner_slot.members, reserve)?;
     members.sort_unstable();
     members.dedup();
-    if members == winner.0.members {
-        return Ok(winner.clone());
+    if members == winner_slot.members {
+        return Ok(winner);
     }
-    Ok(EffectiveAttribute(Arc::new(AttributeSlot {
-        owner: winner.0.owner,
-        field: winner.0.field.clone(),
-        lineage: table.references(&members),
-        members,
-        identity: winner.0.identity,
-    })))
+    let index = slots.len();
+    try_push(
+        slots,
+        AttributeSlot {
+            owner: winner_slot.owner,
+            field_index: winner_slot.field_index,
+            members,
+            identity: winner_slot.identity,
+        },
+        reserve,
+    )?;
+    Ok(index)
 }
 
 /// Every object-type field of one admission, numbered in [`FieldRef`]
@@ -2214,14 +2458,6 @@ impl<'e> FieldTable<'e> {
         self.fields
             .get(position)
             .map(|(owner, field, _)| FieldRef::new(*owner, field.name()))
-    }
-
-    /// The fields at `positions`, in the same (ascending) order.
-    fn references(&self, positions: &[usize]) -> Vec<FieldRef> {
-        positions
-            .iter()
-            .filter_map(|position| self.reference(*position))
-            .collect()
     }
 }
 
