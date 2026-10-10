@@ -2480,6 +2480,12 @@ impl TypeEnvironment {
     ) -> Result<CheckedEquality, IllTyped> {
         let ill_typed = |cause| Err(IllTyped { cause });
         for operand in [&left, &right] {
+            self.check_type(&operand.source)?;
+            if let Some(target) = &operand.target {
+                self.check_type(target)?;
+            }
+        }
+        for operand in [&left, &right] {
             if let Some(target) = &operand.target {
                 if !admits_equality_conversion(&operand.source, target, units) {
                     return ill_typed(IllTypedCause::TypeMismatch);
