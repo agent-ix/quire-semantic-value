@@ -3,7 +3,7 @@ id: SR-4946
 title: "Coder Rust prehandoff review of IR-713 admission storage"
 type: SpecReview
 analysis: code-review
-scope: "agent-ix/quire-semantic-value@ec6e801; src/declaration.rs; FR-108-AC-1 through FR-108-AC-5, TC-907"
+scope: "agent-ix/quire-semantic-value@ec6e801 and @e2b9b5f; src/declaration.rs; FR-108-AC-1 through FR-108-AC-5, TC-907"
 review_set: subset
 relationships:
   - target: ix://agent-ix/quire-semantic-value/FR-108
@@ -37,4 +37,10 @@ Reviewed the authored-declaration admission diff at ec6e801 using the repository
 
 The admission audit followed `TypeEnvironment::bounded_with_reservations` through duplicate detection, member-type walks, recursion and generalization traversals, ancestry, field indexing, sealing, flattening, refusal construction, and key join. Tree insertion and clone sites in `contains_ieee` and `type_refusal` are public query paths; admission uses their separate fallible walkers. Construction and evaluation allocations elsewhere in `src/declaration.rs` are outside FR-108 admission. No unsafe code, production panic, compatibility layer, or copied source was added. The CI workflow diff is empty.
 
-Focused evidence after fixes: `cargo test --lib declaration --locked` passed 20 tests; `cargo clippy --lib --tests --locked -- -D warnings`, `cargo fmt --check`, and `git diff --check` passed. The QSV base has Record and Tuple only, so TC-907's Union fixture is not yet evidenced. No QSL consumer compile has run.
+Focused evidence after fixes at fd8781d: `cargo test --lib declaration --locked` passed 20 tests; `cargo clippy --lib --tests --locked -- -D warnings`, `cargo fmt --check`, and `git diff --check` passed.
+
+## Final coder prehandoff pass
+
+The full `origin/main...e2b9b5f` Rust diff was inspected again after rebasing onto the IR-720 specification-only merge. The CI workflow diff is empty. All authored-declaration admission growth remains behind the fallible reservation carrier; the ordinary tree insertions and allocating evaluation helpers are outside admission. No new unsafe, panic on a request path, unbounded storage growth, or test-only production branch was found. The new admission byte-denial test exercises the production `bounded_with_reservations` call rather than invoking a cloning helper alone. Its non-denied counterpart preserves the duplicate-key refusal. An order and inheritance control checks public key iteration, slot order, and member resolution after reversed declaration inputs. The phase-denial control checks the restored member link after each retry.
+
+The order control initially caught a lifetime defect: `EffectiveAttribute::field()` tied its returned reference to a temporary view, which prevented retaining a field name after consuming that view. The final `e2b9b5f` returns the environment-backed field reference for the view's lifetime; this compiles and passes the focused test. `cargo fmt --check`, `cargo clippy --lib --tests --locked -- -D warnings`, `cargo test --lib declaration --locked` (21 passed), and `git diff --check` passed on that head. The Union fixture cannot run until the separate QSL-500 union shape reaches QSV; QSL's exact consumer has not been compiled against this head. No full gate or PR review is claimed.
