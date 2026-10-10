@@ -18,8 +18,8 @@ use quire_exact::{
     BoundedInteger, Charge, ChargePoint, Integer, IntegerInterval, LimitKind, Meter, Quantity,
     UnitId,
 };
+use quire_exact::{CheckedInvariantCause, InexactTarget, Outcome, Refusal, Undefined};
 use quire_exact::{ComparisonOperator, IllTyped, IllTypedCause};
-use quire_exact::{InexactTarget, Outcome, Refusal, Undefined};
 
 /// The unit of a quantity: an admitted declared unit or a compound unit
 /// produced by multiplication, division or power.
@@ -797,7 +797,9 @@ fn convert(
                 .admit()
                 .map_err(|_| out_of_domain())?
                 .into_integer()
-                .ok_or(Stop::Refused(Refusal::CheckedInvariant))?;
+                .ok_or(Stop::Refused(Refusal::CheckedInvariant {
+                    cause: CheckedInvariantCause::ExpectedIntegerPlacement,
+                }))?;
             let value = domain.admit(coefficient).map_err(|_| out_of_domain())?;
             charge_retain(meter)?;
             ConvertedValue::Integer { value, loss }
