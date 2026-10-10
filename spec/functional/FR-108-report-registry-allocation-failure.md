@@ -70,12 +70,12 @@ a configured environment limit, and canonical identity-preimage allocation.
 ## Dependencies
 
 - [QSL FR-082](ix://agent-ix/quire-spec-language/FR-082) owns the expression
-  checker's consumer result. QSL's owner must settle its public resource
-  payload and bind its caller assertions to a QSL criterion and test case.
-  The intended downstream outcome is distinct from malformed input,
-  configured-budget exhaustion, and cancellation, with no evaluation or
-  evaluation charge before denial. This QSV requirement neither defines a
-  QSL result shape nor assigns a QSL requirement ID.
+  checker's admission behavior but does not define registry allocation units
+  or an outcome for this carrier. QSL-678 owns specification of the caller's
+  public resource payload and its criterion and test case. The intended
+  downstream outcome is distinct from malformed input, configured-budget
+  exhaustion, and cancellation, with no evaluation or evaluation charge
+  before denial. This QSV requirement does not define the QSL result shape.
 - [QSL FR-259](ix://agent-ix/quire-spec-language/FR-259) governs canonical
   identity-reader and encoder allocation failure. Its `IdentityRefusal`
   mapping does not classify registry storage failure.
