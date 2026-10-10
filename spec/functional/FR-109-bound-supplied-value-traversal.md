@@ -140,8 +140,11 @@ actual caller/admission bound and authoritative helper version.
   `dc7891740d04a3ff4c76c1315e94216f0bdc15ec` and num-bigint 0.4.8.
   QSV `TypeEnvironment::admits` is bool-only; its declaration WorkBudget is
   private and is not the new supplied traversal contract. Decimal helper
-  qualification and a reviewed public union declaration/member API are real
-  implementation prerequisites, not claims of current support.
+  qualification is allocated to IR-718 SPEC and IR-719 implementation in the
+  authoritative exact-kernel owner. Both remain prerequisites for claiming
+  this Decimal path; the pending design does not introduce a fifth helper-entry
+  event or select a default. A reviewed public union declaration/member API
+  remains another implementation prerequisite, not a claim of current support.
 
 ## Status
 
