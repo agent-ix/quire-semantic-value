@@ -19,9 +19,10 @@ out-of-memory result from a malformed declaration or an exhausted budget.
 ## Test Procedure
 
 1. Admit a valid declaration set containing record, tuple, union, and object
-   members under generous limits. Deny a selected registry, index, key-join,
-   and traversal reservation in separate attempts through an isolated
-   allocator seam. For each attempt, compare the public allocation failure's
+   members under generous limits. At the redesigned production storage
+   boundaries, deny a selected registry, index, key-join, and traversal
+   reservation in separate attempts through an isolated allocator seam.
+   For each attempt, compare the public allocation failure's
    amount and unit with the attempted reservation. Remove the denial and
    admit the identical declarations.
 2. Trigger a reservation-size arithmetic or representation overflow without
@@ -35,7 +36,9 @@ out-of-memory result from a malformed declaration or an exhausted budget.
    declaration, cancellation, canonical identity-preimage allocation
    failure, and the released checked-invariant cause controls. Assert each
    original classification and its original bound/counter or cause. Inspect
-   authored-declaration storage and worklist growth for infallible paths.
+   all authored-declaration storage and worklist growth, including tree
+   insertion, allocating copies, attribute slots, and vector construction,
+   for any remaining infallible path.
 
 ## Expected Results
 
