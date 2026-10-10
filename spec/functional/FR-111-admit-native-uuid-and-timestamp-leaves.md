@@ -28,10 +28,10 @@ without supplying an object that either value references.
 1. QSV SHALL accept `ValueType::Uuid` and `ValueType::Timestamp` as terminal
    declared types, including object attributes. Neither contains an IEEE
    value or a composite-recursion edge. QSV's type admission SHALL admit a
-   native value only under its matching native type. QSV's type admission
-   SHALL refuse a crossed native value or an Integer value. QSV's
-   equality-conversion table SHALL NOT convert a bounded Integer source to
-   either native target.
+   native value only under its matching native type.
+   QSV's type admission SHALL refuse a crossed native value or an Integer value.
+   QSV's equality-conversion table SHALL NOT convert a bounded Integer source
+   to either native target.
 2. QSV's `ObjectClosure` SHALL admit required native attributes whose values
    match their declared types and retain their native kinds and payloads on
    attribute lookup. QSV's `ObjectClosure` SHALL treat both native values as
