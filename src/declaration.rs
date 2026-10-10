@@ -887,11 +887,25 @@ impl TypeEnvironment {
 
     /// Construct a sealed union using the caller's cumulative admission budget.
     /// Work stops are separate from existing construction refusals.
-    pub fn union_with_budget(&self, declaration: NodeKey, variant: VariantId, payload: Vec<Value>, budget: &mut WorkBudget) -> Result<Result<Value, ConstructionRefusal>, EnvironmentLimit> {
-        self.union_walk(declaration, variant, payload, &mut |units| budget.charge(units))
+    pub fn union_with_budget(
+        &self,
+        declaration: NodeKey,
+        variant: VariantId,
+        payload: Vec<Value>,
+        budget: &mut WorkBudget,
+    ) -> Result<Result<Value, ConstructionRefusal>, EnvironmentLimit> {
+        self.union_walk(declaration, variant, payload, &mut |units| {
+            budget.charge(units)
+        })
     }
 
-    fn union_walk<E>(&self, declaration: NodeKey, variant: VariantId, payload: Vec<Value>, charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Result<Value, ConstructionRefusal>, E> {
+    fn union_walk<E>(
+        &self,
+        declaration: NodeKey,
+        variant: VariantId,
+        payload: Vec<Value>,
+        charge: &mut impl FnMut(usize) -> Result<(), E>,
+    ) -> Result<Result<Value, ConstructionRefusal>, E> {
         let member = match self.union_positions(declaration, variant, payload.len()) {
             Ok(member) => member,
             Err(refusal) => return Ok(Err(refusal)),
@@ -926,11 +940,27 @@ impl TypeEnvironment {
 
     /// Evaluate a sealed union with cumulative SV admission work and the actual
     /// runtime meter. Prior runtime stops bypass further SV admission charges.
-    pub fn evaluate_union_with_budget(&self, declaration: NodeKey, variant: VariantId, payload: Vec<Deferred<'_>>, meter: &mut Meter, budget: &mut WorkBudget) -> Result<Result<Outcome<Value>, ConstructionRefusal>, EnvironmentLimit> {
-        self.evaluate_union_walk(declaration, variant, payload, meter, &mut |units| budget.charge(units))
+    pub fn evaluate_union_with_budget(
+        &self,
+        declaration: NodeKey,
+        variant: VariantId,
+        payload: Vec<Deferred<'_>>,
+        meter: &mut Meter,
+        budget: &mut WorkBudget,
+    ) -> Result<Result<Outcome<Value>, ConstructionRefusal>, EnvironmentLimit> {
+        self.evaluate_union_walk(declaration, variant, payload, meter, &mut |units| {
+            budget.charge(units)
+        })
     }
 
-    fn evaluate_union_walk<E>(&self, declaration: NodeKey, variant: VariantId, payload: Vec<Deferred<'_>>, meter: &mut Meter, charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Result<Outcome<Value>, ConstructionRefusal>, E> {
+    fn evaluate_union_walk<E>(
+        &self,
+        declaration: NodeKey,
+        variant: VariantId,
+        payload: Vec<Deferred<'_>>,
+        meter: &mut Meter,
+        charge: &mut impl FnMut(usize) -> Result<(), E>,
+    ) -> Result<Result<Outcome<Value>, ConstructionRefusal>, E> {
         let member = match self.union_positions(declaration, variant, payload.len()) {
             Ok(member) => member,
             Err(refusal) => return Ok(Err(refusal)),
@@ -3180,22 +3210,56 @@ impl TypeEnvironment {
         right: EqualityOperand,
         enum_members: &dyn Fn(&EnumShape) -> EnumMemberIndex,
     ) -> Result<CheckedEquality, IllTyped> {
-        unmetered(self.check_equality_walk(units, operator, left, right, enum_members, &mut |_| Ok(())))
+        unmetered(
+            self.check_equality_walk(units, operator, left, right, enum_members, &mut |_| Ok(())),
+        )
     }
 
     /// Check equality using the same cumulative SV budget as topology/admission.
     /// The outer result retains resource stops; the inner result retains IR712
     /// typed causes. Runtime comparison still uses its actual kernel meter.
-    pub fn check_equality_with_budget(&self, operator: EqualityOperator, left: EqualityOperand, right: EqualityOperand, enum_members: &EnumMemberIndex, budget: &mut WorkBudget) -> Result<Result<CheckedEquality, IllTyped>, EnvironmentLimit> {
-        self.check_equality_in_with_budget(&UnitScope::new(&self.units), operator, left, right, &|shape: &EnumShape| enum_members.filtered(shape.variants()), budget)
+    pub fn check_equality_with_budget(
+        &self,
+        operator: EqualityOperator,
+        left: EqualityOperand,
+        right: EqualityOperand,
+        enum_members: &EnumMemberIndex,
+        budget: &mut WorkBudget,
+    ) -> Result<Result<CheckedEquality, IllTyped>, EnvironmentLimit> {
+        self.check_equality_in_with_budget(
+            &UnitScope::new(&self.units),
+            operator,
+            left,
+            right,
+            &|shape: &EnumShape| enum_members.filtered(shape.variants()),
+            budget,
+        )
     }
 
     /// Budgeted equality checking against the caller's actual stage unit scope.
-    pub fn check_equality_in_with_budget(&self, units: &UnitScope<'_>, operator: EqualityOperator, left: EqualityOperand, right: EqualityOperand, enum_members: &dyn Fn(&EnumShape) -> EnumMemberIndex, budget: &mut WorkBudget) -> Result<Result<CheckedEquality, IllTyped>, EnvironmentLimit> {
-        self.check_equality_walk(units, operator, left, right, enum_members, &mut |units| budget.charge(units))
+    pub fn check_equality_in_with_budget(
+        &self,
+        units: &UnitScope<'_>,
+        operator: EqualityOperator,
+        left: EqualityOperand,
+        right: EqualityOperand,
+        enum_members: &dyn Fn(&EnumShape) -> EnumMemberIndex,
+        budget: &mut WorkBudget,
+    ) -> Result<Result<CheckedEquality, IllTyped>, EnvironmentLimit> {
+        self.check_equality_walk(units, operator, left, right, enum_members, &mut |units| {
+            budget.charge(units)
+        })
     }
 
-    fn check_equality_walk<E>(&self, units: &UnitScope<'_>, operator: EqualityOperator, left: EqualityOperand, right: EqualityOperand, enum_members: &dyn Fn(&EnumShape) -> EnumMemberIndex, charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Result<CheckedEquality, IllTyped>, E> {
+    fn check_equality_walk<E>(
+        &self,
+        units: &UnitScope<'_>,
+        operator: EqualityOperator,
+        left: EqualityOperand,
+        right: EqualityOperand,
+        enum_members: &dyn Fn(&EnumShape) -> EnumMemberIndex,
+        charge: &mut impl FnMut(usize) -> Result<(), E>,
+    ) -> Result<Result<CheckedEquality, IllTyped>, E> {
         let ill_typed = |cause| Ok(Err(IllTyped { cause }));
         for operand in [&left, &right] {
             for ty in core::iter::once(&operand.source).chain(operand.target.iter()) {
@@ -3208,18 +3272,26 @@ impl TypeEnvironment {
             }
         }
         let mut runtime_operand = |operand: EqualityOperand| -> Result<Option<EqualityOperand>, E> {
-            let Some(source) = self.runtime_type_walk(&operand.source, charge)? else { return Ok(None); };
+            let Some(source) = self.runtime_type_walk(&operand.source, charge)? else {
+                return Ok(None);
+            };
             let target = match operand.target {
                 Some(target) => {
-                    let Some(target) = self.runtime_type_walk(&target, charge)? else { return Ok(None); };
+                    let Some(target) = self.runtime_type_walk(&target, charge)? else {
+                        return Ok(None);
+                    };
                     Some(target)
                 }
                 None => None,
             };
             Ok(Some(EqualityOperand { source, target }))
         };
-        let Some(left) = runtime_operand(left)? else { return ill_typed(IllTypedCause::TypeMismatch); };
-        let Some(right) = runtime_operand(right)? else { return ill_typed(IllTypedCause::TypeMismatch); };
+        let Some(left) = runtime_operand(left)? else {
+            return ill_typed(IllTypedCause::TypeMismatch);
+        };
+        let Some(right) = runtime_operand(right)? else {
+            return ill_typed(IllTypedCause::TypeMismatch);
+        };
         for operand in [&left, &right] {
             if let Some(target) = &operand.target {
                 if !admits_equality_conversion(&operand.source, target, units) {
@@ -3244,7 +3316,9 @@ impl TypeEnvironment {
             }
         }
         let (left_type, right_type) = (left.comparison_type(), right.comparison_type());
-        if self.contains_ieee_walk(left_type, charge)? || self.contains_ieee_walk(right_type, charge)? {
+        if self.contains_ieee_walk(left_type, charge)?
+            || self.contains_ieee_walk(right_type, charge)?
+        {
             return ill_typed(IllTypedCause::OperatorIneligible);
         }
         let schedule = match (left_type, right_type) {

@@ -327,25 +327,74 @@ fn meter() -> Meter {
 #[test]
 fn bounded_construction_keeps_work_stops_separate_from_prior_runtime_stop() {
     let mut env = TypeEnvironment::new([shape()], []).unwrap();
-    env.seal_union_verified(key(1), key(40), bindings(key(40))).unwrap();
+    env.seal_union_verified(key(1), key(40), bindings(key(40)))
+        .unwrap();
     // Member lookup1 + retained positions2 + two type/value admissions2 each.
-    let limit = env.union_with_budget(key(1), variant(11), vec![integer(2), integer(3)], &mut WorkBudget::new(6, Cancel::new())).unwrap_err();
+    let limit = env
+        .union_with_budget(
+            key(1),
+            variant(11),
+            vec![integer(2), integer(3)],
+            &mut WorkBudget::new(6, Cancel::new()),
+        )
+        .unwrap_err();
     assert_eq!(limit.configured_bound(), 6);
     assert_eq!(limit.actual(), 7);
     let mut work = WorkBudget::new(7, Cancel::new());
-    let value = env.union_with_budget(key(40), variant(11), vec![integer(2), integer(3)], &mut work).unwrap().unwrap();
+    let value = env
+        .union_with_budget(
+            key(40),
+            variant(11),
+            vec![integer(2), integer(3)],
+            &mut work,
+        )
+        .unwrap()
+        .unwrap();
     assert_eq!(work.spent(), 7);
     assert!(env.admits(&ValueType::Composite(key(1)), &value));
-    let wrong = env.union_with_budget(key(1), variant(11), vec![integer(2)], &mut WorkBudget::new(0, Cancel::new())).unwrap().unwrap_err();
-    assert_eq!(wrong.cause, quire_semantic_value::declaration::ConstructionCause::WrongArity { declared: 2, supplied: 1 });
+    let wrong = env
+        .union_with_budget(
+            key(1),
+            variant(11),
+            vec![integer(2)],
+            &mut WorkBudget::new(0, Cancel::new()),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        wrong.cause,
+        quire_semantic_value::declaration::ConstructionCause::WrongArity {
+            declared: 2,
+            supplied: 1
+        }
+    );
     let calls = std::cell::Cell::new(0);
     let cancel = Cancel::new();
     let mut work = WorkBudget::new(3, cancel.clone());
-    let result = env.evaluate_union_with_budget(key(1), variant(11), vec![
-        Box::new(|_| { calls.set(calls.get() + 1); cancel.cancel(quire_exact::CancelCause::Requested); Outcome::Undefined(quire_exact::Undefined::DivisionByZero) }),
-        Box::new(|_| { calls.set(calls.get() + 1); Outcome::Completed(integer(3)) }),
-    ], &mut meter(), &mut work).unwrap().unwrap();
-    assert!(matches!(result, Outcome::Undefined(quire_exact::Undefined::DivisionByZero)));
+    let result = env
+        .evaluate_union_with_budget(
+            key(1),
+            variant(11),
+            vec![
+                Box::new(|_| {
+                    calls.set(calls.get() + 1);
+                    cancel.cancel(quire_exact::CancelCause::Requested);
+                    Outcome::Undefined(quire_exact::Undefined::DivisionByZero)
+                }),
+                Box::new(|_| {
+                    calls.set(calls.get() + 1);
+                    Outcome::Completed(integer(3))
+                }),
+            ],
+            &mut meter(),
+            &mut work,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        result,
+        Outcome::Undefined(quire_exact::Undefined::DivisionByZero)
+    ));
     assert_eq!(calls.get(), 1);
     assert_eq!(work.spent(), 3);
     assert_eq!(cancel.cause(), Some(quire_exact::CancelCause::Requested));
@@ -356,40 +405,96 @@ fn bounded_construction_keeps_work_stops_separate_from_prior_runtime_stop() {
 #[test]
 fn bounded_equality_uses_shared_type_ieee_and_final_join_walks() {
     let mut env = TypeEnvironment::new([shape()], []).unwrap();
-    env.seal_union_verified(key(1), key(40), bindings(key(40))).unwrap();
-    let operands = || (EqualityOperand::typed(ValueType::Composite(key(1))), EqualityOperand::typed(ValueType::Composite(key(40))));
+    env.seal_union_verified(key(1), key(40), bindings(key(40)))
+        .unwrap();
+    let operands = || {
+        (
+            EqualityOperand::typed(ValueType::Composite(key(1))),
+            EqualityOperand::typed(ValueType::Composite(key(40))),
+        )
+    };
     // Two type checks1 each, two runtime joins1 each, two IEEE walks7 each,
     // and one same-type joined leaf =19, independent of runtime value events.
     let (left, right) = operands();
-    let limit = env.check_equality_with_budget(EqualityOperator::Equal, left, right, &EnumMemberIndex::default(), &mut WorkBudget::new(18, Cancel::new())).unwrap_err();
+    let limit = env
+        .check_equality_with_budget(
+            EqualityOperator::Equal,
+            left,
+            right,
+            &EnumMemberIndex::default(),
+            &mut WorkBudget::new(18, Cancel::new()),
+        )
+        .unwrap_err();
     assert_eq!(limit.configured_bound(), 18);
     assert_eq!(limit.actual(), 19);
     let (left, right) = operands();
     let mut work = WorkBudget::new(19, Cancel::new());
-    let equality = env.check_equality_with_budget(EqualityOperator::Equal, left, right, &EnumMemberIndex::default(), &mut work).unwrap().unwrap();
+    let equality = env
+        .check_equality_with_budget(
+            EqualityOperator::Equal,
+            left,
+            right,
+            &EnumMemberIndex::default(),
+            &mut work,
+        )
+        .unwrap()
+        .unwrap();
     assert_eq!(work.spent(), 19);
     let a = env.union(key(1), variant(10), vec![]).unwrap();
     let b = env.union(key(40), variant(10), vec![]).unwrap();
-    assert!(matches!(equality.evaluate(&a, &b, &mut meter()), Outcome::Completed(true)));
-    let refusal = env.check_equality_with_budget(EqualityOperator::Equal,
-        EqualityOperand::typed(ValueType::Composite(key(99))), EqualityOperand::typed(ValueType::Composite(key(1))),
-        &EnumMemberIndex::default(), &mut WorkBudget::new(19, Cancel::new())).unwrap().unwrap_err();
+    assert!(matches!(
+        equality.evaluate(&a, &b, &mut meter()),
+        Outcome::Completed(true)
+    ));
+    let refusal = env
+        .check_equality_with_budget(
+            EqualityOperator::Equal,
+            EqualityOperand::typed(ValueType::Composite(key(99))),
+            EqualityOperand::typed(ValueType::Composite(key(1))),
+            &EnumMemberIndex::default(),
+            &mut WorkBudget::new(19, Cancel::new()),
+        )
+        .unwrap()
+        .unwrap_err();
     assert_eq!(refusal.cause, IllTypedCause::TypeMismatch);
     let cancel = Cancel::new();
     cancel.cancel(quire_exact::CancelCause::Requested);
     let (left, right) = operands();
-    assert!(env.check_equality_with_budget(EqualityOperator::Equal, left, right, &EnumMemberIndex::default(), &mut WorkBudget::new(19, cancel)).is_err());
+    assert!(env
+        .check_equality_with_budget(
+            EqualityOperator::Equal,
+            left,
+            right,
+            &EnumMemberIndex::default(),
+            &mut WorkBudget::new(19, cancel)
+        )
+        .is_err());
 }
 
 /// Cancellation robustness of the public descriptor API; this empty fixture
 /// does not claim source grammar admits an empty authored union declaration.
 #[test]
 fn zero_member_seal_polls_cancellation_without_attaching_a_final_key() {
-    let mut env = TypeEnvironment::new([CompositeDeclaration::new(key(1), "EmptyFixture", CompositeShape::Union(vec![]))], []).unwrap();
+    let mut env = TypeEnvironment::new(
+        [CompositeDeclaration::new(
+            key(1),
+            "EmptyFixture",
+            CompositeShape::Union(vec![]),
+        )],
+        [],
+    )
+    .unwrap();
     let original = env.clone();
     let cancel = Cancel::new();
     cancel.cancel(quire_exact::CancelCause::Requested);
-    let Err(EnvironmentFailure::Limit(limit)) = env.seal_union_verified_with_budget(key(1), key(40), vec![], &mut WorkBudget::new(0, cancel)) else { panic!("zero-member seal must poll cancellation"); };
+    let Err(EnvironmentFailure::Limit(limit)) = env.seal_union_verified_with_budget(
+        key(1),
+        key(40),
+        vec![],
+        &mut WorkBudget::new(0, cancel),
+    ) else {
+        panic!("zero-member seal must poll cancellation");
+    };
     assert_eq!(limit.configured_bound(), 0);
     assert_eq!(limit.actual(), 0);
     assert_eq!(env, original);
