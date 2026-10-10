@@ -72,6 +72,7 @@ use crate::quantity::{
     compare_quantity, convert_quantity, ConvertedValue, QuantityTarget, UnitScope, UnitTable,
 };
 use crate::stop::{outcome_from_stop, outcome_into_stop, Stop};
+use core::alloc::Layout;
 use core::fmt;
 use quire_exact::CollectionKind;
 use quire_exact::EffectiveId;
@@ -87,6 +88,73 @@ pub struct FieldRef {
     pub owner: EffectiveId,
     /// The field's declared name.
     pub name: String,
+}
+
+#[cfg(test)]
+mod storage_reservation_tests {
+    use super::*;
+    use core::cell::Cell;
+    use ix_trace_rs::trace;
+
+    struct DenyFirst {
+        seen: Cell<Option<StorageRequest>>,
+    }
+
+    impl ReservationPolicy for DenyFirst {
+        fn permit(&self, request: StorageRequest) -> bool {
+            self.seen.set(Some(request));
+            false
+        }
+    }
+
+    /// Trace: FR-108-AC-1, FR-108-AC-3
+    #[trace("TC-907", "FR-108-AC-1", "FR-108-AC-3")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies a checked declaration key without minting one in production"
+    )]
+    #[test]
+    fn registry_denial_retains_reservation_and_retry_admits() {
+        let declarations = || {
+            [CompositeDeclaration::new(
+                NodeKey::from_digest([1; 32]),
+                "R",
+                CompositeShape::Tuple(Vec::new()),
+            )]
+        };
+        let deny = DenyFirst {
+            seen: Cell::new(None),
+        };
+        let denied = TypeEnvironment::bounded_with_reservations(
+            declarations(),
+            [],
+            TypeEnvironmentLimits::default(),
+            &quire_exact::Cancel::new(),
+            &deny,
+        );
+        let request = deny.seen.get().expect("registry made a reservation");
+        assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+        assert_eq!(
+            request,
+            StorageRequest::new(1, StorageUnit::AdditionalElements)
+        );
+        let admitted = TypeEnvironment::new(declarations(), []).expect("retry admits");
+        assert_eq!(admitted.composites().count(), 1);
+    }
+
+    /// Trace: FR-108-AC-2
+    #[trace("TC-907", "FR-108-AC-2")]
+    #[test]
+    fn size_overflow_is_distinct_from_allocator_denial() {
+        let mut values: Vec<u8> = Vec::new();
+        assert_eq!(
+            reserve_elements(&mut values, usize::MAX, &GlobalReservations),
+            Err(EnvironmentFailure::Capacity(StorageRequest::new(
+                usize::MAX,
+                StorageUnit::AdditionalElements,
+            )))
+        );
+    }
 }
 
 impl FieldRef {
@@ -625,25 +693,163 @@ impl EnvironmentLimit {
     }
 }
 
-/// Why type-environment admission produced no environment (QSL FR-082): a
-/// refusal of the declarations, or a [`TypeEnvironmentLimits`] ceiling
-/// reached first, which names no declaration. A compiler stage reports the
-/// ceiling as its own stage limit.
+/// Native unit of a type-environment storage reservation.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum StorageUnit {
+    /// Additional collection elements.
+    AdditionalElements,
+    /// Bytes.
+    Bytes,
+}
+
+/// The exact amount submitted at a storage reservation boundary.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct StorageRequest {
+    amount: usize,
+    unit: StorageUnit,
+}
+
+impl StorageRequest {
+    /// Make a request in its native unit.
+    pub const fn new(amount: usize, unit: StorageUnit) -> Self {
+        Self { amount, unit }
+    }
+
+    /// The amount submitted to the reservation.
+    pub const fn amount(self) -> usize {
+        self.amount
+    }
+
+    /// The request's native unit.
+    pub const fn unit(self) -> StorageUnit {
+        self.unit
+    }
+}
+
+/// Why type-environment admission produced no environment (QSL FR-082,
+/// FR-108). Storage failures carry no configured bound or declaration cause.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EnvironmentFailure {
     /// A ceiling was reached first.
     Limit(EnvironmentLimit),
     /// The declarations are refused.
     Refused(InvalidDeclaration),
+    /// A representable reservation was denied.
+    Allocation(StorageRequest),
+    /// Reservation size arithmetic or representation overflowed.
+    Capacity(StorageRequest),
 }
 
 impl EnvironmentFailure {
-    /// The refusal, or the ceiling reached instead.
-    pub fn into_refused(self) -> Result<InvalidDeclaration, EnvironmentLimit> {
+    /// The refusal, or the unchanged non-refusal failure.
+    pub fn into_refused(self) -> Result<InvalidDeclaration, Self> {
         match self {
             Self::Refused(invalid) => Ok(invalid),
-            Self::Limit(limit) => Err(limit),
+            other => Err(other),
         }
+    }
+}
+
+/// Injects denial at the same reservation boundary used in production.
+trait ReservationPolicy {
+    fn permit(&self, request: StorageRequest) -> bool;
+}
+
+struct GlobalReservations;
+
+impl ReservationPolicy for GlobalReservations {
+    fn permit(&self, _request: StorageRequest) -> bool {
+        true
+    }
+}
+
+fn reserve_elements<T, R: ReservationPolicy>(
+    values: &mut Vec<T>,
+    additional: usize,
+    policy: &R,
+) -> Admission<()> {
+    let request = StorageRequest::new(additional, StorageUnit::AdditionalElements);
+    let required = values
+        .len()
+        .checked_add(additional)
+        .ok_or(EnvironmentFailure::Capacity(request))?;
+    let layout = Layout::array::<T>(required).map_err(|_| EnvironmentFailure::Capacity(request))?;
+    if layout.size() > isize::MAX as usize {
+        return Err(EnvironmentFailure::Capacity(request));
+    }
+    if required <= values.capacity() {
+        return Ok(());
+    }
+    if !policy.permit(request) {
+        return Err(EnvironmentFailure::Allocation(request));
+    }
+    values
+        .try_reserve_exact(additional)
+        .map_err(|_| EnvironmentFailure::Allocation(request))
+}
+
+/// Ordered index whose growth is reserved before it changes. It has the
+/// same ascending iteration and binary-search lookup as the old tree index.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct OrderedIndex<K, V> {
+    entries: Vec<(K, V)>,
+}
+
+impl<K, V> Default for OrderedIndex<K, V> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+}
+
+impl<K: Ord, V> OrderedIndex<K, V> {
+    fn get(&self, key: &K) -> Option<&V> {
+        self.entries
+            .binary_search_by(|(item, _)| item.cmp(key))
+            .ok()
+            .map(|at| &self.entries[at].1)
+    }
+
+    fn contains_key(&self, key: &K) -> bool {
+        self.get(key).is_some()
+    }
+
+    fn values(&self) -> impl Iterator<Item = &V> {
+        self.entries.iter().map(|(_, value)| value)
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &K> {
+        self.entries.iter().map(|(key, _)| key)
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn try_insert<R: ReservationPolicy>(
+        &mut self,
+        key: K,
+        value: V,
+        reserve: &R,
+    ) -> Admission<Option<V>> {
+        match self.entries.binary_search_by(|(item, _)| item.cmp(&key)) {
+            Ok(at) => Ok(Some(core::mem::replace(&mut self.entries[at].1, value))),
+            Err(at) => {
+                reserve_elements(&mut self.entries, 1, reserve)?;
+                self.entries.insert(at, (key, value));
+                Ok(None)
+            }
+        }
+    }
+}
+
+impl<'a, K: Ord, V> IntoIterator for &'a OrderedIndex<K, V> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = core::iter::Map<core::slice::Iter<'a, (K, V)>, fn(&(K, V)) -> (&K, &V)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.iter().map(|(key, value)| (key, value))
     }
 }
 
@@ -738,8 +944,8 @@ pub enum DeclarationCause {
 /// declarations.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TypeEnvironment {
-    composites: BTreeMap<NodeKey, CompositeDeclaration>,
-    object_types: BTreeMap<EffectiveId, ObjectTypeDeclaration>,
+    composites: OrderedIndex<NodeKey, CompositeDeclaration>,
+    object_types: OrderedIndex<EffectiveId, ObjectTypeDeclaration>,
     /// Every object type's own proper ancestor set:
     /// transitive, not just direct, `supertypes`. Precomputed once in
     /// [`TypeEnvironment::new`], after the supertypes graph is known
@@ -810,6 +1016,22 @@ impl TypeEnvironment {
         limits: TypeEnvironmentLimits,
         cancel: &quire_exact::Cancel,
     ) -> Admission<Self> {
+        Self::bounded_with_reservations(
+            composites,
+            object_types,
+            limits,
+            cancel,
+            &GlobalReservations,
+        )
+    }
+
+    fn bounded_with_reservations<R: ReservationPolicy>(
+        composites: impl IntoIterator<Item = CompositeDeclaration>,
+        object_types: impl IntoIterator<Item = ObjectTypeDeclaration>,
+        limits: TypeEnvironmentLimits,
+        cancel: &quire_exact::Cancel,
+        reserve: &R,
+    ) -> Admission<Self> {
         let mut environment = Self::default();
         for declaration in composites {
             let refuse = |cause| {
@@ -829,7 +1051,9 @@ impl TypeEnvironment {
             if environment.composites.contains_key(&declaration.key) {
                 return Err(refuse(DeclarationCause::DuplicateKey));
             }
-            environment.composites.insert(declaration.key, declaration);
+            environment
+                .composites
+                .try_insert(declaration.key, declaration, reserve)?;
         }
         for declaration in object_types {
             let refuse = |cause| {
@@ -846,7 +1070,7 @@ impl TypeEnvironment {
             }
             environment
                 .object_types
-                .insert(declaration.key, declaration);
+                .try_insert(declaration.key, declaration, reserve)?;
         }
         environment
             .check_member_types()
@@ -1941,7 +2165,7 @@ struct FieldTable<'e> {
 }
 
 impl<'e> FieldTable<'e> {
-    fn new(object_types: &'e BTreeMap<EffectiveId, ObjectTypeDeclaration>) -> Self {
+    fn new(object_types: &'e OrderedIndex<EffectiveId, ObjectTypeDeclaration>) -> Self {
         let mut sorted: BTreeMap<(EffectiveId, &'e str), &'e FieldDeclaration> = BTreeMap::new();
         for declaration in object_types.values() {
             for field in &declaration.attributes {
