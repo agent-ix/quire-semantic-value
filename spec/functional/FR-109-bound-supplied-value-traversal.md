@@ -133,8 +133,10 @@ actual caller/admission bound and authoritative helper version.
   This requirement does not reinterpret converted nodes as membership events.
 - QSL owns `supplied.admission_work_units`,
   `supplied.conversion_work_units`, defaults and public typed phase projection.
-  QSL's FR-323 carrier and QSL-675 sequencing remain consumer dependencies;
-  no wire/transport declaration is created here.
+  The authoritative runtime request/result envelope is owned by
+  [QSpec FR-323](ix://agent-ix/quire-specification/FR-323). QSL owns consumer
+  projection and QSL-675 sequencing. Any needed phase-carrier amendment
+  remains pending; no wire/transport declaration is created here.
 - The released reference inspected is QSV
   `bd3e1500050bbd35fce8094794930d15327d05fd`, whose lock pins exact
   `dc7891740d04a3ff4c76c1315e94216f0bdc15ec` and num-bigint 0.4.8.
