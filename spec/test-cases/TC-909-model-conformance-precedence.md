@@ -48,7 +48,16 @@ through QSV's strict entry points and its QSL-owned model-assembly boundary.
    Deny completion at a real work or storage boundary and inspect the
    failure and lack of partial output. Assert this precedes dispatch
    finalization and public checked-graph sealing.
-5. Call `new`, `bounded`, and `bounded_with_cancel` directly with invalid
+5. Use a child field of `Reference<S>` redefining `Reference<T>` with
+   `S` a proper subtype of `T`, unchanged multiplicity and presence, and
+   no exposed writer with an outstanding refinement obligation. After
+   the complete QSL verdict, assert QSV finalization succeeds and the
+   completed environment admits an `S` object reference through the `T`
+   field without changing the reference's most-specific type or identity.
+   Reverse the types and then use unrelated types; assert refusal in each
+   run. Add an exposed writer that narrows the field and assert QSL requires
+   an actual established postcondition fact before the verdict can succeed.
+6. Call `new`, `bounded`, and `bounded_with_cancel` directly with invalid
    target, undominated conflict, widening and duplicate effective-name
    fixtures. Compare each refusal with its established QSV cause. Inspect
    the QSL-owned interface for a public path from pending state to checking
@@ -64,6 +73,9 @@ Only successful conformance followed by QSV completion yields an effective
 environment. Direct QSV callers remain strict. Pending state allows the
 restricted declaration/parent reads needed for checked FR-146 facts, while
 public expression checking and evaluation remain unavailable.
+Conforming subtype references survive finalization with their original
+identity; reverse and unrelated references refuse, and a writer's
+refinement obligation still requires a checked fact.
 
 ## Status
 

@@ -88,6 +88,14 @@ retain strict declaration checking.
    declaration or resource failure reached during completion SHALL retain its
    original typed result. QSV SHALL NOT treat the QSL verdict as permission
    to skip effective-slot, lineage, name, or value-type safety checks.
+   For a field redefining `Reference<T>` with `Reference<S>`, that final
+   value-type safety check SHALL accept a proper `S` subtype of `T` in the
+   admitted ancestry, because every value admitted for `Reference<S>` is
+   also admitted for `Reference<T>`. It SHALL preserve the reference's
+   most-specific object identity. QSV's final safety check SHALL refuse a
+   reverse or unrelated reference type. QSL's separate refinement
+   obligation for an exposed writer SHALL still require an actual checked
+   postcondition fact.
 6. QSV SHALL confine the intermediate state to its model-assembly contract.
    QSV SHALL NOT expose it as a completed `TypeEnvironment`, or use it for
    `attributes`, `attribute`, `admits`, general expression checking, or
@@ -112,6 +120,7 @@ retain strict declaration checking.
 | FR-110-AC-4 | Direct calls to `new`, `bounded`, and `bounded_with_cancel` still refuse an invalid redefinition target, undominated conflict, widening, and duplicate effective name with their existing QSV causes, and admit a valid redefinition with its existing effective attributes. No path from a pending result can expose a completed environment without QSV's final safety checks. | Test |
 | FR-110-AC-5 | During pending admission, a source-backed `self.f` read for a redefining child returns the immediate parent's actual `FieldRef`, declared type and presence, and QSL's unchanged source observation to the same checked-fact graph under the original budget and cancellation handle. It never substitutes the child's narrowed declaration, invents a fact, or permits evaluation. An unknown or ambiguous member refuses before a fact can use it. | Test |
 | FR-110-AC-6 | The QSL-owned and direct entry points share QSV's structural admission and effective-attribute algorithms; no second model redefinition checker, unchecked public `TypeEnvironment`, or alternate completion path is introduced. | Inspection |
+| FR-110-AC-7 | Given a structurally valid model whose child field `Reference<S>` redefines a parent field `Reference<T>`, where `S` is a proper subtype of `T`, multiplicity and presence are unchanged, and no exposed writer leaves a refinement obligation, the complete QSL conformance verdict and QSV finalization succeed. The completed QSV environment admits an `S` reference through the `T` field without changing its most-specific identity. Reversing `S` and `T` or using unrelated object types refuses; when an exposed writer creates a narrowing obligation, QSL still requires an established checked postcondition fact. | Test |
 
 ## Dependencies
 
@@ -127,6 +136,11 @@ retain strict declaration checking.
   admission, all writer lineages, or the all-model barrier.
 - [QSV FR-108](./FR-108-report-registry-allocation-failure.md) owns typed
   storage failures during admission. This requirement preserves them.
+- [QSpec FR-151](ix://agent-ix/quire-specification/FR-151) delegates value
+  conformance to [QSpec FR-149](ix://agent-ix/quire-specification/FR-149),
+  whose reference upcast keeps the most-specific identity. QSL FR-082's
+  identical-reference wording is stale relative to these merged rules;
+  QSL owns its normative alignment and consumer implementation.
 - The completed QSV environment remains the only environment available to
   public expression checking and evaluation. QSL's internal checked-fact
   admission may read the restricted pending declaration/parent view above;
