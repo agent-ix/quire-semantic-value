@@ -12,7 +12,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::declaration::{Component, ConstructionCause, ConstructionRefusal, TypeEnvironment};
+use crate::declaration::{Component, ConstructionCause, ConstructionRefusal, EnvironmentLimit, TypeEnvironment, WorkBudget};
 use quire_exact::{FieldValue, NodeKey, Value, VariantId};
 
 /// A graph-local node name.
@@ -128,54 +128,57 @@ enum Visit {
 }
 
 impl TypeEnvironment {
-    /// Build the finite value rooted at `root`.
-    pub fn build(&self, graph: &ValueGraph, root: GraphNodeId) -> Result<Value, GraphRefusal> {
+    /// Build the finite value with one caller-owned cumulative budget.
+    /// Work stops are separate from the original graph refusal and node locus.
+    pub fn build(
+        &self,
+        graph: &ValueGraph,
+        root: GraphNodeId,
+        budget: &mut WorkBudget,
+    ) -> Result<Result<Value, GraphRefusal>, EnvironmentLimit> {
+        budget.charge(1)?;
         let mut built: BTreeMap<GraphNodeId, Value> = BTreeMap::new();
         let mut on_path = BTreeSet::new();
         let mut visits = vec![Visit::Enter(root)];
         while let Some(visit) = visits.pop() {
+            budget.charge(1)?;
             match visit {
                 Visit::Enter(id) => {
-                    if built.contains_key(&id) {
-                        continue;
-                    }
+                    if built.contains_key(&id) { continue; }
                     if on_path.contains(&id) {
-                        return Err(GraphRefusal {
-                            node: id,
-                            cause: GraphCause::ContainmentCycle,
-                        });
+                        return Ok(Err(GraphRefusal { node: id, cause: GraphCause::ContainmentCycle }));
                     }
-                    let node = graph.nodes.get(&id).ok_or(GraphRefusal {
-                        node: id,
-                        cause: GraphCause::UnknownNode,
-                    })?;
+                    let Some(node) = graph.nodes.get(&id) else {
+                        return Ok(Err(GraphRefusal { node: id, cause: GraphCause::UnknownNode }));
+                    };
                     on_path.insert(id);
                     visits.push(Visit::Exit(id));
-                    visits.extend(node.children().map(Visit::Enter));
+                    for child in node.children() {
+                        budget.charge(1)?;
+                        visits.push(Visit::Enter(child));
+                    }
                 }
                 Visit::Exit(id) => {
                     on_path.remove(&id);
-                    let value = graph
-                        .nodes
-                        .get(&id)
-                        .ok_or(GraphCause::UnknownNode)
-                        .and_then(|node| self.construct(node, &built))
-                        .map_err(|cause| GraphRefusal { node: id, cause })?;
-                    built.insert(id, value);
+                    let Some(node) = graph.nodes.get(&id) else {
+                        return Ok(Err(GraphRefusal { node: id, cause: GraphCause::UnknownNode }));
+                    };
+                    match self.construct(node, &built, budget)? {
+                        Ok(value) => { built.insert(id, value); }
+                        Err(cause) => return Ok(Err(GraphRefusal { node: id, cause })),
+                    }
                 }
             }
         }
-        built.remove(&root).ok_or(GraphRefusal {
-            node: root,
-            cause: GraphCause::UnknownNode,
-        })
+        Ok(built.remove(&root).ok_or(GraphRefusal { node: root, cause: GraphCause::UnknownNode }))
     }
 
     fn construct<'g>(
         &self,
         node: &'g GraphNode,
         built: &BTreeMap<GraphNodeId, Value>,
-    ) -> Result<Value, GraphCause> {
+        budget: &mut WorkBudget,
+    ) -> Result<Result<Value, GraphCause>, EnvironmentLimit> {
         let resolve = |slot: &GraphSlot| match slot {
             GraphSlot::Value(value) => Ok(FieldValue::Present(value.clone())),
             GraphSlot::Node(id) => built
@@ -199,7 +202,14 @@ impl TypeEnvironment {
             GraphNode::Record {
                 declaration,
                 fields: supplied,
-            } => self.record(*declaration, fields(supplied)?),
+            } => {
+                budget.charge(supplied.len())?;
+                let supplied = match fields(supplied) {
+                    Ok(fields) => fields,
+                    Err(cause) => return Ok(Err(cause)),
+                };
+                self.record(*declaration, supplied, budget)?
+            },
             GraphNode::Tuple {
                 declaration,
                 positions,
@@ -209,26 +219,31 @@ impl TypeEnvironment {
                 positions,
                 ..
             } => {
+                budget.charge(positions.len())?;
                 let mut values = Vec::with_capacity(positions.len());
                 for (index, slot) in positions.iter().enumerate() {
-                    let cause = match resolve(slot)? {
+                    let resolved = match resolve(slot) {
+                        Ok(slot) => slot,
+                        Err(cause) => return Ok(Err(cause)),
+                    };
+                    let cause = match resolved {
                         FieldValue::Present(value) => {
                             values.push(value);
                             continue;
                         }
                         FieldValue::Absent | FieldValue::Null => ConstructionCause::TypeMismatch,
                     };
-                    return Err(GraphCause::Construction(ConstructionRefusal {
+                    return Ok(Err(GraphCause::Construction(ConstructionRefusal {
                         component: Component::Position(index),
                         cause,
-                    }));
+                    })));
                 }
                 match union_variant {
-                    Some(variant) => self.union(*declaration, variant, values),
-                    None => self.tuple(*declaration, values),
+                    Some(variant) => self.union(*declaration, variant, values, budget)?,
+                    None => self.tuple(*declaration, values, budget)?,
                 }
             }
         };
-        constructed.map_err(GraphCause::Construction)
+        Ok(constructed.map_err(GraphCause::Construction))
     }
 }
