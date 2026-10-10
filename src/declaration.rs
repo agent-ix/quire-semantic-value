@@ -254,6 +254,43 @@ mod storage_reservation_tests {
         assert_eq!(cancel.tripped(), Some(quire_exact::CancelCause::Requested));
     }
 
+    /// Trace: FR-108-AC-4
+    #[trace("TC-907", "FR-108-AC-4")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies a checked type identity without minting one in production"
+    )]
+    #[test]
+    fn admission_work_units_admits_at_n_and_reports_n_at_n_minus_one() {
+        let key = EffectiveId::from_digest([9; 32]);
+        let declarations = || {
+            [ObjectTypeDeclaration::new(
+                key,
+                "O",
+                vec![FieldDeclaration::new(
+                    "field",
+                    ValueType::Boolean,
+                    Presence::Required,
+                )],
+            )]
+        };
+        let limits = |work_units| TypeEnvironmentLimits {
+            work_units,
+            ..TypeEnvironmentLimits::default()
+        };
+        let admitted = TypeEnvironment::bounded([], declarations(), limits(2))
+            .expect("one field costs exactly two admission work units");
+        assert!(admitted.attribute(key, "field").is_some());
+        let Err(EnvironmentFailure::Limit(limit)) =
+            TypeEnvironment::bounded([], declarations(), limits(1))
+        else {
+            panic!("one fewer work unit must stop public admission");
+        };
+        assert_eq!(limit.kind(), EnvironmentLimitKind::WorkUnits);
+        assert_eq!(limit.configured_bound(), 1);
+        assert_eq!(limit.actual(), 2);
+    }
+
     /// Trace: FR-108-AC-3, FR-108-AC-5
     #[trace("TC-907", "FR-108-AC-3", "FR-108-AC-5")]
     #[allow(
