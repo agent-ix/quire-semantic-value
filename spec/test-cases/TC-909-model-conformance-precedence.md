@@ -1,0 +1,60 @@
+---
+id: TC-909
+title: "Structural admission precedes model conformance and widening completion"
+type: TC
+relationships:
+  - target: ix://agent-ix/quire-semantic-value/FR-110
+    type: verifies
+---
+# TC-909: Structural admission precedes model conformance and widening completion
+
+## Description
+
+Verify [FR-110](../functional/FR-110-model-conformance-precedence.md)
+through QSV's strict entry points and its QSL-owned model-assembly boundary.
+
+## Test Procedure
+
+1. Supply a structurally valid model field redefinition whose complete QSL
+   FR-151 verdict rejects variance, multiplicity, or refinement after
+   checked facts, every owning writer lineage and the all-model barrier.
+   Run staged QSV admission and abandon it on QSL refusal. Assert QSV has
+   reported no `RedefinitionWidens`. Check the public QSV surface at compile
+   time: pending admission has no effective-attribute or evaluation API and
+   cannot become a completed environment without QSV finalization.
+2. In separate staged runs, use an unknown member type, composite cycle,
+   supertype cycle, missing supertype, invalid `redefines` target,
+   undominated redefinition conflict, unrelated inherited fields with a
+   duplicate flattened name, an N-1/N `ancestor_steps` or `work_units`
+   limit, and cancellation at an observed charge point. Assert the original
+   QSV structural or resource result before QSL's later conformance stage,
+   with its typed payload and no ambiguous field exposed. The duplicate
+   flattened-name case must fail without a second checker.
+3. Supply a conforming model with a valid redefinition. Complete the full QSL
+   verdict and QSV admission using the original budget and cancellation
+   handle. Compare effective attributes, lineage, reference admission and
+   work spend with strict QSV admission of the same valid declarations.
+   Deny completion at a real work or storage boundary and inspect the
+   failure and lack of partial output. Assert this precedes dispatch
+   finalization and public checked-graph sealing.
+4. Call `new`, `bounded`, and `bounded_with_cancel` directly with invalid
+   target, undominated conflict, widening and duplicate effective-name
+   fixtures. Compare each refusal with its established QSV cause. Inspect
+   the QSL-owned interface for a public path from pending state to checking
+   or evaluation without completed conformance and effective construction.
+
+## Expected Results
+
+QSL returns its model refusal and abandons QSV admission before QSV's
+model-derived widening decision. Structural target, conflict and duplicate
+name refusals retain their original QSV causes; other structural and resource
+failures retain their original details.
+Only successful conformance followed by QSV completion yields an effective
+environment. Direct QSV callers remain strict, and pending state cannot be
+used for checking or evaluation.
+
+## Status
+
+Planned for IR-720 implementation. QSL owns its consumer call-order and
+refusal-mapping tests; this QSV test case does not claim to verify QSL's
+model-conformance algorithm.
