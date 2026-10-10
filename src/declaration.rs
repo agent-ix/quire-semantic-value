@@ -882,19 +882,34 @@ impl TypeEnvironment {
         variant: VariantId,
         payload: Vec<Value>,
     ) -> Result<Value, ConstructionRefusal> {
-        let member = self.union_positions(declaration, variant, payload.len())?;
+        unmetered(self.union_walk(declaration, variant, payload, &mut |_| Ok(())))
+    }
+
+    /// Construct a sealed union using the caller's cumulative admission budget.
+    /// Work stops are separate from existing construction refusals.
+    pub fn union_with_budget(&self, declaration: NodeKey, variant: VariantId, payload: Vec<Value>, budget: &mut WorkBudget) -> Result<Result<Value, ConstructionRefusal>, EnvironmentLimit> {
+        self.union_walk(declaration, variant, payload, &mut |units| budget.charge(units))
+    }
+
+    fn union_walk<E>(&self, declaration: NodeKey, variant: VariantId, payload: Vec<Value>, charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Result<Value, ConstructionRefusal>, E> {
+        let member = match self.union_positions(declaration, variant, payload.len()) {
+            Ok(member) => member,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        charge(1)?;
+        charge(member.positions.len())?;
         for (position, (ty, value)) in member.positions.iter().zip(&payload).enumerate() {
-            if !self.admits(ty, value) {
-                return refuse(
+            if !self.admits_walk(ty, value, charge)? {
+                return Ok(refuse(
                     Component::Position(position),
                     ConstructionCause::TypeMismatch,
-                );
+                ));
             }
         }
         let Some(binding) = member.member() else {
-            return refuse(Component::Value, ConstructionCause::TypeMismatch);
+            return Ok(refuse(Component::Value, ConstructionCause::TypeMismatch));
         };
-        Ok(UnionValue::from_admitted(binding.clone(), payload))
+        Ok(Ok(UnionValue::from_admitted(binding.clone(), payload)))
     }
 
     /// Evaluate payload positions in order, propagating the first stopped outcome,
@@ -906,27 +921,42 @@ impl TypeEnvironment {
         payload: Vec<Deferred<'_>>,
         meter: &mut Meter,
     ) -> Result<Outcome<Value>, ConstructionRefusal> {
-        let member = self.union_positions(declaration, variant, payload.len())?;
-        let Some(binding) = member.member() else {
-            return refuse(Component::Value, ConstructionCause::TypeMismatch);
+        unmetered(self.evaluate_union_walk(declaration, variant, payload, meter, &mut |_| Ok(())))
+    }
+
+    /// Evaluate a sealed union with cumulative SV admission work and the actual
+    /// runtime meter. Prior runtime stops bypass further SV admission charges.
+    pub fn evaluate_union_with_budget(&self, declaration: NodeKey, variant: VariantId, payload: Vec<Deferred<'_>>, meter: &mut Meter, budget: &mut WorkBudget) -> Result<Result<Outcome<Value>, ConstructionRefusal>, EnvironmentLimit> {
+        self.evaluate_union_walk(declaration, variant, payload, meter, &mut |units| budget.charge(units))
+    }
+
+    fn evaluate_union_walk<E>(&self, declaration: NodeKey, variant: VariantId, payload: Vec<Deferred<'_>>, meter: &mut Meter, charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Result<Outcome<Value>, ConstructionRefusal>, E> {
+        let member = match self.union_positions(declaration, variant, payload.len()) {
+            Ok(member) => member,
+            Err(refusal) => return Ok(Err(refusal)),
         };
+        let Some(binding) = member.member() else {
+            return Ok(refuse(Component::Value, ConstructionCause::TypeMismatch));
+        };
+        charge(1)?;
+        charge(member.positions.len())?;
         let mut values = Vec::with_capacity(member.positions.len());
         for (ty, expression) in member.positions.iter().zip(payload) {
             let value = match outcome_into_stop(expression(meter)) {
                 Ok(value) => value,
-                Err(stop) => return Ok(outcome_from_stop(Err(stop))),
+                Err(stop) => return Ok(Ok(outcome_from_stop(Err(stop)))),
             };
-            if !self.admits(ty, &value) {
-                return Ok(outcome_from_stop(Err(invariant(
+            if !self.admits_walk(ty, &value, charge)? {
+                return Ok(Ok(outcome_from_stop(Err(invariant(
                     CheckedInvariantCause::DeferredResultNotAdmitted,
-                ))));
+                )))));
             }
             values.push(value);
         }
-        Ok(retain_composite(
+        Ok(Ok(retain_composite(
             UnionValue::from_admitted(binding.clone(), values),
             meter,
-        ))
+        )))
     }
 
     fn union_positions(
@@ -1254,6 +1284,9 @@ impl TypeEnvironment {
         bindings: Vec<UnionMember>,
         budget: &mut WorkBudget,
     ) -> Admission<()> {
+        // Poll cancellation even for an empty member list, without changing
+        // the existing per-member N/N-1 accounting.
+        budget.charge(0).map_err(EnvironmentFailure::Limit)?;
         let Some(declaration) = self.composites.get(&handle) else {
             return Err(EnvironmentFailure::Refused(InvalidDeclaration {
                 declaration: String::new(),
@@ -3147,26 +3180,46 @@ impl TypeEnvironment {
         right: EqualityOperand,
         enum_members: &dyn Fn(&EnumShape) -> EnumMemberIndex,
     ) -> Result<CheckedEquality, IllTyped> {
-        let ill_typed = |cause| Err(IllTyped { cause });
+        unmetered(self.check_equality_walk(units, operator, left, right, enum_members, &mut |_| Ok(())))
+    }
+
+    /// Check equality using the same cumulative SV budget as topology/admission.
+    /// The outer result retains resource stops; the inner result retains IR712
+    /// typed causes. Runtime comparison still uses its actual kernel meter.
+    pub fn check_equality_with_budget(&self, operator: EqualityOperator, left: EqualityOperand, right: EqualityOperand, enum_members: &EnumMemberIndex, budget: &mut WorkBudget) -> Result<Result<CheckedEquality, IllTyped>, EnvironmentLimit> {
+        self.check_equality_in_with_budget(&UnitScope::new(&self.units), operator, left, right, &|shape: &EnumShape| enum_members.filtered(shape.variants()), budget)
+    }
+
+    /// Budgeted equality checking against the caller's actual stage unit scope.
+    pub fn check_equality_in_with_budget(&self, units: &UnitScope<'_>, operator: EqualityOperator, left: EqualityOperand, right: EqualityOperand, enum_members: &dyn Fn(&EnumShape) -> EnumMemberIndex, budget: &mut WorkBudget) -> Result<Result<CheckedEquality, IllTyped>, EnvironmentLimit> {
+        self.check_equality_walk(units, operator, left, right, enum_members, &mut |units| budget.charge(units))
+    }
+
+    fn check_equality_walk<E>(&self, units: &UnitScope<'_>, operator: EqualityOperator, left: EqualityOperand, right: EqualityOperand, enum_members: &dyn Fn(&EnumShape) -> EnumMemberIndex, charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Result<CheckedEquality, IllTyped>, E> {
+        let ill_typed = |cause| Ok(Err(IllTyped { cause }));
         for operand in [&left, &right] {
-            self.check_type(&operand.source)?;
-            if let Some(target) = &operand.target {
-                self.check_type(target)?;
+            for ty in core::iter::once(&operand.source).chain(operand.target.iter()) {
+                if let Some(cause) = self.type_refusal_walk(ty, charge)? {
+                    return ill_typed(match cause {
+                        DeclarationCause::Type(cause) => cause,
+                        _ => IllTypedCause::TypeMismatch,
+                    });
+                }
             }
         }
-        let runtime_operand = |operand: EqualityOperand| -> Result<EqualityOperand, IllTyped> {
-            let mismatch = || IllTyped {
-                cause: IllTypedCause::TypeMismatch,
-            };
-            let source = self.runtime_type(&operand.source).ok_or_else(mismatch)?;
+        let mut runtime_operand = |operand: EqualityOperand| -> Result<Option<EqualityOperand>, E> {
+            let Some(source) = self.runtime_type_walk(&operand.source, charge)? else { return Ok(None); };
             let target = match operand.target {
-                Some(target) => Some(self.runtime_type(&target).ok_or_else(mismatch)?),
+                Some(target) => {
+                    let Some(target) = self.runtime_type_walk(&target, charge)? else { return Ok(None); };
+                    Some(target)
+                }
                 None => None,
             };
-            Ok(EqualityOperand { source, target })
+            Ok(Some(EqualityOperand { source, target }))
         };
-        let left = runtime_operand(left)?;
-        let right = runtime_operand(right)?;
+        let Some(left) = runtime_operand(left)? else { return ill_typed(IllTypedCause::TypeMismatch); };
+        let Some(right) = runtime_operand(right)? else { return ill_typed(IllTypedCause::TypeMismatch); };
         for operand in [&left, &right] {
             if let Some(target) = &operand.target {
                 if !admits_equality_conversion(&operand.source, target, units) {
@@ -3191,7 +3244,7 @@ impl TypeEnvironment {
             }
         }
         let (left_type, right_type) = (left.comparison_type(), right.comparison_type());
-        if self.contains_ieee(left_type) || self.contains_ieee(right_type) {
+        if self.contains_ieee_walk(left_type, charge)? || self.contains_ieee_walk(right_type, charge)? {
             return ill_typed(IllTypedCause::OperatorIneligible);
         }
         let schedule = match (left_type, right_type) {
@@ -3234,7 +3287,7 @@ impl TypeEnvironment {
             {
                 EqualitySchedule::Plan
             }
-            (l, r) if self.same_type(l, r) => EqualitySchedule::Plan,
+            (l, r) if self.same_type_walk(l, r, charge)? => EqualitySchedule::Plan,
             _ => return ill_typed(IllTypedCause::TypeMismatch),
         };
         // Retain only the compared enum declaration's own
@@ -3246,14 +3299,14 @@ impl TypeEnvironment {
             (EqualitySchedule::Enum, ValueType::Enum(shape)) => enum_members(shape),
             _ => EnumMemberIndex::default(),
         };
-        Ok(CheckedEquality {
+        Ok(Ok(CheckedEquality {
             operator,
             left,
             right,
             schedule,
             units: resolved,
             enum_members,
-        })
+        }))
     }
 }
 
