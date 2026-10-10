@@ -19,7 +19,10 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use crate::declaration::{fill_slots_walk, unmetered, ConstructionRefusal, EnvironmentLimit, FieldRef, TypeEnvironment, WorkBudget};
+use crate::declaration::{
+    fill_slots_walk, unmetered, ConstructionRefusal, EnvironmentLimit, FieldRef, TypeEnvironment,
+    WorkBudget,
+};
 use quire_exact::{FieldValue, ObjectReference, UniverseId, Value};
 
 /// Why an object closure does not close.
@@ -72,17 +75,34 @@ impl ObjectClosure {
         objects: impl IntoIterator<Item = (ObjectReference, Vec<(&'n str, FieldValue)>)>,
         tolerated_dangling: &[ObjectReference],
     ) -> Result<Self, ObjectClosureRefusal> {
-        unmetered(Self::new_walk(types, objects, tolerated_dangling, &mut |_| Ok(())))
+        unmetered(Self::new_walk(
+            types,
+            objects,
+            tolerated_dangling,
+            &mut |_| Ok(()),
+        ))
     }
 
     /// Admit objects, attribute types and reference closure with one shared budget.
     /// The outer result preserves named work stops and caller cancellation; the
     /// inner result preserves the existing object/attribute refusal and locus.
-    pub fn new_with_budget<'n>(types: &TypeEnvironment, objects: impl IntoIterator<Item = (ObjectReference, Vec<(&'n str, FieldValue)>)>, tolerated_dangling: &[ObjectReference], budget: &mut WorkBudget) -> Result<Result<Self, ObjectClosureRefusal>, EnvironmentLimit> {
-        Self::new_walk(types, objects, tolerated_dangling, &mut |units| budget.charge(units))
+    pub fn new_with_budget<'n>(
+        types: &TypeEnvironment,
+        objects: impl IntoIterator<Item = (ObjectReference, Vec<(&'n str, FieldValue)>)>,
+        tolerated_dangling: &[ObjectReference],
+        budget: &mut WorkBudget,
+    ) -> Result<Result<Self, ObjectClosureRefusal>, EnvironmentLimit> {
+        Self::new_walk(types, objects, tolerated_dangling, &mut |units| {
+            budget.charge(units)
+        })
     }
 
-    fn new_walk<'n, E>(types: &TypeEnvironment, objects: impl IntoIterator<Item = (ObjectReference, Vec<(&'n str, FieldValue)>)>, tolerated_dangling: &[ObjectReference], charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Result<Self, ObjectClosureRefusal>, E> {
+    fn new_walk<'n, E>(
+        types: &TypeEnvironment,
+        objects: impl IntoIterator<Item = (ObjectReference, Vec<(&'n str, FieldValue)>)>,
+        tolerated_dangling: &[ObjectReference],
+        charge: &mut impl FnMut(usize) -> Result<(), E>,
+    ) -> Result<Result<Self, ObjectClosureRefusal>, E> {
         let mut admitted = BTreeMap::new();
         for (reference, attributes) in objects {
             charge(1)?;
