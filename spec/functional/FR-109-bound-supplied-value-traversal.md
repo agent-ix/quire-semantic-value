@@ -63,8 +63,8 @@ declaration admission and semantic evaluation.
    temporary-storage bound, and cancellation-response boundary from the
    authoritative helper implementation. The supplied-membership interface SHALL NOT invoke an input-unbounded helper
    behind a nominal one-unit descriptor or scalar check. The implementation SHALL qualify those premises for the helper families in the table below
-   before claiming that path satisfies this requirement. The implementation SHALL record missing qualification as an explicit
-   implementation dependency without manufacturing an invalid-value or limit result.
+   before claiming that path satisfies this requirement. The implementation SHALL treat missing qualification as an implementation
+   dependency without manufacturing an invalid-value or limit result.
 6. A helper used by both conversion and supplied membership SHALL receive one
    explicit initiating phase owner. A membership-triggered type comparison or
    query SHALL consume the supplied-membership budget once; a
@@ -93,13 +93,13 @@ declaration admission and semantic evaluation.
 These are cost premises, not extra logical-work charges or new input ceilings.
 `B` denotes the largest admitted magnitude bit length of the involved integers;
 `E` denotes admitted enum variants; `T` denotes compared type links; `R` denotes
-registry entries; `A` denotes retained ancestors. Each premise must name its
-actual caller/admission bound and authoritative helper version.
+registry entries; `A` denotes retained ancestors. Each premise must identify the applicable
+caller/admission input bound and the helper operation it constrains.
 
 | Helper family | Released source behavior and finite-cost premise | Cancellation/storage qualification |
 | --- | --- | --- |
 | Fixed identity/kind | Boolean/Integer kind, Float width, Quantity unit, Composite key and reference identity compare fixed-size retained data. | Poll before and after the helper; no input-sized temporary materialization. |
-| Integer interval | At most two integer comparisons. The locked BigInt comparison checks signs/lengths then at most the larger operand limb count, bounded conservatively by B. | Establish the bound for value and both interval endpoints; poll before and after. No numeric semantic charge. |
+| Integer interval | At most two integer comparisons. The BigInt comparison checks signs/lengths then at most the larger operand limb count, bounded conservatively by B. | Establish the bound for value and both interval endpoints; poll before and after. No numeric semantic charge. |
 | Rational domain | At most four integer comparisons over numerator/denominator and interval endpoints; this released membership path does not cross-multiply rationals. | Bound every operand's magnitude, not merely the supplied numerator; poll before and after. |
 | Enum member | Ranked lookup scans at most E retained variants and compares fixed-size variant identities. | Establish E from the admitted shape; a cache hit retains the logical query event. Poll around the bounded helper. |
 | Nested retained type | At most T type-chain link comparisons; leaf comparisons include any input-sized retained enum/numeric data. | Charge type links through the bounded interface; bound leaf data separately. No outer one-event substitution for an entire unbounded type chain. |
@@ -117,7 +117,7 @@ actual caller/admission bound and authoritative helper version.
 | FR-109-AC-4 | Invalid kind/type and member/payload failures permitted by the owning supported-family contracts return their typed membership cause and locus, never a partial admission. Released nested construction custody is preserved; a helper cannot manufacture extra payload visits. | Test |
 | FR-109-AC-5 | An actual fallible supplied-worklist reservation denial reports its measured request and native unit; checked-size overflow has its own classification. Neither becomes a traversal limit, declaration-storage failure or invalid value. Retry after removing the denial yields the same membership outcome. | Test |
 | FR-109-AC-6 | Every reachable logical event and shared helper has one initiating phase/budget owner. Membership leaves the evaluator's meter and charge sequence unchanged, and conversion-triggered helper work is never also charged as membership. No failure is labelled evaluated FunctionCall. | Test |
-| FR-109-AC-7 | Each claimed supported helper path has a source-backed input bound, finite comparison/arithmetic and temporary-storage bound, cancellation response boundary and fallible storage route where needed. Unqualified Decimal and future union paths remain recorded dependencies; logical-event totals alone do not establish those helper premises. | Inspection |
+| FR-109-AC-7 | Each claimed supported helper path has a source-backed input bound, finite comparison/arithmetic and temporary-storage bound, cancellation response boundary and fallible storage route where needed. Unqualified Decimal and future union paths remain implementation dependencies; logical-event totals alone do not establish those helper premises. | Inspection |
 
 ## Dependencies
 
@@ -137,20 +137,19 @@ actual caller/admission bound and authoritative helper version.
   [QSpec FR-323](ix://agent-ix/quire-specification/FR-323). QSL owns consumer
   projection and QSL-675 sequencing. Any needed phase-carrier amendment
   remains pending; no wire/transport declaration is created here.
-- The released reference inspected is QSV
-  `bd3e1500050bbd35fce8094794930d15327d05fd`, whose lock pins exact
-  `dc7891740d04a3ff4c76c1315e94216f0bdc15ec` and num-bigint 0.4.8.
-  QSV `TypeEnvironment::admits` is bool-only; its declaration WorkBudget is
-  private and is not the new supplied traversal contract. Decimal helper
+- QSV's existing `TypeEnvironment::admits` is bool-only; its authored-declaration
+  work budget is distinct from the supplied traversal contract. Decimal helper
   qualification is allocated to IR-718 SPEC and IR-719 implementation in the
   authoritative exact-kernel owner. Both remain prerequisites for claiming
   this Decimal path; the pending design does not introduce a fifth helper-entry
   event or select a default. A reviewed public union declaration/member API
   remains another implementation prerequisite, not a claim of current support.
+- QSL-681 owns the paired authoritative carrier amendment and consumer phase
+  contract. Implementation awaits their merge and confirmation of the resulting
+  public behavior; this requirement does not assume those amendments are delivered.
 
 ## Status
 
 SPEC DRAFT; implementation and every acceptance test are PLANNED/UNRUN.
-No numerical default is selected by this QSV requirement. The research
-hypotheses 262,144 admission / 524,288 conversion and hosted Tree counts are
-not qualified defaults, event-table evidence or runtime acceptance results.
+No numerical default is selected by this QSV requirement. Research predictions
+are not qualified defaults, event-table evidence or runtime acceptance results.
