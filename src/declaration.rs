@@ -1856,6 +1856,8 @@ impl TypeEnvironment {
                 | ValueType::Decimal(_)
                 | ValueType::Quantity(_)
                 | ValueType::Text(_)
+                | ValueType::Uuid
+                | ValueType::Timestamp
                 | ValueType::Enum(_)
                 | ValueType::Reference(_)
                 | ValueType::Population(_) => {}
@@ -1903,6 +1905,8 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::Text(_)
+                | ValueType::Uuid
+                | ValueType::Timestamp
                 | ValueType::Enum(_)
                 | ValueType::Composite(_)
                 | ValueType::Reference(_) => {}
