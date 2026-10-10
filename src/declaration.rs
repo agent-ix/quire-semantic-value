@@ -61,9 +61,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use quire_exact::{
-    compare_shifted, power_of_ten_bits, sbits, sdigits, Charge, ChargePoint, ComparisonOperator,
-    Decimal, DecimalOperation, DecimalType, IllTyped, IllTypedCause, Integer, LimitKind, Meter,
-    Outcome, Presence, Quantity, Rational, Refusal,
+    compare_shifted, power_of_ten_bits, sbits, sdigits, Charge, ChargePoint, CheckedInvariantCause,
+    ComparisonOperator, Decimal, DecimalOperation, DecimalType, IllTyped, IllTypedCause, Integer,
+    LimitKind, Meter, Outcome, Presence, Quantity, Rational, Refusal,
 };
 use quire_exact::{from_admitted_slots, retain_composite, Deferred, FieldValue, Value, ValueType};
 
@@ -2143,7 +2143,7 @@ fn admitted(value_type: &ValueType, outcome: Outcome<Value>) -> Result<Value, St
     if value_type.admits(&value) {
         Ok(value)
     } else {
-        Err(Stop::Refused(Refusal::CheckedInvariant))
+        Err(invariant(CheckedInvariantCause::DeferredResultNotAdmitted))
     }
 }
 
@@ -2395,13 +2395,15 @@ impl CheckedEquality {
                     self.enum_members.resolve(l.variant()),
                     self.enum_members.resolve(r.variant()),
                 ) else {
-                    return Err(invariant());
+                    return Err(invariant(
+                        CheckedInvariantCause::EqualityEnumVariantUnresolved,
+                    ));
                 };
                 compare_enum(operator, l, r, meter)
             }
             (EqualitySchedule::Quantity, Value::Quantity(l), Value::Quantity(r)) => {
                 let (Some(l), Some(r)) = (units.resolve(l), units.resolve(r)) else {
-                    return Err(invariant());
+                    return Err(invariant(CheckedInvariantCause::EqualityUnitUnresolved));
                 };
                 compare_quantity(operator, l, r, meter)
             }
@@ -2413,14 +2415,16 @@ impl CheckedEquality {
                 EqualitySchedule::Text | EqualitySchedule::Enum | EqualitySchedule::Quantity,
                 _,
                 _,
-            ) => return Err(invariant()),
+            ) => return Err(invariant(CheckedInvariantCause::EqualityScheduleMismatch)),
         };
-        outcome_into_stop(scheduled.map_err(|_| invariant())?)
+        outcome_into_stop(scheduled.map_err(|error| {
+            invariant(CheckedInvariantCause::ScheduledComparisonRefused { cause: error.cause })
+        })?)
     }
 }
 
-fn invariant() -> Stop {
-    Stop::Refused(Refusal::CheckedInvariant)
+fn invariant(cause: CheckedInvariantCause) -> Stop {
+    Stop::Refused(Refusal::CheckedInvariant { cause })
 }
 
 /// Whether (`source`, `target`) is a row of the closed QSpec FR-149
@@ -2534,7 +2538,9 @@ pub fn operand_value(
         (source, value) => source.admits(value),
     };
     if !admitted {
-        return Err(invariant());
+        return Err(invariant(
+            CheckedInvariantCause::EqualityOperandSourceNotAdmitted,
+        ));
     }
     let Some(target) = &operand.target else {
         return Ok(value.clone());
@@ -2571,33 +2577,48 @@ pub fn operand_value(
         (_, ValueType::Integer | ValueType::Int(_), Value::Decimal(decimal)) => {
             let rational = decimal.normalized().to_rational();
             if !rational.is_integer() {
-                return Err(invariant());
+                return Err(invariant(
+                    CheckedInvariantCause::EqualityOperandNonIntegralDecimal,
+                ));
             }
             Value::Integer(rational.numerator().clone())
         }
         (_, ValueType::Quantity(unit), Value::Quantity(quantity)) => {
             let (Some(source), Some(target)) = (units.resolve(quantity), units.get(*unit)) else {
-                return Err(invariant());
+                return Err(invariant(CheckedInvariantCause::EqualityUnitUnresolved));
             };
             let conversion = outcome_into_stop(
-                convert_quantity(source, target, &QuantityTarget::Exact, meter)
-                    .map_err(|_| invariant())?,
+                convert_quantity(source, target, &QuantityTarget::Exact, meter).map_err(
+                    |error| {
+                        invariant(CheckedInvariantCause::EqualityQuantityConversionRejected {
+                            cause: error.cause,
+                        })
+                    },
+                )?,
             )?;
             match conversion.value() {
                 ConvertedValue::Exact(exact) => {
                     Value::Quantity(Quantity::new(exact.clone(), *unit))
                 }
                 ConvertedValue::Decimal(_) | ConvertedValue::Integer { .. } => {
-                    return Err(invariant())
+                    return Err(invariant(
+                        CheckedInvariantCause::EqualityQuantityNonExactPlacement,
+                    ))
                 }
             }
         }
-        _ => return Err(invariant()),
+        _ => {
+            return Err(invariant(
+                CheckedInvariantCause::EqualityConversionShapeMismatch,
+            ))
+        }
     };
     if target.admits(&converted) {
         Ok(converted)
     } else {
-        Err(invariant())
+        Err(invariant(
+            CheckedInvariantCause::EqualityOperandTargetNotAdmitted,
+        ))
     }
 }
 
@@ -2681,6 +2702,288 @@ fn decimal_to_rational(value: &Decimal, meter: &mut Meter) -> Result<Value, Stop
             .results(1),
     )?;
     Ok(Value::Rational(rational))
+}
+
+#[cfg(test)]
+mod checked_invariant_tests {
+    use super::*;
+    use crate::enumeration::EnumDeclaration;
+    use crate::unit::{DimensionNode, NominalDeclaration, UnitGraph, UnitNode};
+    use ix_trace_rs::trace;
+    use quire_exact::{EnumMember, ScalarLimits, UnitId, VariantId};
+
+    fn meter() -> Meter {
+        Meter::new(ScalarLimits {
+            integer_bits: 1024,
+            decimal_digits: 1024,
+            scale_expansion: 1024,
+            text_input_bytes: 1024,
+            text_scalars: 1024,
+            normalized_scalars: 1024,
+            unit_edges: 1024,
+            value_occurrences: 1024,
+            work_units: 1024,
+            result_units: 1024,
+        })
+    }
+
+    fn checked(
+        schedule: EqualitySchedule,
+        left: EqualityOperand,
+        right: EqualityOperand,
+    ) -> CheckedEquality {
+        CheckedEquality {
+            operator: EqualityOperator::Equal,
+            left,
+            right,
+            schedule,
+            units: UnitTable::default(),
+            enum_members: EnumMemberIndex::default(),
+        }
+    }
+
+    fn refusal<T>(result: Result<T, Stop>, expected: CheckedInvariantCause) {
+        assert!(matches!(
+            result,
+            Err(Stop::Refused(Refusal::CheckedInvariant { cause })) if cause == expected
+        ));
+    }
+
+    /// Trace: FR-369-AC-9
+    #[trace("TC-917", "FR-369-AC-9")]
+    #[test]
+    fn deferred_result_names_failed_admission_and_preserves_prior_stop() {
+        refusal(
+            admitted(
+                &ValueType::Boolean,
+                Outcome::Completed(Value::Integer(Integer::one())),
+            ),
+            CheckedInvariantCause::DeferredResultNotAdmitted,
+        );
+        assert!(matches!(
+            admitted(
+                &ValueType::Boolean,
+                Outcome::Undefined(quire_exact::Undefined::DivisionByZero)
+            ),
+            Err(Stop::Undefined(quire_exact::Undefined::DivisionByZero))
+        ));
+    }
+
+    /// Trace: FR-369-AC-9
+    #[trace("TC-917", "FR-369-AC-9")]
+    #[test]
+    fn equality_operand_failures_name_their_distinct_conditions() {
+        let units = UnitTable::default();
+        let scope = UnitScope::new(&units);
+        let mut meter = meter();
+        refusal(
+            operand_value(
+                &EqualityOperand::typed(ValueType::Boolean),
+                &Value::Integer(Integer::one()),
+                &scope,
+                &mut meter,
+            ),
+            CheckedInvariantCause::EqualityOperandSourceNotAdmitted,
+        );
+        refusal(
+            operand_value(
+                &EqualityOperand::converted(ValueType::Boolean, ValueType::Integer),
+                &Value::Boolean(true),
+                &scope,
+                &mut meter,
+            ),
+            CheckedInvariantCause::EqualityConversionShapeMismatch,
+        );
+        refusal(
+            operand_value(
+                &EqualityOperand::converted(
+                    ValueType::Integer,
+                    ValueType::Int(quire_exact::IntegerInterval::spanning(
+                        Integer::zero(),
+                        Integer::zero(),
+                    )),
+                ),
+                &Value::Integer(Integer::one()),
+                &scope,
+                &mut meter,
+            ),
+            CheckedInvariantCause::EqualityOperandTargetNotAdmitted,
+        );
+        let decimal_type = ValueType::Decimal(
+            DecimalType::new(
+                Integer::zero(),
+                Integer::from(10_i64),
+                1,
+                1,
+                quire_exact::RoundingMode::Exact,
+            )
+            .unwrap(),
+        );
+        refusal(
+            operand_value(
+                &EqualityOperand::converted(decimal_type, ValueType::Integer),
+                &Value::Decimal(Decimal::new(Integer::from(5_i64), 1)),
+                &scope,
+                &mut meter,
+            ),
+            CheckedInvariantCause::EqualityOperandNonIntegralDecimal,
+        );
+    }
+
+    /// Trace: FR-369-AC-9
+    #[trace("TC-917", "FR-369-AC-9")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test supplies a checked node identity without minting one in production"
+    )]
+    #[test]
+    fn equality_schedule_distinguishes_shape_and_missing_identity() {
+        let mut meter = meter();
+        let mismatch = checked(
+            EqualitySchedule::Text,
+            EqualityOperand::typed(ValueType::Boolean),
+            EqualityOperand::typed(ValueType::Boolean),
+        );
+        assert!(matches!(
+            mismatch.evaluate(&Value::Boolean(true), &Value::Boolean(true), &mut meter),
+            Outcome::Refused(Refusal::CheckedInvariant {
+                cause: CheckedInvariantCause::EqualityScheduleMismatch
+            })
+        ));
+
+        let unit = UnitId::declared(NodeKey::from_digest([1; 32]));
+        let unresolved_unit = checked(
+            EqualitySchedule::Quantity,
+            EqualityOperand::typed(ValueType::Quantity(unit)),
+            EqualityOperand::typed(ValueType::Quantity(unit)),
+        );
+        let quantity = Value::Quantity(Quantity::new(Rational::from_integer(Integer::one()), unit));
+        assert!(matches!(
+            unresolved_unit.evaluate(&quantity, &quantity, &mut meter),
+            Outcome::Refused(Refusal::CheckedInvariant {
+                cause: CheckedInvariantCause::EqualityUnitUnresolved
+            })
+        ));
+
+        let variant = VariantId::from_digest([2; 32]);
+        let enum_type = ValueType::Enum(EnumShape::new(true, [variant]));
+        let unresolved_variant = checked(
+            EqualitySchedule::Enum,
+            EqualityOperand::typed(enum_type.clone()),
+            EqualityOperand::typed(enum_type),
+        );
+        let member = Value::Enum(EnumMember::new(variant, 0));
+        assert!(matches!(
+            unresolved_variant.evaluate(&member, &member, &mut meter),
+            Outcome::Refused(Refusal::CheckedInvariant {
+                cause: CheckedInvariantCause::EqualityEnumVariantUnresolved
+            })
+        ));
+    }
+
+    /// Trace: FR-369-AC-9
+    #[trace("TC-917", "FR-369-AC-9")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test supplies checked enum identities without minting them in production"
+    )]
+    #[test]
+    fn scheduled_comparator_preserves_its_ill_typed_cause() {
+        let left = EnumDeclaration::new(NodeKey::from_digest([1; 32]), true, vec!["A".into()])
+            .unwrap()
+            .member("A", NodeKey::from_digest([3; 32]))
+            .unwrap();
+        let right = EnumDeclaration::new(NodeKey::from_digest([2; 32]), true, vec!["B".into()])
+            .unwrap()
+            .member("B", NodeKey::from_digest([4; 32]))
+            .unwrap();
+        let mut equality = checked(
+            EqualitySchedule::Enum,
+            EqualityOperand::typed(ValueType::Enum(EnumShape::new(true, [left.variant()]))),
+            EqualityOperand::typed(ValueType::Enum(EnumShape::new(true, [right.variant()]))),
+        );
+        equality.enum_members.record(left.clone());
+        equality.enum_members.record(right.clone());
+        let mut meter = meter();
+        assert!(matches!(
+            equality.evaluate(
+                &Value::Enum(EnumMember::new(left.variant(), 0)),
+                &Value::Enum(EnumMember::new(right.variant(), 0)),
+                &mut meter,
+            ),
+            Outcome::Refused(Refusal::CheckedInvariant {
+                cause: CheckedInvariantCause::ScheduledComparisonRefused {
+                    cause: IllTypedCause::DistinctEnumDeclarations
+                }
+            })
+        ));
+    }
+
+    /// Trace: FR-369-AC-9
+    #[trace("TC-917", "FR-369-AC-9")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test supplies checked unit identities without minting them in production"
+    )]
+    #[test]
+    fn equality_quantity_conversion_preserves_its_ill_typed_cause() {
+        let dimensions = BTreeMap::from([
+            (
+                NodeKey::from_digest([1; 32]),
+                DimensionNode::checked(vec![], NominalDeclaration::default()).unwrap(),
+            ),
+            (
+                NodeKey::from_digest([2; 32]),
+                DimensionNode::checked(vec![], NominalDeclaration::default()).unwrap(),
+            ),
+        ]);
+        let units = BTreeMap::from([
+            (
+                NodeKey::from_digest([3; 32]),
+                UnitNode::checked(
+                    [1; 32],
+                    None,
+                    Rational::from_integer(Integer::one()),
+                    Rational::from_integer(Integer::zero()),
+                    NominalDeclaration::default(),
+                )
+                .unwrap(),
+            ),
+            (
+                NodeKey::from_digest([4; 32]),
+                UnitNode::checked(
+                    [2; 32],
+                    None,
+                    Rational::from_integer(Integer::one()),
+                    Rational::from_integer(Integer::zero()),
+                    NominalDeclaration::default(),
+                )
+                .unwrap(),
+            ),
+        ]);
+        let graph = UnitGraph::from_checked_nodes(&dimensions, &units).unwrap();
+        let table = UnitTable::declared(&graph);
+        let scope = UnitScope::new(&table);
+        let source = UnitId::declared(NodeKey::from_digest([3; 32]));
+        let target = UnitId::declared(NodeKey::from_digest([4; 32]));
+        refusal(
+            operand_value(
+                &EqualityOperand::converted(
+                    ValueType::Quantity(source),
+                    ValueType::Quantity(target),
+                ),
+                &Value::Quantity(Quantity::new(
+                    Rational::from_integer(Integer::one()),
+                    source,
+                )),
+                &scope,
+                &mut meter(),
+            ),
+            CheckedInvariantCause::EqualityQuantityConversionRejected {
+                cause: IllTypedCause::IncompatibleDimensions,
+            },
+        );
+    }
 }
 
 #[cfg(test)]
