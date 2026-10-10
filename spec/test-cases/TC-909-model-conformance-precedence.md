@@ -35,8 +35,10 @@ through QSV's strict entry points and its QSL-owned model-assembly boundary.
    the pending declaration/parent view, with a child that narrows its
    immediate parent's field type or presence. Assert the returned
    `FieldRef`, declared type and presence identify the parent and the
-   observation identifies the actual source; they must not identify the
-   child's narrowed field or a synthetic clause. Feed that result to the
+   source occurrence and observation still identify the original child
+   `self.f`, never a substituted parent occurrence or synthetic clause;
+   the declared type/presence must not identify the child's narrowed field.
+   Feed that result to the
    same QSL checked-fact graph under the original budget and cancellation
    handle. An unknown or ambiguous `f` must refuse without a usable fact.
    Assert this restricted read cannot call evaluation or expose an effective
@@ -50,13 +52,16 @@ through QSV's strict entry points and its QSL-owned model-assembly boundary.
    finalization and public checked-graph sealing.
 5. Use a child field of `Reference<S>` redefining `Reference<T>` with
    `S` a proper subtype of `T`, unchanged multiplicity and presence, and
-   no exposed writer with an outstanding refinement obligation. After
+   no exposed operation writing the field. After
    the complete QSL verdict, assert QSV finalization succeeds and the
    completed environment admits an `S` object reference through the `T`
    field without changing the reference's most-specific type or identity.
    Reverse the types and then use unrelated types; assert refusal in each
-   run. Add an exposed writer that narrows the field and assert QSL requires
-   an actual established postcondition fact before the verdict can succeed.
+   run. Add an exposed writer that narrows the object-typed field and assert
+   QSL refuses `undefined_expression`/`unproved-refinement` with obligation
+   `no-proof-form` despite any authored clause, before QSV finalization.
+   Separately narrow a numeric interval or raise presence with an exposed
+   writer; assert QSL requires the corresponding actual checked FR-146 fact.
 6. Call `new`, `bounded`, and `bounded_with_cancel` directly with invalid
    target, undominated conflict, widening and duplicate effective-name
    fixtures. Compare each refusal with its established QSV cause. Inspect
@@ -74,8 +79,9 @@ environment. Direct QSV callers remain strict. Pending state allows the
 restricted declaration/parent reads needed for checked FR-146 facts, while
 public expression checking and evaluation remain unavailable.
 Conforming subtype references survive finalization with their original
-identity; reverse and unrelated references refuse, and a writer's
-refinement obligation still requires a checked fact.
+identity; reverse and unrelated references refuse. An object-typed narrowing
+with an exposed writer refuses `no-proof-form` and never finalizes; numeric
+and presence narrowing use their actual checked-fact obligations.
 
 ## Status
 

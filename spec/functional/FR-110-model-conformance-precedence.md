@@ -32,7 +32,8 @@ retain strict declaration checking.
 - A completed `TypeEnvironment` only after all required checks succeed.
 - A restricted pending declaration/parent view for QSL's checked-fact
   admission, with the actual `FieldRef`, declared type and presence, and
-  the caller's unchanged source observation; it confers no
+  the caller's unchanged child `self.f` source occurrence and observation;
+  it confers no
   completed-environment authority.
 - Otherwise the original typed QSV declaration, limit, cancellation, or
   storage failure. On conformance refusal, QSL owns its returned result and
@@ -66,7 +67,8 @@ retain strict declaration checking.
    only the declaration and immediate-parent view needed to type authored
    postconditions and derive FR-146 facts. QSV's pending `self.f` projection SHALL
    identify the actual parent `FieldRef`, carry the immediate parent's
-   declared type and presence, and preserve QSL's supplied source observation;
+   declared type and presence, and preserve the original child `self.f`
+   source occurrence and QSL's supplied observation identity;
    it SHALL NOT substitute the redefining child's narrowed type or presence. These
    reads SHALL use the same staged declaration graph, work budget, and
    cancellation handle. They SHALL refuse an unknown or ambiguous field
@@ -93,9 +95,12 @@ retain strict declaration checking.
    admitted ancestry, because every value admitted for `Reference<S>` is
    also admitted for `Reference<T>`. It SHALL preserve the reference's
    most-specific object identity. QSV's final safety check SHALL refuse a
-   reverse or unrelated reference type. QSL's separate refinement
-   obligation for an exposed writer SHALL still require an actual checked
-   postcondition fact.
+   reverse or unrelated reference type. If an exposed writer narrows an
+   object-typed field, then QSL's completed verdict SHALL refuse
+   `undefined_expression`/`unproved-refinement` with obligation
+   `no-proof-form`: no FR-146 fact can discharge it. QSV SHALL NOT finalize
+   that abandoned admission. Numeric interval and presence narrowing with an exposed
+   writer SHALL still require the actual checked FR-146 fact QSL specifies.
 6. QSV SHALL confine the intermediate state to its model-assembly contract.
    QSV SHALL NOT expose it as a completed `TypeEnvironment`, or use it for
    `attributes`, `attribute`, `admits`, general expression checking, or
@@ -118,9 +123,9 @@ retain strict declaration checking.
 | FR-110-AC-2 | Given an unknown member type, a composite or supertype cycle, a missing supertype, an invalid `redefines` target, an undominated redefinition conflict, a duplicate name on unrelated flattened fields, exhausted `ancestor_steps` or `work_units`, or cancellation at an existing charge checkpoint, staged QSV admission stops with its established typed structural or resource failure before QSL's later conformance verdict. No ambiguous member or completed environment is exposed, and the exact bound/counter and cancellation handle are retained. | Test |
 | FR-110-AC-3 | Given QSL acceptance for the identical model declaration set, effective attribute lookup and reference admission become available only after QSV completion and before dispatch finalization or public checked-graph sealing, with the same slot and lineage result and work accounting as strict admission of a valid set. If completion refuses or runs out of resources, no partial environment escapes. | Test |
 | FR-110-AC-4 | Direct calls to `new`, `bounded`, and `bounded_with_cancel` still refuse an invalid redefinition target, undominated conflict, widening, and duplicate effective name with their existing QSV causes, and admit a valid redefinition with its existing effective attributes. No path from a pending result can expose a completed environment without QSV's final safety checks. | Test |
-| FR-110-AC-5 | During pending admission, a source-backed `self.f` read for a redefining child returns the immediate parent's actual `FieldRef`, declared type and presence, and QSL's unchanged source observation to the same checked-fact graph under the original budget and cancellation handle. It never substitutes the child's narrowed declaration, invents a fact, or permits evaluation. An unknown or ambiguous member refuses before a fact can use it. | Test |
+| FR-110-AC-5 | During pending admission, a source-backed `self.f` read for a redefining child returns the immediate parent's actual `FieldRef`, declared type and presence, while retaining the original child `self.f` source occurrence and QSL observation identity on the same checked-fact graph under the original budget and cancellation handle. It never substitutes the child's narrowed declaration, invents a fact or parent source occurrence, or permits evaluation. An unknown or ambiguous member refuses before a fact can use it. | Test |
 | FR-110-AC-6 | The QSL-owned and direct entry points share QSV's structural admission and effective-attribute algorithms; no second model redefinition checker, unchecked public `TypeEnvironment`, or alternate completion path is introduced. | Inspection |
-| FR-110-AC-7 | Given a structurally valid model whose child field `Reference<S>` redefines a parent field `Reference<T>`, where `S` is a proper subtype of `T`, multiplicity and presence are unchanged, and no exposed writer leaves a refinement obligation, the complete QSL conformance verdict and QSV finalization succeed. The completed QSV environment admits an `S` reference through the `T` field without changing its most-specific identity. Reversing `S` and `T` or using unrelated object types refuses; when an exposed writer creates a narrowing obligation, QSL still requires an established checked postcondition fact. | Test |
+| FR-110-AC-7 | Given a structurally valid model whose child field `Reference<S>` redefines a parent field `Reference<T>`, where `S` is a proper subtype of `T`, multiplicity and presence are unchanged, and no exposed operation writes that field, the complete QSL conformance verdict and QSV finalization succeed. The completed QSV environment admits an `S` reference through the `T` field without changing its most-specific identity. Reversing `S` and `T` or using unrelated object types refuses. With an exposed writer narrowing that object-typed field, QSL instead refuses `undefined_expression`/`unproved-refinement` with obligation `no-proof-form`, regardless of authored facts; QSV finalization does not run. Numeric interval and presence narrowing retain their separate actual checked-fact route. | Test |
 
 ## Dependencies
 
