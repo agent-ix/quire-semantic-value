@@ -135,7 +135,7 @@ dependencies = [
 [[package]]
 name = "quire-exact"
 version = "0.1.0"
-source = "git+https://github.com/agent-ix/quire-exact?branch=main#1098e44e4fd2b7e93a41a59433a2f1cf08c88ac7"
+source = "git+https://github.com/agent-ix/quire-exact?branch=main#dc7891740d04a3ff4c76c1315e94216f0bdc15ec"
 dependencies = [
  "num-bigint",
  "num-integer",

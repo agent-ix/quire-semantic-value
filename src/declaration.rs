@@ -2750,7 +2750,7 @@ mod checked_invariant_tests {
     }
 
     /// Trace: FR-369-AC-9
-    #[trace("TC-917", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-369-AC-9", "FR-369-AC-5")]
     #[test]
     fn deferred_result_names_failed_admission_and_preserves_prior_stop() {
         refusal(
@@ -2760,6 +2760,22 @@ mod checked_invariant_tests {
             ),
             CheckedInvariantCause::DeferredResultNotAdmitted,
         );
+        let Err(Stop::Refused(fault)) = admitted(
+            &ValueType::Boolean,
+            Outcome::Completed(Value::Integer(Integer::one())),
+        ) else {
+            panic!("failed admission must return the checked-invariant refusal");
+        };
+        assert_eq!(fault.code(), None);
+        assert_eq!(fault.cause(), None);
+        let ordinary = Refusal::IntegerOutOfDomain {
+            target: Box::new(quire_exact::IntegerInterval::spanning(
+                Integer::zero(),
+                Integer::one(),
+            )),
+        };
+        assert_eq!(ordinary.code(), Some("integer_out_of_domain"));
+        assert_eq!(ordinary.cause(), Some("outside-domain"));
         assert!(matches!(
             admitted(
                 &ValueType::Boolean,
@@ -2767,10 +2783,35 @@ mod checked_invariant_tests {
             ),
             Err(Stop::Undefined(quire_exact::Undefined::DivisionByZero))
         ));
+        let mut exhausted = Meter::new(ScalarLimits {
+            integer_bits: 1024,
+            decimal_digits: 1024,
+            scale_expansion: 1024,
+            text_input_bytes: 1024,
+            text_scalars: 1024,
+            normalized_scalars: 1024,
+            unit_edges: 1024,
+            value_occurrences: 1024,
+            work_units: 1024,
+            result_units: 0,
+        });
+        let prior_stop = exhausted
+            .charge(Charge::new(ChargePoint::CompositeResultRetain).results(1))
+            .expect_err("zero result budget must deny retention");
+        let Err(Stop::Incomplete(actual)) =
+            admitted(&ValueType::Boolean, Outcome::Incomplete(prior_stop.clone()))
+        else {
+            panic!("a prior charge stop must survive admission");
+        };
+        assert_eq!(actual, prior_stop);
     }
 
     /// Trace: FR-369-AC-9
-    #[trace("TC-917", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-369-AC-9")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test supplies a checked unit identity without minting one in production"
+    )]
     #[test]
     fn equality_operand_failures_name_their_distinct_conditions() {
         let units = UnitTable::default();
@@ -2828,10 +2869,28 @@ mod checked_invariant_tests {
             ),
             CheckedInvariantCause::EqualityOperandNonIntegralDecimal,
         );
+        let unresolved = quire_exact::UnitId::declared(NodeKey::from_digest([9; 32]));
+        refusal(
+            operand_value(
+                &EqualityOperand::converted(
+                    ValueType::Quantity(unresolved),
+                    ValueType::Quantity(quire_exact::UnitId::declared(NodeKey::from_digest(
+                        [10; 32],
+                    ))),
+                ),
+                &Value::Quantity(Quantity::new(
+                    Rational::from_integer(Integer::one()),
+                    unresolved,
+                )),
+                &scope,
+                &mut meter,
+            ),
+            CheckedInvariantCause::EqualityUnitUnresolved,
+        );
     }
 
     /// Trace: FR-369-AC-9
-    #[trace("TC-917", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-369-AC-9")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies a checked node identity without minting one in production"
@@ -2882,7 +2941,7 @@ mod checked_invariant_tests {
     }
 
     /// Trace: FR-369-AC-9
-    #[trace("TC-917", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-369-AC-9")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies checked enum identities without minting them in production"
@@ -2920,7 +2979,7 @@ mod checked_invariant_tests {
     }
 
     /// Trace: FR-369-AC-9
-    #[trace("TC-917", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-369-AC-9")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies checked unit identities without minting them in production"
