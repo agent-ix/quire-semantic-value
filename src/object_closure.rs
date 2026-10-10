@@ -157,6 +157,7 @@ impl ObjectClosure {
                 }
                 Value::Option(option) => pending.extend(option.payload()),
                 Value::Composite(composite) => pending.extend(present(composite.slots())),
+                Value::Union(union) => pending.extend(union.payload()),
                 Value::Collection(collection) => pending.extend(collection.elements()),
                 Value::Reference(_)
                 | Value::Boolean(_)

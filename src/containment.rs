@@ -13,7 +13,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::declaration::{Component, ConstructionCause, ConstructionRefusal, TypeEnvironment};
-use quire_exact::{FieldValue, NodeKey, Value};
+use quire_exact::{FieldValue, NodeKey, Value, VariantId};
 
 /// A graph-local node name.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -42,6 +42,15 @@ pub enum GraphNode {
         /// Supplied fields by name.
         fields: Vec<(String, GraphSlot)>,
     },
+    /// One union member of `declaration`, resolved by its supplied member key.
+    Union {
+        /// The union declaration.
+        declaration: NodeKey,
+        /// The active member's verified key bytes.
+        variant: VariantId,
+        /// Supplied payload positions.
+        positions: Vec<GraphSlot>,
+    },
     /// A tuple of `declaration`.
     Tuple {
         /// The tuple declaration.
@@ -55,7 +64,7 @@ impl GraphNode {
     fn children(&self) -> impl Iterator<Item = GraphNodeId> + '_ {
         let slots: Box<dyn Iterator<Item = &GraphSlot>> = match self {
             Self::Record { fields, .. } => Box::new(fields.iter().map(|(_, slot)| slot)),
-            Self::Tuple { positions, .. } => Box::new(positions.iter()),
+            Self::Tuple { positions, .. } | Self::Union { positions, .. } => Box::new(positions.iter()),
         };
         slots.filter_map(|slot| match slot {
             GraphSlot::Node(id) => Some(*id),
@@ -180,15 +189,17 @@ impl TypeEnvironment {
                 .map(|(name, slot)| resolve(slot).map(|value| (name.as_str(), value)))
                 .collect::<Result<Vec<_>, _>>()
         };
+        let union_variant = match node {
+            GraphNode::Union { variant, .. } => Some(*variant),
+            GraphNode::Record { .. } | GraphNode::Tuple { .. } => None,
+        };
         let constructed = match node {
             GraphNode::Record {
                 declaration,
                 fields: supplied,
             } => self.record(*declaration, fields(supplied)?),
-            GraphNode::Tuple {
-                declaration,
-                positions,
-            } => {
+            GraphNode::Tuple { declaration, positions }
+            | GraphNode::Union { declaration, positions, .. } => {
                 let mut values = Vec::with_capacity(positions.len());
                 for (index, slot) in positions.iter().enumerate() {
                     let cause = match resolve(slot)? {
@@ -203,7 +214,10 @@ impl TypeEnvironment {
                         cause,
                     }));
                 }
-                self.tuple(*declaration, values)
+                match union_variant {
+                    Some(variant) => self.union(*declaration, variant, values),
+                    None => self.tuple(*declaration, values),
+                }
             }
         };
         constructed.map_err(GraphCause::Construction)

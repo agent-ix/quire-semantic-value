@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The QSpec FR-143 declared record, tuple and model object-type registry, and
+//! The QSpec FR-143 declared record, tuple, union and model object-type registry, and
 //! the QSpec FR-149 checked equality layer over it.
 //!
 //! It owns the registry (`TypeEnvironment`, `ObjectTypeDeclaration`,
@@ -77,7 +77,7 @@ use quire_exact::CollectionKind;
 use quire_exact::EffectiveId;
 use quire_exact::EnumShape;
 use quire_exact::NodeKey;
-use quire_exact::{compare_text, evaluate_decimal};
+use quire_exact::{compare_text, evaluate_decimal, UnionMember, UnionValue, VariantId};
 
 /// One object-type field's identity: the object type that declares it and
 /// its declared name (QSpec FR-151 field redefinition names its target this way).
@@ -305,17 +305,40 @@ fn composite(declaration: NodeKey, slots: Box<[FieldValue]>) -> Value {
     from_admitted_slots(declaration, slots)
 }
 
-/// The shape of a composite declaration. Complete V1 has no variant or sum
-/// declaration.
+/// One ordered union member, with an identity verified by the package producer.
+/// This retains the FR-441 binding; it neither hashes nor accepts runtime labels.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnionMemberDeclaration {
+    member: UnionMember,
+    positions: Vec<ValueType>,
+}
+
+impl UnionMemberDeclaration {
+    /// Retain an already verified declaration/key/identifier triple and its
+    /// declared payload types. Environment admission checks ownership and duplicates.
+    pub fn from_verified(member: UnionMember, positions: Vec<ValueType>) -> Self {
+        Self { member, positions }
+    }
+
+    /// The authoritative member binding, including its ASCII identifier.
+    pub fn member(&self) -> &UnionMember { &self.member }
+
+    /// Payload types in declared position order, empty for a nullary member.
+    pub fn positions(&self) -> &[ValueType] { &self.positions }
+}
+
+/// The shape of a composite declaration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CompositeShape {
     /// A record with fields in declaration order.
     Record(Vec<FieldDeclaration>),
     /// A tuple of exactly these position types.
     Tuple(Vec<ValueType>),
+    /// Union members in declaration order, each retaining verified identity.
+    Union(Vec<UnionMemberDeclaration>),
 }
 
-/// A record or tuple declaration with its producer-assigned node key.
+/// A record, tuple or union declaration with its producer-assigned node key.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompositeDeclaration {
     key: NodeKey,
@@ -487,7 +510,8 @@ pub struct TypeEnvironmentLimits {
     /// conformance walk may follow, an edge count over the walk's closure
     /// and never a chain depth.
     pub ancestor_steps: u64,
-    /// Cumulative work units admission may spend building the ancestor
+    /// Cumulative work units admission may spend retaining union members and
+    /// walking their payload type links, building the ancestor
     /// closure and flattening every object type's attributes. One unit is
     /// one ancestor or attribute copied into a type's set, or one field a
     /// lineage names. Running out is an
@@ -734,7 +758,7 @@ pub enum DeclarationCause {
     },
 }
 
-/// One checked package's closed, admitted record, tuple and object-type
+/// One checked package's closed, admitted record, tuple, union and object-type
 /// declarations.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TypeEnvironment {
@@ -753,6 +777,7 @@ pub struct TypeEnvironment {
     effective: BTreeMap<EffectiveId, Vec<EffectiveAttribute>>,
     /// The units a `ValueType::Quantity` of this package names by id.
     units: UnitTable,
+    union_members: BTreeMap<(NodeKey, VariantId), usize>,
 }
 
 /// One containment edge of the recursion rule.
@@ -764,6 +789,56 @@ struct Edge {
 }
 
 impl TypeEnvironment {
+    /// Construct the registry-resolved member with environment-aware payload admission.
+    pub fn union(&self, declaration: NodeKey, variant: VariantId, payload: Vec<Value>)
+        -> Result<Value, ConstructionRefusal>
+    {
+        let member = self.union_positions(declaration, variant, payload.len())?;
+        for (position, (ty, value)) in member.positions.iter().zip(&payload).enumerate() {
+            if !self.admits(ty, value) {
+                return refuse(Component::Position(position), ConstructionCause::TypeMismatch);
+            }
+        }
+        Ok(UnionValue::from_admitted(member.member.clone(), payload))
+    }
+
+    /// Evaluate payload positions in order, propagating the first stopped outcome,
+    /// then retaining the completed union once under the existing composite schedule.
+    pub fn evaluate_union(&self, declaration: NodeKey, variant: VariantId,
+        payload: Vec<Deferred<'_>>, meter: &mut Meter)
+        -> Result<Outcome<Value>, ConstructionRefusal>
+    {
+        let member = self.union_positions(declaration, variant, payload.len())?;
+        let mut values = Vec::with_capacity(member.positions.len());
+        for (ty, expression) in member.positions.iter().zip(payload) {
+            let value = match outcome_into_stop(expression(meter)) {
+                Ok(value) => value,
+                Err(stop) => return Ok(outcome_from_stop(Err(stop))),
+            };
+            if !self.admits(ty, &value) {
+                return Ok(outcome_from_stop(Err(invariant(
+                    CheckedInvariantCause::DeferredResultNotAdmitted,
+                ))));
+            }
+            values.push(value);
+        }
+        Ok(retain_composite(UnionValue::from_admitted(member.member.clone(), values), meter))
+    }
+
+    fn union_positions(&self, declaration: NodeKey, variant: VariantId, supplied: usize)
+        -> Result<&UnionMemberDeclaration, ConstructionRefusal>
+    {
+        let Some((_, member)) = self.union_member(declaration, variant) else {
+            return refuse(Component::Value, ConstructionCause::TypeMismatch);
+        };
+        if member.positions.len() != supplied {
+            return refuse(Component::Value, ConstructionCause::WrongArity {
+                declared: member.positions.len(), supplied,
+            });
+        }
+        Ok(member)
+    }
+
     /// Admit `composites` and `object_types` as one closed environment,
     /// under the QSL NFR-012 default ceilings ([`TypeEnvironmentLimits::default`]).
     /// See [`Self::bounded`].
@@ -811,6 +886,7 @@ impl TypeEnvironment {
         cancel: &quire_exact::Cancel,
     ) -> Admission<Self> {
         let mut environment = Self::default();
+        let mut budget = WorkBudget::new(limits.work_units, cancel.clone());
         for declaration in composites {
             let refuse = |cause| {
                 EnvironmentFailure::Refused(InvalidDeclaration {
@@ -824,6 +900,40 @@ impl TypeEnvironment {
                 }
                 if let Some(target) = fields.iter().find_map(FieldDeclaration::redefines) {
                     return Err(refuse(DeclarationCause::RedefinitionTarget(target.clone())));
+                }
+            }
+            if let CompositeShape::Union(members) = &declaration.shape {
+                let mut names = BTreeSet::new();
+                for (position, member) in members.iter().enumerate() {
+                    budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+                    if member.member.declaration() != declaration.key {
+                        return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
+                    }
+                    if !names.insert(member.member.identifier().as_str()) {
+                        return Err(refuse(DeclarationCause::DuplicateMember(
+                            member.member.identifier().as_str().to_owned(),
+                        )));
+                    }
+                    if environment.union_members.insert(
+                        (declaration.key, member.member.variant()), position,
+                    ).is_some() {
+                        return Err(refuse(DeclarationCause::DuplicateKey));
+                    }
+                    for ty in &member.positions {
+                        let mut link = ty;
+                        loop {
+                            budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+                            match link {
+                                ValueType::Option(child) => link = child,
+                                ValueType::Collection(child) => link = child.element(),
+                                ValueType::Boolean | ValueType::Integer | ValueType::Int(_)
+                                | ValueType::Rational(_) | ValueType::Decimal(_) | ValueType::Float(_)
+                                | ValueType::Quantity(_) | ValueType::Text(_) | ValueType::Enum(_)
+                                | ValueType::Composite(_) | ValueType::Reference(_)
+                                | ValueType::Population(_) => break,
+                            }
+                        }
+                    }
                 }
             }
             if environment.composites.contains_key(&declaration.key) {
@@ -857,7 +967,6 @@ impl TypeEnvironment {
         environment
             .check_recursion(RecursionEdges::NonEscaping)
             .map_err(EnvironmentFailure::Refused)?;
-        let mut budget = WorkBudget::new(limits.work_units, cancel.clone());
         environment.check_supertypes(&mut budget)?;
         environment.ancestry = environment.compute_ancestors(&mut budget)?;
         environment
@@ -900,12 +1009,12 @@ impl TypeEnvironment {
         &self.units
     }
 
-    /// The admitted record or tuple declaration with this key.
+    /// The admitted record, tuple or union declaration with this key.
     pub fn composite(&self, key: NodeKey) -> Option<&CompositeDeclaration> {
         self.composites.get(&key)
     }
 
-    /// Every admitted record and tuple declaration in key order.
+    /// Every admitted record, tuple and union declaration in key order.
     pub fn composites(&self) -> impl Iterator<Item = &CompositeDeclaration> {
         self.composites.values()
     }
@@ -932,14 +1041,102 @@ impl TypeEnvironment {
     /// Whether `value_type` admits `value` under this environment's
     /// conformance: a `Reference<T>` admits a reference whose object's
     /// most-specific type conforms to `T` (QSpec FR-151, [`Self::conforms`]);
-    /// every other pair is [`ValueType::admits`].
+    /// composites resolve their declared shapes and nested values iteratively.
+    /// Scalar leaves use [`ValueType::admits`].
     pub fn admits(&self, value_type: &ValueType, value: &Value) -> bool {
-        match (value_type, value) {
-            (ValueType::Reference(declared), Value::Reference(reference)) => {
-                self.conforms(reference.object_type(), *declared)
+        self.admits_bounded(value_type, value, DEFAULT_WORK_UNITS).unwrap_or(false)
+    }
+
+    /// Resolve a member key only within this union; returns declaration position
+    /// and the retained authoritative binding and payload types.
+    pub fn union_member(&self, declaration: NodeKey, variant: VariantId)
+        -> Option<(usize, &UnionMemberDeclaration)>
+    {
+        let position = *self.union_members.get(&(declaration, variant))?;
+        let CompositeShape::Union(members) = self.shape(declaration)? else { return None; };
+        Some((position, members.get(position)?))
+    }
+
+    /// Resolve an authored identifier to one declared union member.
+    pub fn union_member_named(&self, declaration: NodeKey, name: &str)
+        -> Option<(usize, &UnionMemberDeclaration)>
+    {
+        let CompositeShape::Union(members) = self.shape(declaration)? else { return None; };
+        members.iter().enumerate().find(|(_, member)| member.member.identifier().as_str() == name)
+    }
+
+    /// Iterative supplied-value membership checking. One work unit per value
+    /// visited, including each shared occurrence. A limit is returned by name;
+    /// references check type conformance here, target closure is checked separately.
+    pub fn admits_bounded(&self, value_type: &ValueType, value: &Value, work_units: u64)
+        -> Result<bool, EnvironmentLimit>
+    {
+        if self.type_refusal(value_type).is_some() { return Ok(false); }
+        let mut budget = WorkBudget::new(work_units, quire_exact::Cancel::new());
+        let mut pending = vec![(value_type, value)];
+        while let Some((ty, value)) = pending.pop() {
+            budget.charge(1)?;
+            match (ty, value) {
+                (ValueType::Composite(key), Value::Union(union)) => {
+                    if union.declaration() != *key { return Ok(false); }
+                    let Some((_, member)) = self.union_member(*key, union.variant()) else {
+                        return Ok(false);
+                    };
+                    if union.member() != member.member() || union.payload().len() != member.positions.len() {
+                        return Ok(false);
+                    }
+                    pending.extend(member.positions.iter().zip(union.payload()).rev());
+                }
+                (ValueType::Composite(key), Value::Composite(value)) => {
+                    if value.declaration() != *key { return Ok(false); }
+                    match self.shape(*key) {
+                        Some(CompositeShape::Record(fields)) => {
+                            if fields.len() != value.slots().len() { return Ok(false); }
+                            for (field, slot) in fields.iter().zip(value.slots()).rev() {
+                                match slot {
+                                    FieldValue::Present(value) => pending.push((field.value_type(), value)),
+                                    FieldValue::Absent | FieldValue::Null if field.presence() == Presence::Optional => {},
+                                    FieldValue::Absent | FieldValue::Null => return Ok(false),
+                                }
+                            }
+                        }
+                        Some(CompositeShape::Tuple(positions)) => {
+                            if positions.len() != value.slots().len() { return Ok(false); }
+                            for (ty, slot) in positions.iter().zip(value.slots()).rev() {
+                                let FieldValue::Present(value) = slot else { return Ok(false); };
+                                pending.push((ty, value));
+                            }
+                        }
+                        Some(CompositeShape::Union(_)) | None => return Ok(false),
+                    }
+                }
+                (ValueType::Reference(declared), Value::Reference(reference)) => {
+                    if !self.object_types.contains_key(declared)
+                        || !self.object_types.contains_key(&reference.object_type())
+                        || !self.conforms(reference.object_type(), *declared) { return Ok(false); }
+                }
+                (ValueType::Option(payload), Value::Option(option)) => {
+                    if option.payload_type() != &**payload { return Ok(false); }
+                    if let Some(value) = option.payload() { pending.push((payload, value)); }
+                }
+                (ValueType::Collection(declared), Value::Collection(collection)) => {
+                    if collection.collection_type() != &**declared { return Ok(false); }
+                    if let Some(bound) = declared.bound() {
+                        let count = u64::try_from(collection.elements().len()).unwrap_or(u64::MAX);
+                        if bound.violation(count).is_some() { return Ok(false); }
+                    }
+                    pending.extend(collection.elements().iter().rev().map(|value| (declared.element(), value)));
+                }
+                (ValueType::Boolean | ValueType::Integer | ValueType::Int(_)
+                | ValueType::Rational(_) | ValueType::Decimal(_) | ValueType::Float(_)
+                | ValueType::Quantity(_) | ValueType::Text(_) | ValueType::Enum(_)
+                | ValueType::Composite(_) | ValueType::Reference(_) | ValueType::Option(_)
+                | ValueType::Collection(_) | ValueType::Population(_), _) => {
+                    if !ty.admits(value) { return Ok(false); }
+                }
             }
-            _ => value_type.admits(value),
         }
+        Ok(true)
     }
 
     /// Check a type named outside a declaration (a parameter or result type):
@@ -957,7 +1154,7 @@ impl TypeEnvironment {
     }
 
     /// Whether `value_type` contains `Float32` or `Float64` at any depth,
-    /// through record and tuple declarations included.
+    /// through every record, tuple and union member declaration included.
     pub fn contains_ieee(&self, value_type: &ValueType) -> bool {
         let mut visited = BTreeSet::new();
         let mut pending = vec![value_type];
@@ -979,6 +1176,9 @@ impl TypeEnvironment {
                             pending.extend(fields.iter().map(FieldDeclaration::value_type));
                         }
                         Some(CompositeShape::Tuple(positions)) => pending.extend(positions),
+                        Some(CompositeShape::Union(members)) => {
+                            pending.extend(members.iter().flat_map(|member| member.positions.iter()));
+                        }
                         None => {}
                     }
                 }
@@ -1059,6 +1259,8 @@ impl TypeEnvironment {
                     fields.iter().map(FieldDeclaration::value_type).collect()
                 }
                 CompositeShape::Tuple(positions) => positions.iter().collect(),
+                CompositeShape::Union(members) => members.iter()
+                    .flat_map(|member| member.positions.iter()).collect(),
             };
             (&declaration.name, types)
         });
@@ -1097,6 +1299,9 @@ impl TypeEnvironment {
             CompositeShape::Tuple(positions) => {
                 positions.iter().map(|ty| (ty, false, false)).collect()
             }
+            CompositeShape::Union(members) => members.iter()
+                .flat_map(|member| member.positions.iter().map(|ty| (ty, true, false)))
+                .collect(),
         };
         let mut edges = Vec::new();
         for (value_type, named, escapes) in members {
