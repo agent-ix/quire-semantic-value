@@ -155,23 +155,69 @@ mod storage_reservation_tests {
         );
     }
 
-    /// Trace: FR-108-AC-1, FR-108-AC-2
-    #[trace("TC-907", "FR-108-AC-1", "FR-108-AC-2")]
+    struct DenyBytes {
+        seen: Cell<Option<StorageRequest>>,
+    }
+
+    impl ReservationPolicy for DenyBytes {
+        fn permit(&self, request: StorageRequest) -> bool {
+            if request.unit() == StorageUnit::Bytes {
+                self.seen.set(Some(request));
+                false
+            } else {
+                true
+            }
+        }
+    }
+
+    /// Trace: FR-108-AC-1, FR-108-AC-2, FR-108-AC-4
+    #[trace("TC-907", "FR-108-AC-1", "FR-108-AC-2", "FR-108-AC-4")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked declaration keys without minting them in production"
+    )]
     #[test]
-    fn byte_reservation_reports_its_native_request() {
-        let deny = DenyFirst {
+    fn admission_byte_denial_preserves_request_and_invalid_declaration_classification() {
+        let declarations = || {
+            [
+                CompositeDeclaration::new(
+                    NodeKey::from_digest([1; 32]),
+                    "first",
+                    CompositeShape::Tuple(vec![]),
+                ),
+                CompositeDeclaration::new(
+                    NodeKey::from_digest([1; 32]),
+                    "second",
+                    CompositeShape::Tuple(vec![]),
+                ),
+            ]
+        };
+        let deny = DenyBytes {
             seen: Cell::new(None),
         };
         assert_eq!(
-            try_clone_str("field", &deny),
+            TypeEnvironment::bounded_with_reservations(
+                declarations(),
+                [],
+                TypeEnvironmentLimits::default(),
+                None,
+                &deny,
+            ),
             Err(EnvironmentFailure::Allocation(StorageRequest::new(
-                5,
+                6,
                 StorageUnit::Bytes,
             )))
         );
         assert_eq!(
             deny.seen.get(),
-            Some(StorageRequest::new(5, StorageUnit::Bytes))
+            Some(StorageRequest::new(6, StorageUnit::Bytes))
+        );
+        assert_eq!(
+            TypeEnvironment::new(declarations(), []),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                declaration: "second".into(),
+                cause: DeclarationCause::DuplicateKey,
+            }))
         );
     }
 
@@ -242,6 +288,74 @@ mod storage_reservation_tests {
                 .identity(),
             FieldRef::new(a, "x")
         );
+    }
+
+    /// Trace: FR-108-AC-3, FR-108-AC-5
+    #[trace("TC-907", "FR-108-AC-3", "FR-108-AC-5")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked declaration identities without minting them in production"
+    )]
+    #[test]
+    fn registry_order_and_inherited_slot_order_survive_reversed_inputs() {
+        let record = NodeKey::from_digest([1; 32]);
+        let tuple = NodeKey::from_digest([2; 32]);
+        let parent = EffectiveId::from_digest([1; 32]);
+        let child = EffectiveId::from_digest([2; 32]);
+        let environment = TypeEnvironment::new(
+            [
+                CompositeDeclaration::new(tuple, "T", CompositeShape::Tuple(vec![])),
+                CompositeDeclaration::new(record, "R", CompositeShape::Record(vec![])),
+            ],
+            [
+                ObjectTypeDeclaration::new(
+                    child,
+                    "Child",
+                    vec![FieldDeclaration::new(
+                        "own",
+                        ValueType::Integer,
+                        Presence::Required,
+                    )],
+                )
+                .with_supertypes(vec![parent]),
+                ObjectTypeDeclaration::new(
+                    parent,
+                    "Parent",
+                    vec![FieldDeclaration::new(
+                        "inherited",
+                        ValueType::Boolean,
+                        Presence::Required,
+                    )],
+                ),
+            ],
+        )
+        .expect("reversed declarations admit");
+        assert_eq!(
+            environment
+                .composites()
+                .map(CompositeDeclaration::key)
+                .collect::<Vec<_>>(),
+            vec![record, tuple]
+        );
+        assert_eq!(
+            environment
+                .object_types()
+                .map(ObjectTypeDeclaration::key)
+                .collect::<Vec<_>>(),
+            vec![parent, child]
+        );
+        let slots = environment.attributes(child).expect("child admits");
+        assert_eq!(
+            slots
+                .iter()
+                .map(|slot| (slot.owner(), slot.field().name()))
+                .collect::<Vec<_>>(),
+            vec![(child, "own"), (parent, "inherited")]
+        );
+        assert!(environment
+            .attribute(child, "inherited")
+            .expect("inherited link resolves")
+            .stands_for(&FieldRef::new(parent, "inherited")));
     }
 
     struct DenyPhase {
@@ -331,6 +445,11 @@ mod storage_reservation_tests {
             let (composites, objects) = declarations();
             let retried = TypeEnvironment::new(composites, objects).expect("retry admits");
             assert_eq!(retried, expected);
+            let field = FieldRef::new(EffectiveId::from_digest([5; 32]), "x");
+            assert!(retried
+                .attribute(field.owner, &field.name)
+                .expect("retry restores the member link")
+                .stands_for(&field));
         }
     }
 }
@@ -693,14 +812,14 @@ struct EffectiveStorage {
     slots: Vec<AttributeSlot>,
 }
 
-impl EffectiveAttribute<'_> {
+impl<'a> EffectiveAttribute<'a> {
     /// The object type that declares this field.
     pub fn owner(&self) -> EffectiveId {
         self.slot.owner
     }
 
     /// The field's declaration.
-    pub fn field(&self) -> &FieldDeclaration {
+    pub fn field(&self) -> &'a FieldDeclaration {
         self.field
     }
 
