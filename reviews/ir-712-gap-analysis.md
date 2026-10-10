@@ -35,3 +35,12 @@ Ticket: IR-712. Planless review of the changed production sites, their tagged te
 - Existing tests cover source/target admission, nonintegral decimal, unresolved unit and enum, shape mismatch, schedule mismatch, and distinct IllTypedCause payloads. The nonexact placement branch is structurally unreachable through `QuantityTarget::Exact`; TC-906 explicitly calls for inspection there, which was done.
 - Untraced behaviors / stubs: no new production behavior without an owning kernel or QSpec requirement; no new stub.
 - Semantic review: checked FR-369-AC-9 and TC-906 intent against changed code and tests as requested by the review brief.
+
+## Dispositions
+
+Round 1, reviewed at c71053aa084a61d122e9cd08e6e5d688768f9b31. The focused `cargo test checked_invariant_tests` run passed 8 tests. Production mapping was unchanged.
+
+| FND | outcome | sha/reason |
+| --- | --- | --- |
+| FND-001 | fixed | c71053aa084a61d122e9cd08e6e5d688768f9b31; `deferred_record_and_tuple_evaluation_preserve_admission_and_prior_refusal` calls both public evaluation paths, asserts admitted composites, failed record admission, and the original tuple refusal. |
+| FND-002 | fixed | c71053aa084a61d122e9cd08e6e5d688768f9b31; `scheduled_comparison_keeps_an_earlier_charge_stop` and `quantity_conversion_keeps_charge_stop_and_places_integer_successfully` assert charge-stop propagation and successful integer placement. |
