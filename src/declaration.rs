@@ -2533,7 +2533,7 @@ mod native_type_tests {
     use quire_exact::{Timestamp, Uuid};
 
     /// Native kinds are valid declared leaves and admit only their own values.
-    #[trace("FR-370-AC-1")]
+    #[trace("TC-910", "FR-111-AC-1", "FR-370-AC-1")]
     #[test]
     fn native_type_admission_preserves_distinct_kinds() {
         let types = TypeEnvironment::new([], []).expect("empty environment");
@@ -2544,11 +2544,15 @@ mod native_type_tests {
         let timestamp =
             Value::Timestamp(Timestamp::from_canonical_text("1").expect("canonical timestamp"));
 
+        let bounded_integer = ValueType::Int(quire_exact::IntegerInterval::spanning(
+            Integer::zero(),
+            Integer::one(),
+        ));
         for value_type in [ValueType::Uuid, ValueType::Timestamp] {
             assert_eq!(types.check_type(&value_type), Ok(()));
             assert!(!types.contains_ieee(&value_type));
             assert!(!admits_equality_conversion(
-                &ValueType::Integer,
+                &bounded_integer,
                 &value_type,
                 &UnitScope::new(types.units()),
             ));

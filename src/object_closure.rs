@@ -286,7 +286,7 @@ mod tests {
 
     /// Native leaves are admitted as their own attribute kinds and do not
     /// contribute a dangling reference to closure traversal.
-    #[trace("FR-370-AC-1", "FR-106-AC-10")]
+    #[trace("TC-910", "FR-111-AC-2", "FR-370-AC-1")]
     #[test]
     fn native_attributes_admit_and_wrong_kinds_refuse() {
         let native_type = object_type(4);
