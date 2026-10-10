@@ -321,10 +321,14 @@ impl UnionMemberDeclaration {
     }
 
     /// The authoritative member binding, including its ASCII identifier.
-    pub fn member(&self) -> &UnionMember { &self.member }
+    pub fn member(&self) -> &UnionMember {
+        &self.member
+    }
 
     /// Payload types in declared position order, empty for a nullary member.
-    pub fn positions(&self) -> &[ValueType] { &self.positions }
+    pub fn positions(&self) -> &[ValueType] {
+        &self.positions
+    }
 }
 
 /// The shape of a composite declaration.
@@ -790,13 +794,19 @@ struct Edge {
 
 impl TypeEnvironment {
     /// Construct the registry-resolved member with environment-aware payload admission.
-    pub fn union(&self, declaration: NodeKey, variant: VariantId, payload: Vec<Value>)
-        -> Result<Value, ConstructionRefusal>
-    {
+    pub fn union(
+        &self,
+        declaration: NodeKey,
+        variant: VariantId,
+        payload: Vec<Value>,
+    ) -> Result<Value, ConstructionRefusal> {
         let member = self.union_positions(declaration, variant, payload.len())?;
         for (position, (ty, value)) in member.positions.iter().zip(&payload).enumerate() {
             if !self.admits(ty, value) {
-                return refuse(Component::Position(position), ConstructionCause::TypeMismatch);
+                return refuse(
+                    Component::Position(position),
+                    ConstructionCause::TypeMismatch,
+                );
             }
         }
         Ok(UnionValue::from_admitted(member.member.clone(), payload))
@@ -804,10 +814,13 @@ impl TypeEnvironment {
 
     /// Evaluate payload positions in order, propagating the first stopped outcome,
     /// then retaining the completed union once under the existing composite schedule.
-    pub fn evaluate_union(&self, declaration: NodeKey, variant: VariantId,
-        payload: Vec<Deferred<'_>>, meter: &mut Meter)
-        -> Result<Outcome<Value>, ConstructionRefusal>
-    {
+    pub fn evaluate_union(
+        &self,
+        declaration: NodeKey,
+        variant: VariantId,
+        payload: Vec<Deferred<'_>>,
+        meter: &mut Meter,
+    ) -> Result<Outcome<Value>, ConstructionRefusal> {
         let member = self.union_positions(declaration, variant, payload.len())?;
         let mut values = Vec::with_capacity(member.positions.len());
         for (ty, expression) in member.positions.iter().zip(payload) {
@@ -822,19 +835,29 @@ impl TypeEnvironment {
             }
             values.push(value);
         }
-        Ok(retain_composite(UnionValue::from_admitted(member.member.clone(), values), meter))
+        Ok(retain_composite(
+            UnionValue::from_admitted(member.member.clone(), values),
+            meter,
+        ))
     }
 
-    fn union_positions(&self, declaration: NodeKey, variant: VariantId, supplied: usize)
-        -> Result<&UnionMemberDeclaration, ConstructionRefusal>
-    {
+    fn union_positions(
+        &self,
+        declaration: NodeKey,
+        variant: VariantId,
+        supplied: usize,
+    ) -> Result<&UnionMemberDeclaration, ConstructionRefusal> {
         let Some((_, member)) = self.union_member(declaration, variant) else {
             return refuse(Component::Value, ConstructionCause::TypeMismatch);
         };
         if member.positions.len() != supplied {
-            return refuse(Component::Value, ConstructionCause::WrongArity {
-                declared: member.positions.len(), supplied,
-            });
+            return refuse(
+                Component::Value,
+                ConstructionCause::WrongArity {
+                    declared: member.positions.len(),
+                    supplied,
+                },
+            );
         }
         Ok(member)
     }
@@ -914,9 +937,11 @@ impl TypeEnvironment {
                             member.member.identifier().as_str().to_owned(),
                         )));
                     }
-                    if environment.union_members.insert(
-                        (declaration.key, member.member.variant()), position,
-                    ).is_some() {
+                    if environment
+                        .union_members
+                        .insert((declaration.key, member.member.variant()), position)
+                        .is_some()
+                    {
                         return Err(refuse(DeclarationCause::DuplicateKey));
                     }
                     for ty in &member.positions {
@@ -926,10 +951,17 @@ impl TypeEnvironment {
                             match link {
                                 ValueType::Option(child) => link = child,
                                 ValueType::Collection(child) => link = child.element(),
-                                ValueType::Boolean | ValueType::Integer | ValueType::Int(_)
-                                | ValueType::Rational(_) | ValueType::Decimal(_) | ValueType::Float(_)
-                                | ValueType::Quantity(_) | ValueType::Text(_) | ValueType::Enum(_)
-                                | ValueType::Composite(_) | ValueType::Reference(_)
+                                ValueType::Boolean
+                                | ValueType::Integer
+                                | ValueType::Int(_)
+                                | ValueType::Rational(_)
+                                | ValueType::Decimal(_)
+                                | ValueType::Float(_)
+                                | ValueType::Quantity(_)
+                                | ValueType::Text(_)
+                                | ValueType::Enum(_)
+                                | ValueType::Composite(_)
+                                | ValueType::Reference(_)
                                 | ValueType::Population(_) => break,
                             }
                         }
@@ -1044,66 +1076,98 @@ impl TypeEnvironment {
     /// composites resolve their declared shapes and nested values iteratively.
     /// Scalar leaves use [`ValueType::admits`].
     pub fn admits(&self, value_type: &ValueType, value: &Value) -> bool {
-        self.admits_bounded(value_type, value, DEFAULT_WORK_UNITS).unwrap_or(false)
+        self.admits_bounded(value_type, value, DEFAULT_WORK_UNITS)
+            .unwrap_or(false)
     }
 
     /// Resolve a member key only within this union; returns declaration position
     /// and the retained authoritative binding and payload types.
-    pub fn union_member(&self, declaration: NodeKey, variant: VariantId)
-        -> Option<(usize, &UnionMemberDeclaration)>
-    {
+    pub fn union_member(
+        &self,
+        declaration: NodeKey,
+        variant: VariantId,
+    ) -> Option<(usize, &UnionMemberDeclaration)> {
         let position = *self.union_members.get(&(declaration, variant))?;
-        let CompositeShape::Union(members) = self.shape(declaration)? else { return None; };
+        let CompositeShape::Union(members) = self.shape(declaration)? else {
+            return None;
+        };
         Some((position, members.get(position)?))
     }
 
     /// Resolve an authored identifier to one declared union member.
-    pub fn union_member_named(&self, declaration: NodeKey, name: &str)
-        -> Option<(usize, &UnionMemberDeclaration)>
-    {
-        let CompositeShape::Union(members) = self.shape(declaration)? else { return None; };
-        members.iter().enumerate().find(|(_, member)| member.member.identifier().as_str() == name)
+    pub fn union_member_named(
+        &self,
+        declaration: NodeKey,
+        name: &str,
+    ) -> Option<(usize, &UnionMemberDeclaration)> {
+        let CompositeShape::Union(members) = self.shape(declaration)? else {
+            return None;
+        };
+        members
+            .iter()
+            .enumerate()
+            .find(|(_, member)| member.member.identifier().as_str() == name)
     }
 
     /// Iterative supplied-value membership checking. One work unit per value
     /// visited, including each shared occurrence. A limit is returned by name;
     /// references check type conformance here, target closure is checked separately.
-    pub fn admits_bounded(&self, value_type: &ValueType, value: &Value, work_units: u64)
-        -> Result<bool, EnvironmentLimit>
-    {
-        if self.type_refusal(value_type).is_some() { return Ok(false); }
+    pub fn admits_bounded(
+        &self,
+        value_type: &ValueType,
+        value: &Value,
+        work_units: u64,
+    ) -> Result<bool, EnvironmentLimit> {
+        if self.type_refusal(value_type).is_some() {
+            return Ok(false);
+        }
         let mut budget = WorkBudget::new(work_units, quire_exact::Cancel::new());
         let mut pending = vec![(value_type, value)];
         while let Some((ty, value)) = pending.pop() {
             budget.charge(1)?;
             match (ty, value) {
                 (ValueType::Composite(key), Value::Union(union)) => {
-                    if union.declaration() != *key { return Ok(false); }
+                    if union.declaration() != *key {
+                        return Ok(false);
+                    }
                     let Some((_, member)) = self.union_member(*key, union.variant()) else {
                         return Ok(false);
                     };
-                    if union.member() != member.member() || union.payload().len() != member.positions.len() {
+                    if union.member() != member.member()
+                        || union.payload().len() != member.positions.len()
+                    {
                         return Ok(false);
                     }
                     pending.extend(member.positions.iter().zip(union.payload()).rev());
                 }
                 (ValueType::Composite(key), Value::Composite(value)) => {
-                    if value.declaration() != *key { return Ok(false); }
+                    if value.declaration() != *key {
+                        return Ok(false);
+                    }
                     match self.shape(*key) {
                         Some(CompositeShape::Record(fields)) => {
-                            if fields.len() != value.slots().len() { return Ok(false); }
+                            if fields.len() != value.slots().len() {
+                                return Ok(false);
+                            }
                             for (field, slot) in fields.iter().zip(value.slots()).rev() {
                                 match slot {
-                                    FieldValue::Present(value) => pending.push((field.value_type(), value)),
-                                    FieldValue::Absent | FieldValue::Null if field.presence() == Presence::Optional => {},
+                                    FieldValue::Present(value) => {
+                                        pending.push((field.value_type(), value))
+                                    }
+                                    FieldValue::Absent | FieldValue::Null
+                                        if field.presence() == Presence::Optional => {}
                                     FieldValue::Absent | FieldValue::Null => return Ok(false),
                                 }
                             }
                         }
                         Some(CompositeShape::Tuple(positions)) => {
-                            if positions.len() != value.slots().len() { return Ok(false); }
+                            if positions.len() != value.slots().len() {
+                                return Ok(false);
+                            }
                             for (ty, slot) in positions.iter().zip(value.slots()).rev() {
-                                let FieldValue::Present(value) = slot else { return Ok(false); };
+                                let FieldValue::Present(value) = slot else {
+                                    return Ok(false);
+                                };
                                 pending.push((ty, value));
                             }
                         }
@@ -1113,26 +1177,57 @@ impl TypeEnvironment {
                 (ValueType::Reference(declared), Value::Reference(reference)) => {
                     if !self.object_types.contains_key(declared)
                         || !self.object_types.contains_key(&reference.object_type())
-                        || !self.conforms(reference.object_type(), *declared) { return Ok(false); }
+                        || !self.conforms(reference.object_type(), *declared)
+                    {
+                        return Ok(false);
+                    }
                 }
                 (ValueType::Option(payload), Value::Option(option)) => {
-                    if option.payload_type() != &**payload { return Ok(false); }
-                    if let Some(value) = option.payload() { pending.push((payload, value)); }
+                    if option.payload_type() != &**payload {
+                        return Ok(false);
+                    }
+                    if let Some(value) = option.payload() {
+                        pending.push((payload, value));
+                    }
                 }
                 (ValueType::Collection(declared), Value::Collection(collection)) => {
-                    if collection.collection_type() != &**declared { return Ok(false); }
+                    if collection.collection_type() != &**declared {
+                        return Ok(false);
+                    }
                     if let Some(bound) = declared.bound() {
                         let count = u64::try_from(collection.elements().len()).unwrap_or(u64::MAX);
-                        if bound.violation(count).is_some() { return Ok(false); }
+                        if bound.violation(count).is_some() {
+                            return Ok(false);
+                        }
                     }
-                    pending.extend(collection.elements().iter().rev().map(|value| (declared.element(), value)));
+                    pending.extend(
+                        collection
+                            .elements()
+                            .iter()
+                            .rev()
+                            .map(|value| (declared.element(), value)),
+                    );
                 }
-                (ValueType::Boolean | ValueType::Integer | ValueType::Int(_)
-                | ValueType::Rational(_) | ValueType::Decimal(_) | ValueType::Float(_)
-                | ValueType::Quantity(_) | ValueType::Text(_) | ValueType::Enum(_)
-                | ValueType::Composite(_) | ValueType::Reference(_) | ValueType::Option(_)
-                | ValueType::Collection(_) | ValueType::Population(_), _) => {
-                    if !ty.admits(value) { return Ok(false); }
+                (
+                    ValueType::Boolean
+                    | ValueType::Integer
+                    | ValueType::Int(_)
+                    | ValueType::Rational(_)
+                    | ValueType::Decimal(_)
+                    | ValueType::Float(_)
+                    | ValueType::Quantity(_)
+                    | ValueType::Text(_)
+                    | ValueType::Enum(_)
+                    | ValueType::Composite(_)
+                    | ValueType::Reference(_)
+                    | ValueType::Option(_)
+                    | ValueType::Collection(_)
+                    | ValueType::Population(_),
+                    _,
+                ) => {
+                    if !ty.admits(value) {
+                        return Ok(false);
+                    }
                 }
             }
         }
@@ -1177,7 +1272,8 @@ impl TypeEnvironment {
                         }
                         Some(CompositeShape::Tuple(positions)) => pending.extend(positions),
                         Some(CompositeShape::Union(members)) => {
-                            pending.extend(members.iter().flat_map(|member| member.positions.iter()));
+                            pending
+                                .extend(members.iter().flat_map(|member| member.positions.iter()));
                         }
                         None => {}
                     }
@@ -1259,8 +1355,10 @@ impl TypeEnvironment {
                     fields.iter().map(FieldDeclaration::value_type).collect()
                 }
                 CompositeShape::Tuple(positions) => positions.iter().collect(),
-                CompositeShape::Union(members) => members.iter()
-                    .flat_map(|member| member.positions.iter()).collect(),
+                CompositeShape::Union(members) => members
+                    .iter()
+                    .flat_map(|member| member.positions.iter())
+                    .collect(),
             };
             (&declaration.name, types)
         });
@@ -1299,7 +1397,8 @@ impl TypeEnvironment {
             CompositeShape::Tuple(positions) => {
                 positions.iter().map(|ty| (ty, false, false)).collect()
             }
-            CompositeShape::Union(members) => members.iter()
+            CompositeShape::Union(members) => members
+                .iter()
                 .flat_map(|member| member.positions.iter().map(|ty| (ty, true, false)))
                 .collect(),
         };

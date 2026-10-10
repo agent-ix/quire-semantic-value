@@ -64,7 +64,9 @@ impl GraphNode {
     fn children(&self) -> impl Iterator<Item = GraphNodeId> + '_ {
         let slots: Box<dyn Iterator<Item = &GraphSlot>> = match self {
             Self::Record { fields, .. } => Box::new(fields.iter().map(|(_, slot)| slot)),
-            Self::Tuple { positions, .. } | Self::Union { positions, .. } => Box::new(positions.iter()),
+            Self::Tuple { positions, .. } | Self::Union { positions, .. } => {
+                Box::new(positions.iter())
+            }
         };
         slots.filter_map(|slot| match slot {
             GraphSlot::Node(id) => Some(*id),
@@ -198,8 +200,15 @@ impl TypeEnvironment {
                 declaration,
                 fields: supplied,
             } => self.record(*declaration, fields(supplied)?),
-            GraphNode::Tuple { declaration, positions }
-            | GraphNode::Union { declaration, positions, .. } => {
+            GraphNode::Tuple {
+                declaration,
+                positions,
+            }
+            | GraphNode::Union {
+                declaration,
+                positions,
+                ..
+            } => {
                 let mut values = Vec::with_capacity(positions.len());
                 for (index, slot) in positions.iter().enumerate() {
                     let cause = match resolve(slot)? {
