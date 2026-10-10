@@ -245,17 +245,27 @@ fn match_names<'n, F: AsRef<FieldDeclaration>, T>(
     declared: &[F],
     supplied: Vec<(&'n str, T)>,
 ) -> Result<BTreeMap<&'n str, T>, ConstructionRefusal> {
+    unmetered(match_names_walk(declared, supplied, &mut |_| Ok(())))
+}
+
+fn match_names_walk<'n, F: AsRef<FieldDeclaration>, T, E>(declared: &[F], supplied: Vec<(&'n str, T)>, charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Result<BTreeMap<&'n str, T>, ConstructionRefusal>, E> {
     let mut by_name = BTreeMap::new();
     for (name, entry) in supplied {
+        charge(1)?;
         let component = || Component::Field(name.to_owned());
-        if !declared.iter().any(|field| field.as_ref().name == name) {
-            return refuse(component(), ConstructionCause::UndeclaredField);
+        let mut found = false;
+        for field in declared {
+            charge(1)?;
+            if field.as_ref().name == name { found = true; break; }
+        }
+        if !found {
+            return Ok(refuse(component(), ConstructionCause::UndeclaredField));
         }
         if by_name.insert(name, entry).is_some() {
-            return refuse(component(), ConstructionCause::DuplicateField);
+            return Ok(refuse(component(), ConstructionCause::DuplicateField));
         }
     }
-    Ok(by_name)
+    Ok(Ok(by_name))
 }
 
 /// Declaration-ordered slots of a record or object from supplied fields. An
@@ -268,7 +278,21 @@ pub fn fill_slots<F: AsRef<FieldDeclaration>>(
     declared: &[F],
     supplied: Vec<(&str, FieldValue)>,
 ) -> Result<Box<[FieldValue]>, ConstructionRefusal> {
-    let mut by_name = match_names(declared, supplied)?;
+    unmetered(fill_slots_walk(types, declared, supplied, &mut |_| Ok(())))
+}
+
+/// Name-check, order and admit slots under the caller's cumulative budget.
+/// Work stops are the outer result; construction refusals keep their typed cause.
+pub fn fill_slots_with_budget<F: AsRef<FieldDeclaration>>(types: &TypeEnvironment, declared: &[F], supplied: Vec<(&str, FieldValue)>, budget: &mut WorkBudget) -> Result<Result<Box<[FieldValue]>, ConstructionRefusal>, EnvironmentLimit> {
+    fill_slots_walk(types, declared, supplied, &mut |units| budget.charge(units))
+}
+
+pub(crate) fn fill_slots_walk<F: AsRef<FieldDeclaration>, E>(types: &TypeEnvironment, declared: &[F], supplied: Vec<(&str, FieldValue)>, charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Result<Box<[FieldValue]>, ConstructionRefusal>, E> {
+    let mut by_name = match match_names_walk(declared, supplied, charge)? {
+        Ok(names) => names,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    charge(declared.len())?;
     let mut slots = Vec::with_capacity(declared.len());
     for field in declared {
         let field = field.as_ref();
@@ -278,19 +302,19 @@ pub fn fill_slots<F: AsRef<FieldDeclaration>>(
             .unwrap_or(FieldValue::Absent);
         match (&slot, field.presence) {
             (FieldValue::Absent, Presence::Required) => {
-                return refuse(component(), ConstructionCause::MissingField)
+                return Ok(refuse(component(), ConstructionCause::MissingField))
             }
             (FieldValue::Null, Presence::Required) => {
-                return refuse(component(), ConstructionCause::NullForRequiredField)
+                return Ok(refuse(component(), ConstructionCause::NullForRequiredField))
             }
-            (FieldValue::Present(value), _) if !types.admits(&field.value_type, value) => {
-                return refuse(component(), ConstructionCause::TypeMismatch)
+            (FieldValue::Present(value), _) if !types.admits_walk(&field.value_type, value, charge)? => {
+                return Ok(refuse(component(), ConstructionCause::TypeMismatch))
             }
             (FieldValue::Present(_) | FieldValue::Absent | FieldValue::Null, _) => {}
         }
         slots.push(slot);
     }
-    Ok(slots.into_boxed_slice())
+    Ok(Ok(slots.into_boxed_slice()))
 }
 
 /// Build a composite value of `declaration` from already name-checked
@@ -552,15 +576,18 @@ impl Default for TypeEnvironmentLimits {
     }
 }
 
-/// The admission work meter: charges fail once `limit` units are spent.
-struct WorkBudget {
+/// Shared admission work meter, including declaration and supplied-value walks.
+/// Cancellation is polled before every charged step. Allocation failure is not
+/// represented by this meter or by its named work limit.
+pub struct WorkBudget {
     spent: u64,
     limit: u64,
     cancel: quire_exact::Cancel,
 }
 
 impl WorkBudget {
-    fn new(limit: u64, cancel: quire_exact::Cancel) -> Self {
+    /// Start a configured work budget with the caller's cancellation handle.
+    pub fn new(limit: u64, cancel: quire_exact::Cancel) -> Self {
         Self {
             spent: 0,
             limit,
@@ -571,7 +598,7 @@ impl WorkBudget {
     /// Charge `units`, or the [`EnvironmentLimitKind::WorkUnits`] limit (QSL FR-082)
     /// once the budget would be passed, naming the cumulative total the
     /// refused charge would have reached.
-    fn charge(&mut self, units: usize) -> Result<(), EnvironmentLimit> {
+    pub fn charge(&mut self, units: usize) -> Result<(), EnvironmentLimit> {
         let units = u64::try_from(units).unwrap_or(u64::MAX);
         // A cancelled handle (QSL FR-276) denies the charge as an exhausted
         // budget does; the caller that owns the handle reports the
@@ -588,6 +615,18 @@ impl WorkBudget {
                 u128::from(self.spent) + u128::from(units),
             )),
         }
+    }
+
+    /// Work already admitted by this budget, excluding any refused charge.
+    pub fn spent(&self) -> u64 {
+        self.spent
+    }
+}
+
+pub(crate) fn unmetered<T>(result: Result<T, core::convert::Infallible>) -> T {
+    match result {
+        Ok(value) => value,
+        Err(never) => match never {},
     }
 }
 
@@ -938,8 +977,20 @@ impl TypeEnvironment {
         limits: TypeEnvironmentLimits,
         cancel: &quire_exact::Cancel,
     ) -> Admission<Self> {
-        let mut environment = Self::default();
         let mut budget = WorkBudget::new(limits.work_units, cancel.clone());
+        Self::bounded_with_budget(composites, object_types, limits.ancestor_steps, &mut budget)
+    }
+
+    /// Admit topology using the same cumulative budget as the caller's other walks.
+    /// The ancestor ceiling is separate from cumulative work. Allocation errors
+    /// remain outside the current admission error contract.
+    pub fn bounded_with_budget(
+        composites: impl IntoIterator<Item = CompositeDeclaration>,
+        object_types: impl IntoIterator<Item = ObjectTypeDeclaration>,
+        ancestor_steps: u64,
+        budget: &mut WorkBudget,
+    ) -> Admission<Self> {
+        let mut environment = Self::default();
         for declaration in composites {
             let refuse = |cause| {
                 EnvironmentFailure::Refused(InvalidDeclaration {
@@ -957,9 +1008,12 @@ impl TypeEnvironment {
             }
             if let CompositeShape::Union(members) = &declaration.shape {
                 let mut names = BTreeSet::new();
-                let sealed = members.iter().any(|member| member.member.is_some());
+                let sealed = members.first().is_some_and(|member| member.member.is_some());
                 for (position, member) in members.iter().enumerate() {
                     budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+                    if member.member.is_some() != sealed {
+                        return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
+                    }
                     if !names.insert(member.identifier().as_str()) {
                         return Err(refuse(DeclarationCause::DuplicateMember(
                             member.identifier().as_str().to_owned(),
@@ -1041,24 +1095,21 @@ impl TypeEnvironment {
                 .insert(declaration.key, declaration);
         }
         environment
-            .check_member_types()
-            .map_err(EnvironmentFailure::Refused)?;
+            .check_member_types(budget)?;
         environment
-            .check_recursion(RecursionEdges::Unnamed)
-            .map_err(EnvironmentFailure::Refused)?;
+            .check_recursion(RecursionEdges::Unnamed, budget)?;
         environment
-            .check_recursion(RecursionEdges::NonEscaping)
-            .map_err(EnvironmentFailure::Refused)?;
-        environment.check_supertypes(&mut budget)?;
-        environment.ancestry = environment.compute_ancestors(&mut budget)?;
+            .check_recursion(RecursionEdges::NonEscaping, budget)?;
+        environment.check_supertypes(budget)?;
+        environment.ancestry = environment.compute_ancestors(budget)?;
         environment
-            .check_ancestor_steps(limits.ancestor_steps)
+            .check_ancestor_steps(ancestor_steps)
             .map_err(EnvironmentFailure::Limit)?;
         let table = FieldTable::new(&environment.object_types);
         environment
             .check_redefinitions(&table)
             .map_err(EnvironmentFailure::Refused)?;
-        let effective = environment.compute_effective(&table, &mut budget)?;
+        let effective = environment.compute_effective(&table, budget)?;
         environment.effective = effective;
         Ok(environment)
     }
@@ -1127,8 +1178,7 @@ impl TypeEnvironment {
     /// composites resolve their declared shapes and nested values iteratively.
     /// Scalar leaves use [`ValueType::admits`].
     pub fn admits(&self, value_type: &ValueType, value: &Value) -> bool {
-        self.admits_bounded(value_type, value, DEFAULT_WORK_UNITS)
-            .unwrap_or(false)
+        unmetered(self.admits_walk(value_type, value, &mut |_| Ok(())))
     }
 
     /// The settled canonical key explicitly attached to this internal union handle.
@@ -1173,6 +1223,19 @@ impl TypeEnvironment {
         work_units: u64,
         cancel: &quire_exact::Cancel,
     ) -> Admission<()> {
+        let mut budget = WorkBudget::new(work_units, cancel.clone());
+        self.seal_union_verified_with_budget(handle, final_key, bindings, &mut budget)
+    }
+
+    /// Seal with the caller's cumulative budget. A charged member step covers
+    /// its binding validation and eventual indexed attachment, before mutation.
+    pub fn seal_union_verified_with_budget(
+        &mut self,
+        handle: NodeKey,
+        final_key: NodeKey,
+        bindings: Vec<UnionMember>,
+        budget: &mut WorkBudget,
+    ) -> Admission<()> {
         let Some(declaration) = self.composites.get(&handle) else {
             return Err(EnvironmentFailure::Refused(InvalidDeclaration {
                 declaration: String::new(),
@@ -1197,7 +1260,6 @@ impl TypeEnvironment {
         if members.len() != bindings.len() {
             return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
         }
-        let mut budget = WorkBudget::new(work_units, cancel.clone());
         let mut keys = BTreeSet::new();
         for (member, binding) in members.iter().zip(&bindings) {
             budget.charge(1).map_err(EnvironmentFailure::Limit)?;
@@ -1238,8 +1300,18 @@ impl TypeEnvironment {
     /// Compare resolved types using the explicit sealed union handle/key join.
     /// Option and collection nesting is iterative. Record/Tuple identity is unchanged.
     pub fn same_type(&self, left: &ValueType, right: &ValueType) -> bool {
+        unmetered(self.same_type_walk(left, right, &mut |_| Ok(())))
+    }
+
+    /// Compare nested types while charging each pair to the caller's budget.
+    pub fn same_type_with_budget(&self, left: &ValueType, right: &ValueType, budget: &mut WorkBudget) -> Result<bool, EnvironmentLimit> {
+        self.same_type_walk(left, right, &mut |units| budget.charge(units))
+    }
+
+    fn same_type_walk<E>(&self, left: &ValueType, right: &ValueType, charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<bool, E> {
         let (mut left, mut right) = (left, right);
         loop {
+            charge(1)?;
             match (left, right) {
                 (ValueType::Option(a), ValueType::Option(b)) => {
                     left = a;
@@ -1247,14 +1319,14 @@ impl TypeEnvironment {
                 }
                 (ValueType::Collection(a), ValueType::Collection(b)) => {
                     if a.kind() != b.kind() || a.bound() != b.bound() {
-                        return false;
+                        return Ok(false);
                     }
                     left = a.element();
                     right = b.element();
                 }
                 (ValueType::Composite(a), ValueType::Composite(b)) => {
-                    return self.union_handles.get(a).unwrap_or(a)
-                        == self.union_handles.get(b).unwrap_or(b);
+                    return Ok(self.union_handles.get(a).unwrap_or(a)
+                        == self.union_handles.get(b).unwrap_or(b));
                 }
                 (
                     ValueType::Boolean
@@ -1272,18 +1344,30 @@ impl TypeEnvironment {
                     | ValueType::Collection(_)
                     | ValueType::Population(_),
                     _,
-                ) => return left == right,
+                ) => return Ok(left == right),
             }
         }
     }
 
     /// Resolve union handles in a runtime type through verified final-key joins.
     /// Unsealed union leaves return `None`. Other declaration keys stay unchanged.
-    /// Nested options/collections are rebuilt iteratively only when a key changes.
+    /// Nested options/collections are rebuilt iteratively, preserving their kinds
+    /// and bounds whether or not a declaration key changes.
     pub fn runtime_type(&self, value_type: &ValueType) -> Option<ValueType> {
+        unmetered(self.runtime_type_walk(value_type, &mut |_| Ok(())))
+    }
+
+    /// Resolve a runtime type using shared cumulative work, including rebuilding
+    /// each wrapper. An unsealed declaration is `Ok(None)`, never a resource stop.
+    pub fn runtime_type_with_budget(&self, value_type: &ValueType, budget: &mut WorkBudget) -> Result<Option<ValueType>, EnvironmentLimit> {
+        self.runtime_type_walk(value_type, &mut |units| budget.charge(units))
+    }
+
+    fn runtime_type_walk<E>(&self, value_type: &ValueType, charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Option<ValueType>, E> {
         let mut link = value_type;
         let mut wrappers = Vec::new();
         loop {
+            charge(1)?;
             match link {
                 ValueType::Option(payload) => {
                     wrappers.push(link);
@@ -1309,13 +1393,14 @@ impl TypeEnvironment {
         }
         let mut resolved = match link {
             ValueType::Composite(key) => {
-                let declaration = self.composite(*key)?;
+                let Some(declaration) = self.composite(*key) else { return Ok(None); };
                 match declaration.shape() {
                     CompositeShape::Union(_) => {
-                        ValueType::Composite(self.union_key(declaration.key())?)
+                        let Some(final_key) = self.union_key(declaration.key()) else { return Ok(None); };
+                        ValueType::Composite(final_key)
                     }
                     CompositeShape::Record(_) | CompositeShape::Tuple(_) => {
-                        return Some(value_type.clone())
+                        ValueType::Composite(*key)
                     }
                 }
             }
@@ -1329,13 +1414,11 @@ impl TypeEnvironment {
             | ValueType::Text(_)
             | ValueType::Enum(_)
             | ValueType::Reference(_)
-            | ValueType::Population(_) => return Some(value_type.clone()),
-            ValueType::Option(_) | ValueType::Collection(_) => return None,
+            | ValueType::Population(_) => link.clone(),
+            ValueType::Option(_) | ValueType::Collection(_) => return Ok(None),
         };
-        if &resolved == link {
-            return Some(value_type.clone());
-        }
         while let Some(wrapper) = wrappers.pop() {
+            charge(1)?;
             resolved = match wrapper {
                 ValueType::Option(_) => ValueType::option(resolved),
                 ValueType::Collection(collection) => {
@@ -1356,10 +1439,10 @@ impl TypeEnvironment {
                 | ValueType::Enum(_)
                 | ValueType::Composite(_)
                 | ValueType::Reference(_)
-                | ValueType::Population(_) => return None,
+                | ValueType::Population(_) => return Ok(None),
             };
         }
-        Some(resolved)
+        Ok(Some(resolved))
     }
 
     /// Resolve a member only after sealing, by internal handle or final key.
@@ -1388,13 +1471,23 @@ impl TypeEnvironment {
         declaration: NodeKey,
         name: &str,
     ) -> Option<(usize, &UnionMemberDeclaration)> {
-        let CompositeShape::Union(members) = self.shape(declaration)? else {
-            return None;
+        unmetered(self.union_member_named_walk(declaration, name, &mut |_| Ok(())))
+    }
+
+    /// Resolve an authored member name with one charge per inspected descriptor.
+    pub fn union_member_named_with_budget<'a>(&'a self, declaration: NodeKey, name: &str, budget: &mut WorkBudget) -> Result<Option<(usize, &'a UnionMemberDeclaration)>, EnvironmentLimit> {
+        self.union_member_named_walk(declaration, name, &mut |units| budget.charge(units))
+    }
+
+    fn union_member_named_walk<E>(&self, declaration: NodeKey, name: &str, charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Option<(usize, &UnionMemberDeclaration)>, E> {
+        let Some(CompositeShape::Union(members)) = self.shape(declaration) else {
+            return Ok(None);
         };
-        members
-            .iter()
-            .enumerate()
-            .find(|(_, member)| member.identifier().as_str() == name)
+        for (position, member) in members.iter().enumerate() {
+            charge(1)?;
+            if member.identifier().as_str() == name { return Ok(Some((position, member))); }
+        }
+        Ok(None)
     }
 
     /// Iterative supplied-value membership checking. One work unit per value
@@ -1406,13 +1499,23 @@ impl TypeEnvironment {
         value: &Value,
         work_units: u64,
     ) -> Result<bool, EnvironmentLimit> {
-        if self.type_refusal(value_type).is_some() {
+        let mut budget = WorkBudget::new(work_units, quire_exact::Cancel::new());
+        self.admits_with_budget(value_type, value, &mut budget)
+    }
+
+    /// Admit supplied occurrences and their nested type comparisons under one
+    /// cumulative configured budget. Type-validation work uses this same budget.
+    pub fn admits_with_budget(&self, value_type: &ValueType, value: &Value, budget: &mut WorkBudget) -> Result<bool, EnvironmentLimit> {
+        self.admits_walk(value_type, value, &mut |units| budget.charge(units))
+    }
+
+    fn admits_walk<E>(&self, value_type: &ValueType, value: &Value, charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<bool, E> {
+        if self.type_refusal_walk(value_type, charge)?.is_some() {
             return Ok(false);
         }
-        let mut budget = WorkBudget::new(work_units, quire_exact::Cancel::new());
         let mut pending = vec![(value_type, value)];
         while let Some((ty, value)) = pending.pop() {
-            budget.charge(1)?;
+            charge(1)?;
             match (ty, value) {
                 (ValueType::Composite(key), Value::Union(union)) => {
                     let handle = self.union_handles.get(key).copied().unwrap_or(*key);
@@ -1427,6 +1530,7 @@ impl TypeEnvironment {
                     {
                         return Ok(false);
                     }
+                    charge(union.payload().len())?;
                     pending.extend(member.positions.iter().zip(union.payload()).rev());
                 }
                 (ValueType::Composite(key), Value::Composite(value)) => {
@@ -1438,6 +1542,7 @@ impl TypeEnvironment {
                             if fields.len() != value.slots().len() {
                                 return Ok(false);
                             }
+                            charge(fields.len())?;
                             for (field, slot) in fields.iter().zip(value.slots()).rev() {
                                 match slot {
                                     FieldValue::Present(value) => {
@@ -1453,6 +1558,7 @@ impl TypeEnvironment {
                             if positions.len() != value.slots().len() {
                                 return Ok(false);
                             }
+                            charge(positions.len())?;
                             for (ty, slot) in positions.iter().zip(value.slots()).rev() {
                                 let FieldValue::Present(value) = slot else {
                                     return Ok(false);
@@ -1464,6 +1570,7 @@ impl TypeEnvironment {
                     }
                 }
                 (ValueType::Reference(declared), Value::Reference(reference)) => {
+                    charge(1)?;
                     if !self.object_types.contains_key(declared)
                         || !self.object_types.contains_key(&reference.object_type())
                         || !self.conforms(reference.object_type(), *declared)
@@ -1472,10 +1579,11 @@ impl TypeEnvironment {
                     }
                 }
                 (ValueType::Option(payload), Value::Option(option)) => {
-                    if !self.same_type(option.payload_type(), payload) {
+                    if !self.same_type_walk(option.payload_type(), payload, charge)? {
                         return Ok(false);
                     }
                     if let Some(value) = option.payload() {
+                        charge(1)?;
                         pending.push((payload, value));
                     }
                 }
@@ -1483,7 +1591,7 @@ impl TypeEnvironment {
                     let actual = collection.collection_type();
                     if actual.kind() != declared.kind()
                         || actual.bound() != declared.bound()
-                        || !self.same_type(actual.element(), declared.element())
+                        || !self.same_type_walk(actual.element(), declared.element(), charge)?
                     {
                         return Ok(false);
                     }
@@ -1493,6 +1601,7 @@ impl TypeEnvironment {
                             return Ok(false);
                         }
                     }
+                    charge(collection.elements().len())?;
                     pending.extend(
                         collection
                             .elements()
@@ -1544,11 +1653,23 @@ impl TypeEnvironment {
     /// Whether `value_type` contains `Float32` or `Float64` at any depth,
     /// through every record, tuple and union member declaration included.
     pub fn contains_ieee(&self, value_type: &ValueType) -> bool {
+        unmetered(self.contains_ieee_walk(value_type, &mut |_| Ok(())))
+    }
+
+    /// Inspect all reachable member types under the caller's shared budget.
+    /// Every visited type and scheduled member position is charged, including
+    /// unused union alternatives. Recursive declaration keys are visited once.
+    pub fn contains_ieee_with_budget(&self, value_type: &ValueType, budget: &mut WorkBudget) -> Result<bool, EnvironmentLimit> {
+        self.contains_ieee_walk(value_type, &mut |units| budget.charge(units))
+    }
+
+    fn contains_ieee_walk<E>(&self, value_type: &ValueType, charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<bool, E> {
         let mut visited = BTreeSet::new();
         let mut pending = vec![value_type];
         while let Some(value_type) = pending.pop() {
+            charge(1)?;
             match value_type {
-                ValueType::Float(_) => return true,
+                ValueType::Float(_) => return Ok(true),
                 ValueType::Option(payload) => pending.push(payload),
                 ValueType::Collection(collection) => pending.push(collection.element()),
                 ValueType::Composite(key) => {
@@ -1557,12 +1678,19 @@ impl TypeEnvironment {
                     }
                     match self.composite(*key).map(|declaration| &declaration.shape) {
                         Some(CompositeShape::Record(fields)) => {
+                            charge(fields.len())?;
                             pending.extend(fields.iter().map(FieldDeclaration::value_type));
                         }
-                        Some(CompositeShape::Tuple(positions)) => pending.extend(positions),
+                        Some(CompositeShape::Tuple(positions)) => {
+                            charge(positions.len())?;
+                            pending.extend(positions);
+                        }
                         Some(CompositeShape::Union(members)) => {
-                            pending
-                                .extend(members.iter().flat_map(|member| member.positions.iter()));
+                            for member in members {
+                                charge(1)?;
+                                charge(member.positions.len())?;
+                                pending.extend(&member.positions);
+                            }
                         }
                         None => {}
                     }
@@ -1579,23 +1707,38 @@ impl TypeEnvironment {
                 | ValueType::Population(_) => {}
             }
         }
-        false
+        Ok(false)
     }
 
     /// The first refusal of one type's named declarations and element types.
     fn type_refusal(&self, value_type: &ValueType) -> Option<DeclarationCause> {
+        unmetered(self.type_refusal_walk(value_type, &mut |_| Ok(())))
+    }
+
+    /// Validate a parameter/result type without converting work stops into
+    /// ill-typed refusals. The inner result retains the existing typed cause.
+    pub fn check_type_with_budget(&self, value_type: &ValueType, budget: &mut WorkBudget) -> Result<Result<(), IllTyped>, EnvironmentLimit> {
+        Ok(match self.type_refusal_walk(value_type, &mut |units| budget.charge(units))? {
+            None => Ok(()),
+            Some(DeclarationCause::Type(cause)) => Err(IllTyped { cause }),
+            Some(_) => Err(IllTyped { cause: IllTypedCause::TypeMismatch }),
+        })
+    }
+
+    fn type_refusal_walk<E>(&self, value_type: &ValueType, charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Option<DeclarationCause>, E> {
         let mut pending = vec![value_type];
         while let Some(value_type) = pending.pop() {
+            charge(1)?;
             match value_type {
                 ValueType::Composite(key) if self.composite(*key).is_none() => {
-                    return Some(DeclarationCause::UnknownDeclaration(*key));
+                    return Ok(Some(DeclarationCause::UnknownDeclaration(*key)));
                 }
                 // QSpec FR-143: `T` in `Reference<T>` must name a model object
                 // type; any other target is `type-mismatch`. The key is an
                 // effective identity, so an admitted record or
                 // tuple (keyed by `NodeKey`) can never satisfy it either.
                 ValueType::Reference(key) if !self.object_types.contains_key(key) => {
-                    return Some(DeclarationCause::Type(IllTypedCause::TypeMismatch));
+                    return Ok(Some(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
                 }
                 // QSpec FR-153 names a population binding only as the direct
                 // operand of `allInstances`/`lookup` (checked by
@@ -1610,14 +1753,14 @@ impl TypeEnvironment {
                 // refuses it here, never admitting a binding into a context
                 // QSpec FR-153 never gives it Outputs for.
                 ValueType::Population(_) => {
-                    return Some(DeclarationCause::Type(IllTypedCause::OperatorIneligible));
+                    return Ok(Some(DeclarationCause::Type(IllTypedCause::OperatorIneligible)));
                 }
                 ValueType::Option(payload) => pending.push(payload),
                 ValueType::Collection(collection) => {
                     if collection.kind() != CollectionKind::Sequence
-                        && self.contains_ieee(collection.element())
+                        && self.contains_ieee_walk(collection.element(), charge)?
                     {
-                        return Some(DeclarationCause::Type(IllTypedCause::OperatorIneligible));
+                        return Ok(Some(DeclarationCause::Type(IllTypedCause::OperatorIneligible)));
                     }
                     pending.push(collection.element());
                 }
@@ -1634,10 +1777,30 @@ impl TypeEnvironment {
                 | ValueType::Reference(_) => {}
             }
         }
-        None
+        Ok(None)
     }
 
-    fn check_member_types(&self) -> Result<(), InvalidDeclaration> {
+    fn check_member_types(&self, budget: &mut WorkBudget) -> Admission<()> {
+        // Bound the temporary position lists before allocating them. Member
+        // visits are charged separately from transitive type/IEEE visits.
+        for declaration in self.composites.values() {
+            budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+            match &declaration.shape {
+                CompositeShape::Record(fields) => budget.charge(fields.len()),
+                CompositeShape::Tuple(positions) => budget.charge(positions.len()),
+                CompositeShape::Union(members) => {
+                    for member in members {
+                        budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+                        budget.charge(member.positions.len()).map_err(EnvironmentFailure::Limit)?;
+                    }
+                    Ok(())
+                }
+            }.map_err(EnvironmentFailure::Limit)?;
+        }
+        for declaration in self.object_types.values() {
+            budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+            budget.charge(declaration.attributes.len()).map_err(EnvironmentFailure::Limit)?;
+        }
         let composites = self.composites.values().map(|declaration| {
             let types: Vec<&ValueType> = match &declaration.shape {
                 CompositeShape::Record(fields) => {
@@ -1660,18 +1823,28 @@ impl TypeEnvironment {
             (&declaration.name, types)
         });
         for (name, types) in composites.chain(object_types) {
-            if let Some(cause) = types.into_iter().find_map(|ty| self.type_refusal(ty)) {
-                return Err(InvalidDeclaration {
+            for ty in types {
+                if let Some(cause) = self.type_refusal_walk(ty, &mut |units| budget.charge(units)).map_err(EnvironmentFailure::Limit)? {
+                return Err(EnvironmentFailure::Refused(InvalidDeclaration {
                     declaration: name.clone(),
                     cause,
-                });
+                }));
+                }
             }
         }
         Ok(())
     }
 
     /// The recursion-rule edges leaving one declaration.
-    fn edges(declaration: &CompositeDeclaration) -> Vec<Edge> {
+    fn edges(declaration: &CompositeDeclaration, budget: &mut WorkBudget) -> Result<Vec<Edge>, EnvironmentLimit> {
+        match &declaration.shape {
+            CompositeShape::Record(fields) => budget.charge(fields.len())?,
+            CompositeShape::Tuple(positions) => budget.charge(positions.len())?,
+            CompositeShape::Union(members) => for member in members {
+                budget.charge(1)?;
+                budget.charge(member.positions.len())?;
+            },
+        }
         let members: Vec<(&ValueType, bool, bool)> = match &declaration.shape {
             CompositeShape::Record(fields) => fields
                 .iter()
@@ -1695,6 +1868,7 @@ impl TypeEnvironment {
         for (value_type, named, escapes) in members {
             let mut pending = vec![(value_type, escapes)];
             while let Some((value_type, escapes)) = pending.pop() {
+                budget.charge(1)?;
                 match value_type {
                     ValueType::Composite(target) => edges.push(Edge {
                         target: *target,
@@ -1720,17 +1894,16 @@ impl TypeEnvironment {
                 }
             }
         }
-        edges
+        Ok(edges)
     }
 
     /// Refuse the first cycle, in declaration-key order, of one recursion-rule
     /// subgraph.
-    fn check_recursion(&self, subgraph: RecursionEdges) -> Result<(), InvalidDeclaration> {
-        let graph: BTreeMap<NodeKey, Vec<NodeKey>> = self
-            .composites
-            .values()
-            .map(|declaration| {
-                let targets = Self::edges(declaration)
+    fn check_recursion(&self, subgraph: RecursionEdges, budget: &mut WorkBudget) -> Admission<()> {
+        let mut graph = BTreeMap::new();
+        for declaration in self.composites.values() {
+                budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+                let targets: Vec<NodeKey> = Self::edges(declaration, budget).map_err(EnvironmentFailure::Limit)?
                     .into_iter()
                     .filter(|edge| match subgraph {
                         RecursionEdges::Unnamed => !edge.named,
@@ -1738,41 +1911,47 @@ impl TypeEnvironment {
                     })
                     .map(|edge| edge.target)
                     .collect();
-                (declaration.key, targets)
-            })
-            .collect();
+                graph.insert(declaration.key, targets);
+        }
         let name = |key: &NodeKey| {
             self.composites
                 .get(key)
                 .map_or_else(String::new, |declaration| declaration.name.clone())
         };
         let mut finished = BTreeSet::new();
+        let mut active = BTreeMap::new();
         for root in graph.keys() {
+            budget.charge(1).map_err(EnvironmentFailure::Limit)?;
             if finished.contains(root) {
                 continue;
             }
             let mut path: Vec<(NodeKey, usize)> = vec![(*root, 0)];
+            active.insert(*root, 0);
             while let Some((node, next)) = path.last_mut() {
+                budget.charge(1).map_err(EnvironmentFailure::Limit)?;
                 let node = *node;
                 let Some(target) = graph.get(&node).and_then(|targets| targets.get(*next)) else {
                     finished.insert(node);
+                    active.remove(&node);
                     path.pop();
                     continue;
                 };
                 *next += 1;
-                if let Some(start) = path.iter().position(|(on_path, _)| on_path == target) {
+                if let Some(&start) = active.get(target) {
+                    budget.charge(path.len() - start + 1).map_err(EnvironmentFailure::Limit)?;
                     let mut cycle: Vec<String> =
                         path.iter().skip(start).map(|(key, _)| name(key)).collect();
                     cycle.push(name(target));
-                    return Err(InvalidDeclaration {
+                    return Err(EnvironmentFailure::Refused(InvalidDeclaration {
                         declaration: name(target),
                         cause: DeclarationCause::Recursion {
                             edges: subgraph,
                             cycle,
                         },
-                    });
+                    }));
                 }
                 if !finished.contains(target) {
+                    active.insert(*target, path.len());
                     path.push((*target, 0));
                 }
             }

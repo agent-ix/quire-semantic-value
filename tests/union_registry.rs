@@ -307,7 +307,9 @@ fn five_thousand_members_and_thousand_options_use_named_work_limit() {
                 declarations(),
                 [],
                 TypeEnvironmentLimits {
-                    work_units: 6_001,
+                    // Registration 6001; member/type checking 6003;
+                    // two recursion graphs/traversals 6005 each.
+                    work_units: 24_014,
                     ..TypeEnvironmentLimits::default()
                 },
             )
@@ -321,15 +323,15 @@ fn five_thousand_members_and_thousand_options_use_named_work_limit() {
                 declarations(),
                 [],
                 TypeEnvironmentLimits {
-                    work_units: 6_000,
+                    work_units: 24_013,
                     ..TypeEnvironmentLimits::default()
                 },
             ) else {
                 panic!("N minus one must deny");
             };
             assert_eq!(limit.kind(), EnvironmentLimitKind::WorkUnits);
-            assert_eq!(limit.configured_bound(), 6_000);
-            assert_eq!(limit.actual(), 6_001);
+            assert_eq!(limit.configured_bound(), 24_013);
+            assert_eq!(limit.actual(), 24_014);
         })
         .unwrap()
         .join()
@@ -397,11 +399,13 @@ fn ten_thousand_supplied_union_links_are_admitted_on_small_stack() {
             );
             assert_eq!(value.occ(), Integer::from(20_001_u64));
             assert!(env.admits(&ty, &value));
-            assert_eq!(env.admits_bounded(&ty, &value, 20_001), Ok(true));
-            let limit = env.admits_bounded(&ty, &value, 20_000).unwrap_err();
+            // 20001 value visits, 20000 scheduled payloads, 10000
+            // option-type comparisons, plus one initial type check.
+            assert_eq!(env.admits_bounded(&ty, &value, 50_002), Ok(true));
+            let limit = env.admits_bounded(&ty, &value, 50_001).unwrap_err();
             assert_eq!(limit.kind(), EnvironmentLimitKind::WorkUnits);
-            assert_eq!(limit.configured_bound(), 20_000);
-            assert_eq!(limit.actual(), 20_001);
+            assert_eq!(limit.configured_bound(), 50_001);
+            assert_eq!(limit.actual(), 50_002);
         })
         .unwrap()
         .join()

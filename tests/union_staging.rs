@@ -12,7 +12,7 @@ use quire_exact::{
 use quire_semantic_value::declaration::{
     CompositeDeclaration, CompositeShape, DeclarationCause, EnvironmentFailure,
     EnvironmentLimitKind, EqualityOperand, EqualityOperator, FieldDeclaration,
-    ObjectTypeDeclaration, RecursionEdges, TypeEnvironment, UnionMemberDeclaration,
+    ObjectTypeDeclaration, RecursionEdges, TypeEnvironment, UnionMemberDeclaration, WorkBudget,
 };
 use quire_semantic_value::enumeration::EnumMemberIndex;
 use quire_semantic_value::object_closure::{ObjectClosure, ObjectClosureCause};
@@ -59,6 +59,97 @@ fn bindings(final_key: NodeKey) -> Vec<UnionMember> {
 
 fn integer(n: i64) -> Value {
     Value::Integer(Integer::from(n))
+}
+
+/// Trace: FR-321-AC-4
+#[trace("FR-321-AC-4")]
+#[test]
+fn topology_sealing_and_member_search_share_a_cumulative_budget() {
+    let declaration = || CompositeDeclaration::new(key(1), "Tree", CompositeShape::Union(vec![
+        resolved("End", vec![]), resolved("Next", vec![ValueType::option(ValueType::Composite(key(1)))]),
+    ]));
+    // Registration 4; member/type checking 6; two recursion walks 8 each.
+    let mut short = WorkBudget::new(25, Cancel::new());
+    let Err(EnvironmentFailure::Limit(limit)) = TypeEnvironment::bounded_with_budget([declaration()], [], 0, &mut short) else { panic!("topology N-1 must stop"); };
+    assert_eq!(limit.configured_bound(), 25);
+    assert_eq!(limit.actual(), 26);
+    let mut work = WorkBudget::new(30, Cancel::new());
+    let mut env = TypeEnvironment::bounded_with_budget([declaration()], [], 0, &mut work).unwrap();
+    assert_eq!(work.spent(), 26);
+    env.seal_union_verified_with_budget(key(1), key(40), vec![binding(key(40), 10, "End"), binding(key(40), 11, "Next")], &mut work).unwrap();
+    assert_eq!(work.spent(), 28);
+    assert_eq!(env.union_member_named_with_budget(key(40), "Next", &mut work).unwrap().unwrap().0, 1);
+    assert_eq!(work.spent(), 30);
+    let limit = env.union_member_named_with_budget(key(1), "End", &mut work).unwrap_err();
+    assert_eq!(limit.configured_bound(), 30);
+    assert_eq!(limit.actual(), 31);
+    assert_eq!(work.spent(), 30);
+}
+
+/// Trace: FR-323-AC-3, FR-321-AC-4
+#[trace("FR-323-AC-3", "FR-321-AC-4")]
+#[test]
+fn transitive_ieee_and_nested_type_walks_preserve_named_stops() {
+    let mut env = TypeEnvironment::new([CompositeDeclaration::new(key(1), "Tree", CompositeShape::Union(vec![
+        resolved("End", vec![]), resolved("Next", vec![ValueType::option(ValueType::Composite(key(1)))]),
+    ]))], []).unwrap();
+    let mut short = WorkBudget::new(5, Cancel::new());
+    let limit = env.contains_ieee_with_budget(&ValueType::Composite(key(1)), &mut short).unwrap_err();
+    assert_eq!(limit.configured_bound(), 5);
+    assert_eq!(limit.actual(), 6);
+    let mut exact = WorkBudget::new(6, Cancel::new());
+    assert_eq!(env.contains_ieee_with_budget(&ValueType::Composite(key(1)), &mut exact), Ok(false));
+    assert_eq!(exact.spent(), 6);
+    let set = ValueType::collection(CollectionType::new(CollectionKind::Set, ValueType::Composite(key(1)), None));
+    assert!(env.check_type_with_budget(&set, &mut WorkBudget::new(7, Cancel::new())).is_err());
+    assert_eq!(env.check_type_with_budget(&set, &mut WorkBudget::new(8, Cancel::new())), Ok(Ok(())));
+    let internal = ValueType::option(ValueType::option(ValueType::Composite(key(1))));
+    assert_eq!(env.runtime_type_with_budget(&internal, &mut WorkBudget::new(3, Cancel::new())), Ok(None));
+    env.seal_union_verified(key(1), key(40), vec![binding(key(40), 10, "End"), binding(key(40), 11, "Next")]).unwrap();
+    let final_type = ValueType::option(ValueType::option(ValueType::Composite(key(40))));
+    let limit = env.runtime_type_with_budget(&internal, &mut WorkBudget::new(4, Cancel::new())).unwrap_err();
+    assert_eq!(limit.actual(), 5);
+    assert_eq!(env.runtime_type_with_budget(&internal, &mut WorkBudget::new(5, Cancel::new())), Ok(Some(final_type.clone())));
+    assert_eq!(env.same_type_with_budget(&internal, &final_type, &mut WorkBudget::new(3, Cancel::new())), Ok(true));
+    assert_eq!(env.same_type_with_budget(&internal, &final_type, &mut WorkBudget::new(2, Cancel::new())).unwrap_err().actual(), 3);
+    let cancelled = Cancel::new();
+    cancelled.cancel(quire_exact::CancelCause::Requested);
+    assert!(env.contains_ieee_with_budget(&ValueType::Composite(key(1)), &mut WorkBudget::new(100, cancelled.clone())).is_err());
+    assert!(env.runtime_type_with_budget(&internal, &mut WorkBudget::new(100, cancelled.clone())).is_err());
+    assert!(env.same_type_with_budget(&internal, &final_type, &mut WorkBudget::new(100, cancelled.clone())).is_err());
+    assert!(env.union_member_named_with_budget(key(1), "End", &mut WorkBudget::new(100, cancelled.clone())).is_err());
+    assert_eq!(cancelled.cause(), Some(quire_exact::CancelCause::Requested));
+}
+
+/// Trace: FR-321-AC-2, FR-321-AC-4
+#[trace("FR-321-AC-2", "FR-321-AC-4")]
+#[allow(clippy::disallowed_methods, reason = "fixture supplies object identity; production mints none")]
+#[test]
+fn closure_name_matching_admission_and_reference_walk_use_one_budget() {
+    let object_type = EffectiveId::from_digest([1; 32]);
+    let mut env = TypeEnvironment::new([CompositeDeclaration::new(key(1), "Holder", CompositeShape::Union(vec![
+        resolved("Some", vec![ValueType::Reference(object_type)]),
+    ]))], [ObjectTypeDeclaration::new(object_type, "Object", vec![FieldDeclaration::new("holder", ValueType::Composite(key(1)), Presence::Required)])]).unwrap();
+    env.seal_union_verified(key(1), key(40), vec![binding(key(40), 10, "Some")]).unwrap();
+    let reference = |name| ObjectReference::new(UniverseId::from_digest([9; 32]), object_type, ObjectId::new(name).unwrap());
+    let owner = reference("owner");
+    let objects = |target: ObjectReference| vec![(owner.clone(), vec![("holder", FieldValue::Present(env.union(key(1), variant(10), vec![Value::Reference(target)]).unwrap()))])];
+    // Object 1; field matching 2; slot 1; admission 5; closure 5 =14.
+    let mut short = WorkBudget::new(13, Cancel::new());
+    let limit = ObjectClosure::new_with_budget(&env, objects(owner.clone()), &[], &mut short).unwrap_err();
+    assert_eq!(limit.configured_bound(), 13);
+    assert_eq!(limit.actual(), 14);
+    let mut exact = WorkBudget::new(14, Cancel::new());
+    let closure = ObjectClosure::new_with_budget(&env, objects(owner.clone()), &[], &mut exact).unwrap().unwrap();
+    assert!(closure.contains(&owner));
+    assert_eq!(exact.spent(), 14);
+    let missing = reference("missing");
+    let refusal = ObjectClosure::new_with_budget(&env, objects(missing.clone()), &[], &mut WorkBudget::new(14, Cancel::new())).unwrap().unwrap_err();
+    assert_eq!(*refusal.object, owner);
+    assert_eq!(refusal.cause, ObjectClosureCause::DanglingReference(Box::new(missing)));
+    let cancel = Cancel::new();
+    cancel.cancel(quire_exact::CancelCause::Requested);
+    assert!(ObjectClosure::new_with_budget(&env, objects(owner.clone()), &[], &mut WorkBudget::new(100, cancel)).is_err());
 }
 
 fn meter() -> Meter {
@@ -465,12 +556,14 @@ fn ten_thousand_supplied_links_follow_sealed_keys_with_internal_position_types()
             let left = supplied();
             let right = supplied();
             assert_eq!(left.occ(), Integer::from(20_001_u64));
-            assert_eq!(env.admits_bounded(&handle_type, &left, 20_001), Ok(true));
-            assert_eq!(env.admits_bounded(&final_type, &left, 20_001), Ok(true));
-            let limit = env.admits_bounded(&handle_type, &left, 20_000).unwrap_err();
+            // Work includes type validation, payload scheduling and option
+            // type comparison, not just kernel occurrence count.
+            assert_eq!(env.admits_bounded(&handle_type, &left, 50_002), Ok(true));
+            assert_eq!(env.admits_bounded(&final_type, &left, 50_002), Ok(true));
+            let limit = env.admits_bounded(&handle_type, &left, 50_001).unwrap_err();
             assert_eq!(limit.kind(), EnvironmentLimitKind::WorkUnits);
-            assert_eq!(limit.configured_bound(), 20_000);
-            assert_eq!(limit.actual(), 20_001);
+            assert_eq!(limit.configured_bound(), 50_001);
+            assert_eq!(limit.actual(), 50_002);
             let equality = env
                 .check_equality(
                     EqualityOperator::Equal,

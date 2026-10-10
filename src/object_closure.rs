@@ -19,7 +19,7 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use crate::declaration::{fill_slots, ConstructionRefusal, FieldRef, TypeEnvironment};
+use crate::declaration::{fill_slots_walk, unmetered, ConstructionRefusal, EnvironmentLimit, FieldRef, TypeEnvironment, WorkBudget};
 use quire_exact::{FieldValue, ObjectReference, UniverseId, Value};
 
 /// Why an object closure does not close.
@@ -72,28 +72,46 @@ impl ObjectClosure {
         objects: impl IntoIterator<Item = (ObjectReference, Vec<(&'n str, FieldValue)>)>,
         tolerated_dangling: &[ObjectReference],
     ) -> Result<Self, ObjectClosureRefusal> {
+        unmetered(Self::new_walk(types, objects, tolerated_dangling, &mut |_| Ok(())))
+    }
+
+    /// Admit objects, attribute types and reference closure with one shared budget.
+    /// The outer result preserves named work stops and caller cancellation; the
+    /// inner result preserves the existing object/attribute refusal and locus.
+    pub fn new_with_budget<'n>(types: &TypeEnvironment, objects: impl IntoIterator<Item = (ObjectReference, Vec<(&'n str, FieldValue)>)>, tolerated_dangling: &[ObjectReference], budget: &mut WorkBudget) -> Result<Result<Self, ObjectClosureRefusal>, EnvironmentLimit> {
+        Self::new_walk(types, objects, tolerated_dangling, &mut |units| budget.charge(units))
+    }
+
+    fn new_walk<'n, E>(types: &TypeEnvironment, objects: impl IntoIterator<Item = (ObjectReference, Vec<(&'n str, FieldValue)>)>, tolerated_dangling: &[ObjectReference], charge: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Result<Self, ObjectClosureRefusal>, E> {
         let mut admitted = BTreeMap::new();
         for (reference, attributes) in objects {
+            charge(1)?;
             let refuse = |cause| ObjectClosureRefusal {
                 object: Box::new(reference.clone()),
                 cause,
             };
             let Some(declared) = types.attributes(reference.object_type()) else {
-                return Err(refuse(ObjectClosureCause::UnknownObjectType));
+                return Ok(Err(refuse(ObjectClosureCause::UnknownObjectType)));
             };
-            let slots = fill_slots(types, declared, attributes)
-                .map_err(|refusal| refuse(ObjectClosureCause::Attribute(refusal)))?;
+            let slots = match fill_slots_walk(types, declared, attributes, charge)? {
+                Ok(slots) => slots,
+                Err(refusal) => return Ok(Err(refuse(ObjectClosureCause::Attribute(refusal)))),
+            };
             if admitted.contains_key(&reference) {
-                return Err(refuse(ObjectClosureCause::DuplicateObject));
+                return Ok(Err(refuse(ObjectClosureCause::DuplicateObject)));
             }
             admitted.insert(reference, slots);
         }
         let closure = Self { objects: admitted };
+        charge(tolerated_dangling.len())?;
         let tolerated: BTreeSet<&ObjectReference> = tolerated_dangling.iter().collect();
         for (owner, slots) in &closure.objects {
-            closure.check_closed(owner, slots, &tolerated)?;
+            charge(1)?;
+            if let Err(refusal) = closure.check_closed(owner, slots, &tolerated, charge)? {
+                return Ok(Err(refusal));
+            }
         }
-        Ok(closure)
+        Ok(Ok(closure))
     }
 
     /// The closure's own reference whose universe is `universe` and
@@ -138,27 +156,42 @@ impl ObjectClosure {
         self.objects.get(reference)?.get(position)
     }
 
-    fn check_closed(
+    fn check_closed<E>(
         &self,
         owner: &ObjectReference,
         slots: &[FieldValue],
         tolerated: &BTreeSet<&ObjectReference>,
-    ) -> Result<(), ObjectClosureRefusal> {
+        charge: &mut impl FnMut(usize) -> Result<(), E>,
+    ) -> Result<Result<(), ObjectClosureRefusal>, E> {
+        charge(slots.len())?;
         let mut pending: Vec<&Value> = present(slots).collect();
         while let Some(value) = pending.pop() {
+            charge(1)?;
             match value {
                 Value::Reference(reference)
                     if !self.objects.contains_key(reference) && !tolerated.contains(reference) =>
                 {
-                    return Err(ObjectClosureRefusal {
+                    return Ok(Err(ObjectClosureRefusal {
                         object: Box::new(owner.clone()),
                         cause: ObjectClosureCause::DanglingReference(Box::new(reference.clone())),
-                    });
+                    }));
                 }
-                Value::Option(option) => pending.extend(option.payload()),
-                Value::Composite(composite) => pending.extend(present(composite.slots())),
-                Value::Union(union) => pending.extend(union.payload()),
-                Value::Collection(collection) => pending.extend(collection.elements()),
+                Value::Option(option) => {
+                    charge(usize::from(option.payload().is_some()))?;
+                    pending.extend(option.payload());
+                }
+                Value::Composite(composite) => {
+                    charge(composite.slots().len())?;
+                    pending.extend(present(composite.slots()));
+                }
+                Value::Union(union) => {
+                    charge(union.payload().len())?;
+                    pending.extend(union.payload());
+                }
+                Value::Collection(collection) => {
+                    charge(collection.elements().len())?;
+                    pending.extend(collection.elements());
+                }
                 Value::Reference(_)
                 | Value::Boolean(_)
                 | Value::Integer(_)
@@ -171,7 +204,7 @@ impl ObjectClosure {
                 | Value::Population(_) => {}
             }
         }
-        Ok(())
+        Ok(Ok(()))
     }
 }
 
