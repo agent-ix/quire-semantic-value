@@ -71,7 +71,8 @@ PLANNED/UNRUN. No implementation or test execution is claimed. The full deep
 Tree defaults, occurrences, replay converted nodes and evaluation exact/one-less
 parity controls belong to the aligned QSL consumer fixtures, not this QSV-only
 case. Numerical default hypotheses and hosted source predictions are not an
-oracle for N. Implementation awaits the aligned QSL phase carrier/contracts,
+oracle for N. Implementation awaits the aligned authoritative phase carrier and QSL consumer
+contracts,
 Decimal helper qualification under IR-718 SPEC and IR-719 implementation,
 and the reviewed union API where applicable. The pending Decimal design adds
 no fifth helper-entry event to this case and supplies no test-pass evidence.
