@@ -3719,6 +3719,125 @@ mod native_type_tests {
         assert!(types.admits(&ValueType::Composite(record), &value));
     }
 
+    /// A composite value keeps its child identity while admitting at an ancestor boundary.
+    #[trace("FR-208-AC-12")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked composite identities without minting them in production"
+    )]
+    #[test]
+    fn composite_child_admits_at_parent_boundary_without_identity_widening() {
+        let parent = NodeKey::from_digest([31; 32]);
+        let child = NodeKey::from_digest([32; 32]);
+        let unrelated = NodeKey::from_digest([33; 32]);
+        let types = TypeEnvironment::new(
+            [
+                CompositeDeclaration::new(
+                    parent,
+                    "Parent",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                ),
+                CompositeDeclaration::new(
+                    child,
+                    "Child",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                )
+                .with_supertypes(vec![parent]),
+                CompositeDeclaration::new(
+                    unrelated,
+                    "Unrelated",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                ),
+            ],
+            [],
+        )
+        .expect("acyclic composite ancestry admits");
+        let value = types
+            .record(
+                child,
+                vec![("label", FieldValue::Present(Value::String("child".into())))],
+            )
+            .expect("child record construction succeeds");
+
+        assert!(types.admits(&ValueType::Composite(parent), &value));
+        assert!(types.admits(&ValueType::Composite(child), &value));
+        assert!(!types.admits(&ValueType::Composite(child), &record_value(&types, parent)));
+        assert!(!types.admits(
+            &ValueType::Composite(parent),
+            &record_value(&types, unrelated)
+        ));
+        let Value::Composite(composite) = &value else {
+            panic!("record construction returns a composite value");
+        };
+        assert_eq!(composite.declaration(), child);
+    }
+
+    /// Composite ancestry rejects cycles and enforces the configured walk ceiling.
+    #[trace("FR-110-AC-2")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked composite identities without minting them in production"
+    )]
+    #[test]
+    fn composite_ancestry_cycles_and_walks_are_bounded() {
+        let a = NodeKey::from_digest([34; 32]);
+        let b = NodeKey::from_digest([35; 32]);
+        let declarations = || {
+            [
+                CompositeDeclaration::new(a, "A", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![b]),
+                CompositeDeclaration::new(b, "B", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![a]),
+            ]
+        };
+        assert!(matches!(
+            TypeEnvironment::new(declarations(), []),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::CompositeGeneralizationCycle { .. },
+                ..
+            }))
+        ));
+
+        let types = TypeEnvironment::bounded(
+            [
+                CompositeDeclaration::new(a, "A", CompositeShape::Tuple(vec![])),
+                CompositeDeclaration::new(b, "B", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![a]),
+            ],
+            [],
+            TypeEnvironmentLimits {
+                ancestor_steps: 0,
+                ..TypeEnvironmentLimits::default()
+            },
+        );
+        assert!(matches!(
+            types,
+            Err(EnvironmentFailure::Limit(limit))
+                if limit.kind() == EnvironmentLimitKind::AncestorSteps
+        ));
+    }
+
+    fn record_value(types: &TypeEnvironment, declaration: NodeKey) -> Value {
+        types
+            .record(
+                declaration,
+                vec![("label", FieldValue::Present(Value::String("same".into())))],
+            )
+            .expect("record fixture matches its declared shape")
+    }
+
     fn text_type() -> quire_exact::TextType {
         quire_exact::TextType::new(0, 4, quire_exact::TextProfile::Nfc).expect("valid Text type")
     }
