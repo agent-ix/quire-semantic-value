@@ -3679,6 +3679,46 @@ mod native_type_tests {
         ));
     }
 
+    /// A String member is admitted recursively and can be constructed in its declared record.
+    #[trace("TC-992", "FR-056-AC-23")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies a checked composite identity without minting one in production"
+    )]
+    #[test]
+    fn native_string_member_is_admitted_and_constructible_in_a_record() {
+        let record = NodeKey::from_digest([23; 32]);
+        let types = TypeEnvironment::new(
+            [CompositeDeclaration::new(
+                record,
+                "StringRecord",
+                CompositeShape::Record(vec![FieldDeclaration::new(
+                    "label",
+                    ValueType::String,
+                    Presence::Required,
+                )]),
+            )],
+            [],
+        )
+        .expect("record with a native String member is admitted");
+
+        let value = types
+            .record(
+                record,
+                vec![("label", FieldValue::Present(Value::String("hello".into())))],
+            )
+            .expect("native String field value is admitted");
+
+        let Value::Composite(composite) = &value else {
+            panic!("record construction returns a composite value");
+        };
+        assert!(matches!(
+            composite.slots(),
+            [FieldValue::Present(Value::String(text))] if text.as_str() == "hello"
+        ));
+        assert!(types.admits(&ValueType::Composite(record), &value));
+    }
+
     fn text_type() -> quire_exact::TextType {
         quire_exact::TextType::new(0, 4, quire_exact::TextProfile::Nfc).expect("valid Text type")
     }
