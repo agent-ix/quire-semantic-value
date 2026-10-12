@@ -2241,7 +2241,7 @@ impl TypeEnvironment {
                     try_push(&mut ancestors, *supertype, reserve)?;
                     try_extend_copy(&mut ancestors, further, reserve)?;
                 }
-                if declaration.supertypes.len() > 1 {
+                if !ancestors.is_empty() {
                     let gathered = ancestors.len();
                     let doublings = usize::try_from(gathered.max(1).ilog2())
                         .unwrap_or(usize::MAX)
