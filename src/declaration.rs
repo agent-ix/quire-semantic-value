@@ -721,12 +721,15 @@ pub enum CompositeShape {
     Tuple(Vec<ValueType>),
 }
 
-/// A record or tuple declaration with its producer-assigned node key.
+/// A record or tuple declaration with its producer-assigned node key and
+/// optional direct composite supertypes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompositeDeclaration {
     key: NodeKey,
     name: String,
     shape: CompositeShape,
+    /// Direct composite supertypes, kept in producer order.
+    supertypes: Vec<NodeKey>,
 }
 
 impl CompositeDeclaration {
@@ -736,7 +739,15 @@ impl CompositeDeclaration {
             key,
             name: name.into(),
             shape,
+            supertypes: Vec::new(),
         }
+    }
+
+    /// Declares the direct composite supertypes of this record or tuple.
+    /// Each key must identify another admitted composite declaration.
+    pub fn with_supertypes(mut self, supertypes: Vec<NodeKey>) -> Self {
+        self.supertypes = supertypes;
+        self
     }
 
     /// The declaration node key.
@@ -752,6 +763,11 @@ impl CompositeDeclaration {
     /// The declared shape.
     pub fn shape(&self) -> &CompositeShape {
         &self.shape
+    }
+
+    /// The directly declared composite supertypes, in declaration order.
+    pub fn supertypes(&self) -> &[NodeKey] {
+        &self.supertypes
     }
 }
 
@@ -942,16 +958,17 @@ pub const DEFAULT_ANCESTOR_STEPS: u64 = 16_777_216;
 /// `PopulationAdmissionLimits::work_units` defaults.
 pub const DEFAULT_WORK_UNITS: u64 = 16_777_216;
 
-/// The ceilings [`TypeEnvironment::bounded`] admits object types under.
+/// The ceilings [`TypeEnvironment::bounded`] admits object types and
+/// composites under.
 /// Every member is a real limit; zero is never "unlimited".
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TypeEnvironmentLimits {
-    /// QSL FR-082's `ancestor_steps`: the most `supertypes` edges one
-    /// conformance walk may follow, an edge count over the walk's closure
-    /// and never a chain depth.
+    /// QSL FR-082's `ancestor_steps`: the most distinct `supertypes` edges one
+    /// object-type or composite conformance walk may follow, an edge count
+    /// over the walk's closure and never a chain depth.
     pub ancestor_steps: u64,
-    /// Cumulative work units admission may spend building the ancestor
-    /// closure and flattening every object type's attributes. One unit is
+    /// Cumulative work units admission may spend building the object/composite
+    /// ancestor closure and flattening every object type's attributes. One unit is
     /// one ancestor or attribute copied into a type's set, or one field a
     /// lineage names. Running out is an
     /// [`EnvironmentLimitKind::WorkUnits`] limit.
@@ -1054,11 +1071,11 @@ impl Stopped {
 /// Which [`TypeEnvironmentLimits`] ceiling admission reached.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum EnvironmentLimitKind {
-    /// `ancestor_steps`: one object type's conformance walk would follow
-    /// more `supertypes` edges than the ceiling (QSL FR-082).
+    /// `ancestor_steps`: one object type's or composite's conformance walk
+    /// would follow more distinct `supertypes` edges than the ceiling (QSL FR-082).
     AncestorSteps,
-    /// `work_units`: the admission's cumulative ancestor-closure and
-    /// flattening work.
+    /// `work_units`: the admission's cumulative object/composite
+    /// ancestor-closure and flattening work.
     WorkUnits,
 }
 
@@ -1371,6 +1388,7 @@ impl InvalidDeclaration {
             DeclarationCause::Type(_)
             | DeclarationCause::Recursion { .. }
             | DeclarationCause::GeneralizationCycle { .. }
+            | DeclarationCause::CompositeGeneralizationCycle { .. }
             | DeclarationCause::RedefinitionWidens(_) => IllTyped::CODE,
         }
     }
@@ -1430,6 +1448,11 @@ pub enum DeclarationCause {
         /// The object-type names along the cycle, first and last equal.
         cycle: Vec<String>,
     },
+    /// A record or tuple's declared composite supertypes form a cycle.
+    CompositeGeneralizationCycle {
+        /// The composite declaration names along the cycle, first and last equal.
+        cycle: Vec<String>,
+    },
 }
 
 /// One checked package's closed, admitted record, tuple and object-type
@@ -1437,6 +1460,9 @@ pub enum DeclarationCause {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TypeEnvironment {
     composites: OrderedIndex<NodeKey, CompositeDeclaration>,
+    /// Each composite declaration's proper ancestors, computed once after
+    /// the composite-generalization graph is known acyclic.
+    composite_ancestry: OrderedIndex<NodeKey, Vec<NodeKey>>,
     object_types: OrderedIndex<EffectiveId, ObjectTypeDeclaration>,
     /// Every object type's own proper ancestor set:
     /// transitive, not just direct, `supertypes`. Precomputed once in
@@ -1478,14 +1504,14 @@ impl TypeEnvironment {
     ///
     /// `limits.ancestor_steps` is the QSL FR-082 ceiling the model walks this
     /// package's conformance under at evaluation (the population binding's
-    /// own `ancestor_steps`). An object type whose walk would follow more
-    /// `supertypes` edges than that stops admission with an
+    /// own `ancestor_steps`). An object type or composite whose walk would
+    /// follow more distinct `supertypes` edges than that stops admission with an
     /// [`EnvironmentLimitKind::AncestorSteps`] limit (QSL FR-082). Check time is the stricter
     /// side: every conformance question the checker answers from this
     /// environment is one evaluation completes with the same verdict.
     ///
-    /// `limits.work_units` bounds the whole admission's ancestor-closure
-    /// and flattening work; running out is an
+    /// `limits.work_units` bounds the whole admission's object/composite
+    /// ancestor-closure and flattening work; running out is an
     /// [`EnvironmentLimitKind::WorkUnits`] limit.
     pub fn bounded(
         composites: impl IntoIterator<Item = CompositeDeclaration>,
@@ -1574,11 +1600,17 @@ impl TypeEnvironment {
         environment.check_recursion(RecursionEdges::Unnamed, reserve)?;
         environment.check_recursion(RecursionEdges::NonEscaping, reserve)?;
         let mut budget = WorkBudget::new(limits.work_units, cancel);
+        environment.check_composite_supertypes(&mut budget, reserve)?;
+        environment.composite_ancestry =
+            environment.compute_composite_ancestors(&mut budget, reserve)?;
         environment.check_supertypes(&mut budget, reserve)?;
         reserve.phase(StoragePhase::Ancestors);
         environment.ancestry = environment.compute_ancestors(&mut budget, reserve)?;
         environment
             .check_ancestor_steps(limits.ancestor_steps)
+            .map_err(EnvironmentFailure::Limit)?;
+        environment
+            .check_composite_ancestor_steps(limits.ancestor_steps)
             .map_err(EnvironmentFailure::Limit)?;
         reserve.phase(StoragePhase::FieldIndex);
         let table = FieldTable::new(&environment.object_types, reserve)?;
@@ -1684,6 +1716,17 @@ impl TypeEnvironment {
         sub == sup || self.ancestry.is_ancestor(sub, sup)
     }
 
+    /// Whether composite declaration `sub` conforms to `sup`: reflexive, or
+    /// `sup` is in `sub`'s admitted transitive composite-supertype closure.
+    /// Unknown unequal keys never conform.
+    pub fn composite_conforms(&self, sub: NodeKey, sup: NodeKey) -> bool {
+        sub == sup
+            || self
+                .composite_ancestry
+                .get(&sub)
+                .is_some_and(|ancestors| ancestors.binary_search(&sup).is_ok())
+    }
+
     /// Whether `value_type` admits `value` under this environment's
     /// conformance: a `Reference<T>` admits a reference whose object's
     /// most-specific type conforms to `T` (QSpec FR-151, [`Self::conforms`]);
@@ -1692,6 +1735,9 @@ impl TypeEnvironment {
         match (value_type, value) {
             (ValueType::Reference(declared), Value::Reference(reference)) => {
                 self.conforms(reference.object_type(), *declared)
+            }
+            (ValueType::Composite(declared), Value::Composite(composite)) => {
+                self.composite_conforms(composite.declaration(), *declared)
             }
             _ => value_type.admits(value),
         }
@@ -2085,6 +2131,158 @@ impl TypeEnvironment {
                 if !finished.contains_key(target) {
                     try_push(&mut path, (*target, 0), reserve)?;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Every composite's direct supertypes name admitted composites, and the
+    /// separate composite-generalization graph is acyclic. The explicit DFS
+    /// stack keeps admission safe for arbitrarily deep authored chains; each
+    /// followed edge consumes the same bounded work budget as object ancestry.
+    fn check_composite_supertypes<R: ReservationPolicy>(
+        &self,
+        budget: &mut WorkBudget,
+        reserve: &R,
+    ) -> Admission<()> {
+        let name = |key: &NodeKey| {
+            self.composites
+                .get(key)
+                .map_or("", |declaration| declaration.name.as_str())
+        };
+        for declaration in self.composites.values() {
+            for supertype in &declaration.supertypes {
+                if !self.composites.contains_key(supertype) {
+                    return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        declaration: try_clone_str(&declaration.name, reserve)?,
+                        cause: DeclarationCause::UnknownDeclaration(*supertype),
+                    }));
+                }
+            }
+        }
+        let mut finished: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
+        let mut on_path: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
+        for root in self.composites.keys() {
+            if finished.contains_key(root) {
+                continue;
+            }
+            let mut path: Vec<(NodeKey, usize)> = Vec::new();
+            try_push(&mut path, (*root, 0), reserve)?;
+            on_path.try_insert(*root, (), reserve)?;
+            while let Some((node, next)) = path.last_mut() {
+                let node = *node;
+                let Some(target) = self
+                    .composites
+                    .get(&node)
+                    .and_then(|declaration| declaration.supertypes.get(*next))
+                else {
+                    finished.try_insert(node, (), reserve)?;
+                    on_path.remove(&node);
+                    path.pop();
+                    continue;
+                };
+                *next += 1;
+                budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+                if on_path.contains_key(target) {
+                    let start = path
+                        .iter()
+                        .position(|(on_path, _)| on_path == target)
+                        .unwrap_or_default();
+                    let mut cycle = Vec::new();
+                    for (key, _) in path.iter().skip(start) {
+                        try_push(&mut cycle, try_clone_str(name(key), reserve)?, reserve)?;
+                    }
+                    try_push(&mut cycle, try_clone_str(name(target), reserve)?, reserve)?;
+                    return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        declaration: try_clone_str(name(target), reserve)?,
+                        cause: DeclarationCause::CompositeGeneralizationCycle { cycle },
+                    }));
+                }
+                if !finished.contains_key(target) {
+                    on_path.try_insert(*target, (), reserve)?;
+                    try_push(&mut path, (*target, 0), reserve)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Build the proper-ancestor closure for each admitted composite in
+    /// post-order. The retained vectors are sorted so conformance is a bounded
+    /// binary search and duplicate paths to one ancestor count only once.
+    fn compute_composite_ancestors<R: ReservationPolicy>(
+        &self,
+        budget: &mut WorkBudget,
+        reserve: &R,
+    ) -> Admission<OrderedIndex<NodeKey, Vec<NodeKey>>> {
+        let mut ancestry = OrderedIndex::default();
+        for root in self.composites.keys() {
+            if ancestry.contains_key(root) {
+                continue;
+            }
+            let mut path: Vec<(NodeKey, usize)> = Vec::new();
+            try_push(&mut path, (*root, 0), reserve)?;
+            while let Some((node, next)) = path.last_mut() {
+                let node = *node;
+                let declaration = self.composites.get(&node).expect("validated composite key");
+                if let Some(target) = declaration.supertypes.get(*next) {
+                    *next += 1;
+                    if !ancestry.contains_key(target) {
+                        try_push(&mut path, (*target, 0), reserve)?;
+                    }
+                    continue;
+                }
+                path.pop();
+                let mut ancestors = Vec::new();
+                for supertype in &declaration.supertypes {
+                    let further = ancestry.get(supertype).map_or(&[][..], Vec::as_slice);
+                    budget
+                        .charge(further.len().saturating_add(1))
+                        .map_err(EnvironmentFailure::Limit)?;
+                    try_push(&mut ancestors, *supertype, reserve)?;
+                    try_extend_copy(&mut ancestors, further, reserve)?;
+                }
+                if !ancestors.is_empty() {
+                    let gathered = ancestors.len();
+                    let doublings = usize::try_from(gathered.max(1).ilog2())
+                        .unwrap_or(usize::MAX)
+                        .saturating_add(1);
+                    budget
+                        .charge(gathered.saturating_mul(doublings))
+                        .map_err(EnvironmentFailure::Limit)?;
+                    ancestors.sort_unstable();
+                    ancestors.dedup();
+                }
+                ancestry.try_insert(node, ancestors, reserve)?;
+            }
+        }
+        Ok(ancestry)
+    }
+
+    /// Ensure every composite conformance walk follows no more distinct
+    /// ancestor edges than the configured `ancestor_steps` ceiling.
+    fn check_composite_ancestor_steps(&self, limit: u64) -> Result<(), EnvironmentLimit> {
+        for declaration in self.composites.values() {
+            let followed = self
+                .composite_ancestry
+                .get(&declaration.key)
+                .into_iter()
+                .flatten()
+                .filter_map(|ancestor| self.composites.get(ancestor))
+                .fold(
+                    u64::try_from(declaration.supertypes.len()).unwrap_or(u64::MAX),
+                    |total, ancestor| {
+                        total.saturating_add(
+                            u64::try_from(ancestor.supertypes.len()).unwrap_or(u64::MAX),
+                        )
+                    },
+                );
+            if followed > limit {
+                return Err(EnvironmentLimit::new(
+                    EnvironmentLimitKind::AncestorSteps,
+                    limit,
+                    u128::from(limit) + 1,
+                ));
             }
         }
         Ok(())
@@ -3717,6 +3915,186 @@ mod native_type_tests {
             [FieldValue::Present(Value::String(text))] if text.as_str() == "hello"
         ));
         assert!(types.admits(&ValueType::Composite(record), &value));
+    }
+
+    /// A composite value keeps its child identity while admitting at an ancestor boundary.
+    #[trace("TC-912", "FR-113-AC-1")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked composite identities without minting them in production"
+    )]
+    #[test]
+    fn composite_child_admits_at_parent_boundary_without_identity_widening() {
+        let parent = NodeKey::from_digest([31; 32]);
+        let intermediate = NodeKey::from_digest([32; 32]);
+        let child = NodeKey::from_digest([33; 32]);
+        let unrelated = NodeKey::from_digest([34; 32]);
+        let types = TypeEnvironment::new(
+            [
+                CompositeDeclaration::new(
+                    parent,
+                    "Parent",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                ),
+                CompositeDeclaration::new(
+                    intermediate,
+                    "Intermediate",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                )
+                .with_supertypes(vec![parent]),
+                CompositeDeclaration::new(
+                    child,
+                    "Child",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                )
+                .with_supertypes(vec![intermediate]),
+                CompositeDeclaration::new(
+                    unrelated,
+                    "Unrelated",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                ),
+            ],
+            [],
+        )
+        .expect("acyclic composite ancestry admits");
+        let value = types
+            .record(
+                child,
+                vec![("label", FieldValue::Present(Value::String("child".into())))],
+            )
+            .expect("child record construction succeeds");
+
+        assert!(types.composite_conforms(intermediate, parent));
+        assert!(types.composite_conforms(child, intermediate));
+        assert!(types.composite_conforms(child, parent));
+        assert!(!types.composite_conforms(parent, child));
+        assert!(types.admits(&ValueType::Composite(parent), &value));
+        assert!(types.admits(&ValueType::Composite(child), &value));
+        assert!(!types.admits(&ValueType::Composite(child), &record_value(&types, parent)));
+        assert!(!types.admits(
+            &ValueType::Composite(parent),
+            &record_value(&types, unrelated)
+        ));
+        let Value::Composite(composite) = &value else {
+            panic!("record construction returns a composite value");
+        };
+        assert_eq!(composite.declaration(), child);
+        assert!(!admits_equality_conversion(
+            &ValueType::Composite(child),
+            &ValueType::Composite(parent),
+            &UnitScope::new(types.units()),
+        ));
+    }
+
+    /// Composite ancestry rejects cycles and enforces the configured walk ceiling.
+    #[trace("TC-912", "FR-113-AC-2")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked composite identities without minting them in production"
+    )]
+    #[test]
+    fn composite_ancestry_cycles_and_walks_are_bounded() {
+        let a = NodeKey::from_digest([34; 32]);
+        let b = NodeKey::from_digest([35; 32]);
+        let declarations = || {
+            [
+                CompositeDeclaration::new(a, "A", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![b]),
+                CompositeDeclaration::new(b, "B", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![a]),
+            ]
+        };
+        let Err(EnvironmentFailure::Refused(refusal)) = TypeEnvironment::new(declarations(), [])
+        else {
+            panic!("a composite supertype cycle must be refused");
+        };
+        let DeclarationCause::CompositeGeneralizationCycle { cycle } = &refusal.cause else {
+            panic!(
+                "expected CompositeGeneralizationCycle, got {:?}",
+                refusal.cause
+            );
+        };
+        assert_eq!(cycle.len(), 3);
+        assert_eq!(cycle.first(), cycle.last());
+        assert_eq!(refusal.code(), IllTyped::CODE);
+
+        let missing = NodeKey::from_digest([36; 32]);
+        assert!(matches!(
+            TypeEnvironment::new(
+                [CompositeDeclaration::new(
+                    a,
+                    "A",
+                    CompositeShape::Tuple(vec![]),
+                )
+                .with_supertypes(vec![missing])],
+                []
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::UnknownDeclaration(key),
+                ..
+            })) if key == missing
+        ));
+
+        let types = TypeEnvironment::bounded(
+            [
+                CompositeDeclaration::new(a, "A", CompositeShape::Tuple(vec![])),
+                CompositeDeclaration::new(b, "B", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![a]),
+            ],
+            [],
+            TypeEnvironmentLimits {
+                ancestor_steps: 0,
+                ..TypeEnvironmentLimits::default()
+            },
+        );
+        assert!(matches!(
+            types,
+            Err(EnvironmentFailure::Limit(limit))
+                if limit.kind() == EnvironmentLimitKind::AncestorSteps
+        ));
+
+        let types = TypeEnvironment::bounded(
+            [
+                CompositeDeclaration::new(a, "A", CompositeShape::Tuple(vec![])),
+                CompositeDeclaration::new(b, "B", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![a]),
+            ],
+            [],
+            TypeEnvironmentLimits {
+                work_units: 1,
+                ..TypeEnvironmentLimits::default()
+            },
+        );
+        assert!(matches!(
+            types,
+            Err(EnvironmentFailure::Limit(limit))
+                if limit.kind() == EnvironmentLimitKind::WorkUnits
+        ));
+    }
+
+    fn record_value(types: &TypeEnvironment, declaration: NodeKey) -> Value {
+        types
+            .record(
+                declaration,
+                vec![("label", FieldValue::Present(Value::String("same".into())))],
+            )
+            .expect("record fixture matches its declared shape")
     }
 
     fn text_type() -> quire_exact::TextType {
