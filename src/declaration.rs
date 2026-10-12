@@ -1744,6 +1744,7 @@ impl TypeEnvironment {
                 | ValueType::Decimal(_)
                 | ValueType::Quantity(_)
                 | ValueType::Text(_)
+                | ValueType::String
                 | ValueType::Uuid
                 | ValueType::Timestamp
                 | ValueType::Enum(_)
@@ -1801,6 +1802,7 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::Text(_)
+                | ValueType::String
                 | ValueType::Uuid
                 | ValueType::Timestamp
                 | ValueType::Enum(_)
@@ -1856,6 +1858,7 @@ impl TypeEnvironment {
                 | ValueType::Decimal(_)
                 | ValueType::Quantity(_)
                 | ValueType::Text(_)
+                | ValueType::String
                 | ValueType::Uuid
                 | ValueType::Timestamp
                 | ValueType::Enum(_)
@@ -1905,6 +1908,7 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::Text(_)
+                | ValueType::String
                 | ValueType::Uuid
                 | ValueType::Timestamp
                 | ValueType::Enum(_)
@@ -2011,6 +2015,7 @@ impl TypeEnvironment {
                     | ValueType::Float(_)
                     | ValueType::Quantity(_)
                     | ValueType::Text(_)
+                    | ValueType::String
                     | ValueType::Uuid
                     | ValueType::Timestamp
                     | ValueType::Enum(_)
@@ -3574,6 +3579,7 @@ fn integer_source_admits(lower: &Integer, upper: &Integer, target: &ValueType) -
         | ValueType::Float(_)
         | ValueType::Quantity(_)
         | ValueType::Text(_)
+        | ValueType::String
         | ValueType::Uuid
         | ValueType::Timestamp
         | ValueType::Enum(_)
