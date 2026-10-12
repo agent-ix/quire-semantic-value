@@ -3631,7 +3631,7 @@ mod native_type_tests {
     }
 
     /// Native String has exact scalar-sequence equality and never inherits Text normalization.
-    #[trace("TC-992", "FR-056-AC-23")]
+    #[trace("TC-911", "FR-112-AC-1")]
     #[test]
     fn native_string_admission_and_equality_preserve_scalar_identity() {
         let types = TypeEnvironment::new([], []).expect("empty environment");
@@ -3680,7 +3680,7 @@ mod native_type_tests {
     }
 
     /// A String member is admitted recursively and can be constructed in its declared record.
-    #[trace("TC-992", "FR-056-AC-23")]
+    #[trace("TC-911", "FR-112-AC-2")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the fixture supplies a checked composite identity without minting one in production"
