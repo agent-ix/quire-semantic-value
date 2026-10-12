@@ -1388,6 +1388,7 @@ impl InvalidDeclaration {
             DeclarationCause::Type(_)
             | DeclarationCause::Recursion { .. }
             | DeclarationCause::GeneralizationCycle { .. }
+            | DeclarationCause::CompositeGeneralizationCycle { .. }
             | DeclarationCause::RedefinitionWidens(_) => IllTyped::CODE,
         }
     }
@@ -4019,13 +4020,19 @@ mod native_type_tests {
                     .with_supertypes(vec![a]),
             ]
         };
-        assert!(matches!(
-            TypeEnvironment::new(declarations(), []),
-            Err(EnvironmentFailure::Refused(InvalidDeclaration {
-                cause: DeclarationCause::CompositeGeneralizationCycle { .. },
-                ..
-            }))
-        ));
+        let Err(EnvironmentFailure::Refused(refusal)) = TypeEnvironment::new(declarations(), [])
+        else {
+            panic!("a composite supertype cycle must be refused");
+        };
+        let DeclarationCause::CompositeGeneralizationCycle { cycle } = &refusal.cause else {
+            panic!(
+                "expected CompositeGeneralizationCycle, got {:?}",
+                refusal.cause
+            );
+        };
+        assert_eq!(cycle.len(), 3);
+        assert_eq!(cycle.first(), cycle.last());
+        assert_eq!(refusal.code(), IllTyped::CODE);
 
         let missing = NodeKey::from_digest([36; 32]);
         assert!(matches!(
