@@ -239,6 +239,10 @@ pub struct NominalUnitNode {
 /// The kind of a [`NominalUnitNode`], with its preimage's terms resolved
 /// to admitted keys.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "exact unit edge scales and offsets stay inline; boxing them adds heap allocations and changes the public form"
+)]
 pub enum NominalUnitForm {
     /// A dimension node: its `(base dimension, exponent)` terms, ascending
     /// by key, empty for a base dimension.
