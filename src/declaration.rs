@@ -3623,6 +3623,79 @@ mod native_type_tests {
         assert!(!types.admits(&ValueType::Uuid, &Value::Integer(Integer::one())));
         assert!(!types.admits(&ValueType::Timestamp, &Value::Integer(Integer::one())));
     }
+
+    /// Native String has exact scalar-sequence equality and never inherits Text normalization.
+    #[trace("TC-992", "FR-056-AC-23")]
+    #[test]
+    fn native_string_admission_and_equality_preserve_scalar_identity() {
+        let types = TypeEnvironment::new([], []).expect("empty environment");
+        let composed = Value::String("é".into());
+        let decomposed = Value::String("e\u{301}".into());
+        let equal_copy = Value::String("e\u{301}".into());
+
+        assert_eq!(types.check_type(&ValueType::String), Ok(()));
+        assert!(!types.contains_ieee(&ValueType::String));
+        assert!(types.admits(&ValueType::String, &decomposed));
+        assert!(!types.admits(&ValueType::String, &composed_as_text()));
+        assert!(!types.admits(&ValueType::Text(text_type()), &decomposed));
+        assert!(types.admits(&ValueType::String, &equal_copy));
+
+        let enum_members = EnumMemberIndex::default();
+        let equality = types
+            .check_equality(
+                EqualityOperator::Equal,
+                EqualityOperand::typed(ValueType::String),
+                EqualityOperand::typed(ValueType::String),
+                &enum_members,
+            )
+            .expect("native String has kernel equality");
+        assert_eq!(equality.schedule(), EqualitySchedule::Plan);
+
+        let mut meter = Meter::new(quire_exact::ScalarLimits {
+            integer_bits: u64::MAX,
+            decimal_digits: u64::MAX,
+            scale_expansion: u64::MAX,
+            text_input_bytes: u64::MAX,
+            text_scalars: u64::MAX,
+            normalized_scalars: u64::MAX,
+            unit_edges: u64::MAX,
+            value_occurrences: u64::MAX,
+            work_units: u64::MAX,
+            result_units: u64::MAX,
+        });
+        assert!(matches!(
+            equality.evaluate(&composed, &decomposed, &mut meter),
+            Outcome::Completed(false)
+        ));
+        assert!(matches!(
+            equality.evaluate(&decomposed, &equal_copy, &mut meter),
+            Outcome::Completed(true)
+        ));
+    }
+
+    fn text_type() -> quire_exact::TextType {
+        quire_exact::TextType::new(0, 4, quire_exact::TextProfile::Nfc).expect("valid Text type")
+    }
+
+    fn composed_as_text() -> Value {
+        let payload = quire_exact::TextPayload::from_utf8("é".as_bytes()).expect("UTF-8");
+        let mut meter = Meter::new(quire_exact::ScalarLimits {
+            integer_bits: u64::MAX,
+            decimal_digits: u64::MAX,
+            scale_expansion: u64::MAX,
+            text_input_bytes: u64::MAX,
+            text_scalars: u64::MAX,
+            normalized_scalars: u64::MAX,
+            unit_edges: u64::MAX,
+            value_occurrences: u64::MAX,
+            work_units: u64::MAX,
+            result_units: u64::MAX,
+        });
+        match quire_exact::admit_text(&payload, &text_type(), &mut meter) {
+            Outcome::Completed(text) => Value::Text(text),
+            _ => panic!("valid Text admission"),
+        }
+    }
 }
 
 /// The comparison value of one operand after its admitted conversion, with
