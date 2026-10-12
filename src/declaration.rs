@@ -3917,7 +3917,7 @@ mod native_type_tests {
     }
 
     /// A composite value keeps its child identity while admitting at an ancestor boundary.
-    #[trace("FR-208-AC-12")]
+    #[trace("TC-912", "FR-113-AC-1")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the fixture supplies checked composite identities without minting them in production"
@@ -3925,8 +3925,9 @@ mod native_type_tests {
     #[test]
     fn composite_child_admits_at_parent_boundary_without_identity_widening() {
         let parent = NodeKey::from_digest([31; 32]);
-        let child = NodeKey::from_digest([32; 32]);
-        let unrelated = NodeKey::from_digest([33; 32]);
+        let intermediate = NodeKey::from_digest([32; 32]);
+        let child = NodeKey::from_digest([33; 32]);
+        let unrelated = NodeKey::from_digest([34; 32]);
         let types = TypeEnvironment::new(
             [
                 CompositeDeclaration::new(
@@ -3939,6 +3940,16 @@ mod native_type_tests {
                     )]),
                 ),
                 CompositeDeclaration::new(
+                    intermediate,
+                    "Intermediate",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                )
+                .with_supertypes(vec![parent]),
+                CompositeDeclaration::new(
                     child,
                     "Child",
                     CompositeShape::Record(vec![FieldDeclaration::new(
@@ -3947,7 +3958,7 @@ mod native_type_tests {
                         Presence::Required,
                     )]),
                 )
-                .with_supertypes(vec![parent]),
+                .with_supertypes(vec![intermediate]),
                 CompositeDeclaration::new(
                     unrelated,
                     "Unrelated",
@@ -3968,6 +3979,10 @@ mod native_type_tests {
             )
             .expect("child record construction succeeds");
 
+        assert!(types.composite_conforms(intermediate, parent));
+        assert!(types.composite_conforms(child, intermediate));
+        assert!(types.composite_conforms(child, parent));
+        assert!(!types.composite_conforms(parent, child));
         assert!(types.admits(&ValueType::Composite(parent), &value));
         assert!(types.admits(&ValueType::Composite(child), &value));
         assert!(!types.admits(&ValueType::Composite(child), &record_value(&types, parent)));
@@ -3979,10 +3994,15 @@ mod native_type_tests {
             panic!("record construction returns a composite value");
         };
         assert_eq!(composite.declaration(), child);
+        assert!(!admits_equality_conversion(
+            &ValueType::Composite(child),
+            &ValueType::Composite(parent),
+            &UnitScope::new(types.units()),
+        ));
     }
 
     /// Composite ancestry rejects cycles and enforces the configured walk ceiling.
-    #[trace("FR-110-AC-2")]
+    #[trace("TC-912", "FR-113-AC-2")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the fixture supplies checked composite identities without minting them in production"
@@ -4007,6 +4027,23 @@ mod native_type_tests {
             }))
         ));
 
+        let missing = NodeKey::from_digest([36; 32]);
+        assert!(matches!(
+            TypeEnvironment::new(
+                [CompositeDeclaration::new(
+                    a,
+                    "A",
+                    CompositeShape::Tuple(vec![]),
+                )
+                .with_supertypes(vec![missing])],
+                []
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::UnknownDeclaration(key),
+                ..
+            })) if key == missing
+        ));
+
         let types = TypeEnvironment::bounded(
             [
                 CompositeDeclaration::new(a, "A", CompositeShape::Tuple(vec![])),
@@ -4023,6 +4060,24 @@ mod native_type_tests {
             types,
             Err(EnvironmentFailure::Limit(limit))
                 if limit.kind() == EnvironmentLimitKind::AncestorSteps
+        ));
+
+        let types = TypeEnvironment::bounded(
+            [
+                CompositeDeclaration::new(a, "A", CompositeShape::Tuple(vec![])),
+                CompositeDeclaration::new(b, "B", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![a]),
+            ],
+            [],
+            TypeEnvironmentLimits {
+                work_units: 1,
+                ..TypeEnvironmentLimits::default()
+            },
+        );
+        assert!(matches!(
+            types,
+            Err(EnvironmentFailure::Limit(limit))
+                if limit.kind() == EnvironmentLimitKind::WorkUnits
         ));
     }
 
