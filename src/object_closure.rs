@@ -158,6 +158,7 @@ impl ObjectClosure {
                 Value::Option(option) => pending.extend(option.payload()),
                 Value::Composite(composite) => pending.extend(present(composite.slots())),
                 Value::Collection(collection) => pending.extend(collection.elements()),
+                Value::Union(union) => pending.extend(union.payload()),
                 Value::Reference(_)
                 | Value::Boolean(_)
                 | Value::Integer(_)
@@ -343,5 +344,61 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test fixture needs a NodeKey; production code mints none"
+    )]
+    fn node_key(byte: u8) -> quire_exact::NodeKey {
+        quire_exact::NodeKey::from_digest([byte; 32])
+    }
+
+    /// A union value's payload is traversed like a composite's slots: a
+    /// reference inside it must name a closed object, and a nested union is
+    /// walked too.
+    #[trace("TC-904", "FR-106-AC-10")]
+    #[test]
+    fn union_payload_references_are_closed_over() {
+        use quire_exact::{Identifier, UnionMember, UnionValue};
+        let types = types();
+        let present_ref = reference(A, "present");
+        let missing = reference(B, "missing");
+        let closure =
+            ObjectClosure::new(&types, [object(&present_ref)], &[]).expect("one object closes");
+        let member = UnionMember::from_admitted(
+            node_key(7),
+            node_key(8),
+            Identifier::new("m").expect("identifier"),
+        );
+        let union = |payload| UnionValue::from_admitted(member.clone(), payload);
+        let slots = |value| vec![FieldValue::Present(value)];
+        let owner = reference(A, "owner");
+        let tolerated = BTreeSet::new();
+
+        let closed = union(vec![
+            Value::Integer(1_i64.into()),
+            Value::Reference(present_ref.clone()),
+        ]);
+        assert_eq!(
+            closure.check_closed(&owner, &slots(closed), &tolerated),
+            Ok(())
+        );
+
+        let nested = union(vec![union(vec![Value::Reference(missing.clone())])]);
+        assert_eq!(
+            closure.check_closed(&owner, &slots(nested), &tolerated),
+            Err(ObjectClosureRefusal {
+                object: Box::new(owner.clone()),
+                cause: ObjectClosureCause::DanglingReference(Box::new(missing.clone())),
+            })
+        );
+
+        let tolerating: BTreeSet<&ObjectReference> = [&missing].into_iter().collect();
+        let dangling = union(vec![Value::Reference(missing.clone())]);
+        assert_eq!(
+            closure.check_closed(&owner, &slots(dangling), &tolerating),
+            Ok(())
+        );
     }
 }
