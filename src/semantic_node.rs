@@ -32,7 +32,9 @@ impl InvalidSemanticGraph {
 /// Why a nominal semantic node or node graph was refused.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SemanticGraphCause {
-    /// The preimage does not satisfy `node-identity-preimage.schema.json`.
+    /// The preimage does not satisfy `node-identity-preimage.schema.json`, or a
+    /// model-owned enum declaration's case list is empty, has an empty case
+    /// name or repeats a case name.
     NonCanonicalPreimage,
     /// An unordered declaration's members are not sorted by case name.
     UnsortedUnorderedMembers,

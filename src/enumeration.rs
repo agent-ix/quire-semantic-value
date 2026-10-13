@@ -382,6 +382,8 @@ mod tests {
             cases(&[""]),
             cases(&["", "a"]),
             cases(&["Gold Plus", "Gold Plus"]),
+            // Malformed and unsorted: the malformed cause wins.
+            cases(&["b", "a", "a"]),
         ] {
             assert_eq!(
                 EnumDeclaration::model_owned(key(1), members),
