@@ -44,3 +44,12 @@ The review compares the PR diff with QSV main `src/declaration.rs` (`admits` 173
 `composite_conforms` 1722-1728, `fill_slots` 672-700, `tuple` 2913-2931, `operand_value`
 4127-4148), quire-exact main `src/value.rs` (`ValueType::admits`, `OptionValue::present`,
 `OptionValue::from_admitted`) and quire-exact FR-378 (PR #38).
+
+## Dispositions
+
+Round 1, reviewed at 5870800cce45b74a6c549f1da4c855f47d535257.
+
+| FND | outcome | sha/reason |
+| --- | --- | --- |
+| FND-001 | fixed | 5870800cc |
+| FND-002 | fixed | 5870800cc |

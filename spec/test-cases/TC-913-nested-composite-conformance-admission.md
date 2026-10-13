@@ -22,15 +22,14 @@ type constructors, and refuse nonconforming values with typed causes.
    build every container holding a `C`, `M` or `U` at a `P`-typed slot with the
    trusted `from_admitted`, `form` and `from_admitted_slots` paths. Query
    `admits` for those holding a `C` or `M`: `Option<P>`, `Sequence`, `Set`,
-   `Bag` and `OrderedSet` of `P`, a tuple position and a record field typed
-   `P`, and `Option<Sequence<Option<P>>>` with `C` innermost. A top-level `C`
+   `Bag` and `OrderedSet` of `P`, and `Option<Sequence<Option<P>>>` with `C` innermost. A top-level `C`
    at `P` already passes today.
 2. Query the negative set, of which the nested cases alone test this
-   requirement: the same containers holding a `U`; a nested value with one `U`
+   requirement: the same `Option` and collection containers holding a `U`; a nested value with one `U`
    among conforming elements; `P` at `C`-typed and `M`-typed slots; an
    `Option<C>` and a `Sequence<C>` value at declared `Option<P>` and
    `Sequence<P>`.
-3. Run `evaluate_record` and `evaluate_tuple` with a member that completes to
+3. Run `TypeEnvironment::evaluate_record` and `TypeEnvironment::evaluate_tuple` with a member that completes to
    a `C` and to a `U` at a `P` member. Construct a record and a tuple holding
    a `U`.
 4. Call `operand_value` with source type `P` and values `C`, `M`, and
