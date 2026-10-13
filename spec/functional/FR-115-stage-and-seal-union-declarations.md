@@ -78,5 +78,7 @@ QSL-503 owns actual run admission, references, conversion and no-charge evidence
 
 ## Status
 
-Owned Union source proposal; all changed-head checks and qualification UNRUN.
-No whole-criterion acceptance or independent review is claimed.
+Implemented in this crate and covered by tests/union_registry.rs and
+tests/union_staging.rs. Supplied-phase failure transport and caller migration
+are owned elsewhere (FR-109, QSL-681, QSL-502 to QSL-504). Independent review
+is pending.

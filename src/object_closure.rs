@@ -69,7 +69,6 @@ impl ObjectClosure {
     /// passes the references its check 8 skipped, because they name an
     /// incomplete population nothing requires; every other caller passes
     /// `&[]`.
-
     /// Admit objects, attribute types and reference closure with one shared budget.
     /// The outer result preserves named work stops and caller cancellation; the
     /// inner result preserves the existing object/attribute refusal and locus.

@@ -864,7 +864,6 @@ fn refuse<T>(component: Component, cause: ConstructionCause) -> Result<T, Constr
 /// repeated name. This module's own `TypeEnvironment::evaluate_record` uses
 /// it to match supplied `FieldExpression`s to declared fields the same way
 /// [`fill_slots`] matches supplied `FieldValue`s.
-
 fn match_names_walk<'n, F: AsRef<FieldDeclaration>, D: Clone + IntoIterator<Item = F>, T, E>(
     declared: D,
     supplied: Vec<(&'n str, T)>,
@@ -897,7 +896,6 @@ fn match_names_walk<'n, F: AsRef<FieldDeclaration>, D: Clone + IntoIterator<Item
 /// ([`TypeEnvironment::attributes`]), so an inherited field has a slot. A
 /// present value must be admitted by its field's type under `types`'
 /// conformance ([`TypeEnvironment::admits`]).
-
 /// Name-check, order and admit slots under the caller's cumulative budget.
 /// Work stops are the outer result; construction refusals keep their typed cause.
 pub fn fill_slots<F: AsRef<FieldDeclaration>, D: Clone + IntoIterator<Item = F>>(
@@ -1808,7 +1806,6 @@ struct Edge {
 
 impl TypeEnvironment {
     /// Construct the registry-resolved member with environment-aware payload admission.
-
     /// Construct a sealed union using the caller's cumulative admission budget.
     /// Work stops are separate from existing construction refusals.
     pub fn union(
@@ -1852,7 +1849,6 @@ impl TypeEnvironment {
 
     /// Evaluate payload positions in order, propagating the first stopped outcome,
     /// then retaining the completed union once under the existing composite schedule.
-
     /// Evaluate a sealed union with cumulative SV admission work and the actual
     /// runtime meter. Prior runtime stops bypass further SV admission charges.
     pub fn evaluate_union(
@@ -2292,10 +2288,8 @@ impl TypeEnvironment {
     /// the exact declared identifier. This method hashes nothing.
     /// Failed validation leaves the resolved registry unchanged. Bindings must
     /// cover every member once, in declaration order; resealing is refused.
-
     /// Seal under the caller's environment work budget and cancellation handle.
     /// Each verified binding comparison charges one work unit before attachment.
-
     /// Seal with the caller's cumulative budget. A charged member step covers
     /// its binding validation and eventual indexed attachment, before mutation.
     pub fn seal_union_verified(
@@ -2390,7 +2384,6 @@ impl TypeEnvironment {
 
     /// Compare resolved types using the explicit sealed union handle/key join.
     /// Option and collection nesting is iterative. Record/Tuple identity is unchanged.
-
     /// Compare nested types while charging each pair to the caller's budget.
     pub fn same_type(
         &self,
@@ -2454,7 +2447,6 @@ impl TypeEnvironment {
     /// Unsealed union leaves return `None`. Other declaration keys stay unchanged.
     /// Nested options/collections are rebuilt iteratively, preserving their kinds
     /// and bounds whether or not a declaration key changes.
-
     /// Resolve a runtime type using shared cumulative work, including rebuilding
     /// each wrapper. An unsealed declaration is `Ok(None)`, never a resource stop.
     pub fn runtime_type(
@@ -2585,7 +2577,6 @@ impl TypeEnvironment {
     }
 
     /// Resolve an authored identifier to topology, before or after sealing.
-
     /// Resolve an authored member name with one charge per inspected descriptor.
     pub fn union_member_named<'a>(
         &'a self,
@@ -2617,7 +2608,6 @@ impl TypeEnvironment {
     /// Iterative supplied-value membership checking. One work unit per value
     /// visited, including each shared occurrence. A limit is returned by name;
     /// references check type conformance here, target closure is checked separately.
-
     /// Admit supplied occurrences and their nested type comparisons under one
     /// cumulative configured budget. Type-validation work uses this same budget.
     pub fn admits(
@@ -2664,19 +2654,46 @@ impl TypeEnvironment {
                     pending.extend(member.positions.iter().zip(union.payload()).rev());
                 }
                 (ValueType::Composite(key), Value::Composite(value)) => {
-                    // A composite is admitted by declared-supertype conformance
-                    // and the walk stops there: its own members were admitted
-                    // against its own declaration.
+                    // Conformance by declared supertype admits a descendant and
+                    // the walk stops there: its members were admitted against
+                    // its own declaration. A value of exactly the declared
+                    // composite is walked against that declaration.
                     if !self.composite_conforms(value.declaration(), *key) {
                         return Ok(false);
                     }
-                    if matches!(
-                        self.shape(*key),
+                    charge(1)?;
+                    match self.shape(*key) {
                         Some(CompositeShape::Record(_) | CompositeShape::Tuple(_))
-                    ) {
-                        charge(1)?;
-                    } else {
-                        return Ok(false);
+                            if value.declaration() != *key => {}
+                        Some(CompositeShape::Record(fields)) => {
+                            if fields.len() != value.slots().len() {
+                                return Ok(false);
+                            }
+                            charge(fields.len())?;
+                            for (field, slot) in fields.iter().zip(value.slots()).rev() {
+                                match slot {
+                                    FieldValue::Present(value) => {
+                                        pending.push((field.value_type(), value));
+                                    }
+                                    FieldValue::Absent | FieldValue::Null
+                                        if field.presence() == Presence::Optional => {}
+                                    FieldValue::Absent | FieldValue::Null => return Ok(false),
+                                }
+                            }
+                        }
+                        Some(CompositeShape::Tuple(positions)) => {
+                            if positions.len() != value.slots().len() {
+                                return Ok(false);
+                            }
+                            charge(positions.len())?;
+                            for (ty, slot) in positions.iter().zip(value.slots()).rev() {
+                                let FieldValue::Present(value) = slot else {
+                                    return Ok(false);
+                                };
+                                pending.push((ty, value));
+                            }
+                        }
+                        Some(CompositeShape::Union(_)) | None => return Ok(false),
                     }
                 }
                 (ValueType::Reference(declared), Value::Reference(reference)) => {
@@ -2753,10 +2770,8 @@ impl TypeEnvironment {
     /// every named declaration exists, every `Reference<T>` names a model
     /// object type, and no set, bag or ordered set has an IEEE-bearing element
     /// type.
-
     /// Whether `value_type` contains `Float32` or `Float64` at any depth,
     /// through every record, tuple and union member declaration included.
-
     /// Inspect all reachable member types under the caller's shared budget.
     /// Every visited type and scheduled member position is charged, including
     /// unused union alternatives. Recursive declaration keys are visited once.
@@ -2819,7 +2834,6 @@ impl TypeEnvironment {
                 | ValueType::String
                 | ValueType::Uuid
                 | ValueType::Timestamp
-                | ValueType::String
                 | ValueType::Enum(_)
                 | ValueType::Reference(_)
                 | ValueType::Population(_) => {}
@@ -2829,7 +2843,6 @@ impl TypeEnvironment {
     }
 
     /// The first refusal of one type's named declarations and element types.
-
     /// Validate a parameter/result type without converting work stops into
     /// ill-typed refusals. The inner result retains the existing typed cause.
     pub fn check_type(
@@ -2911,7 +2924,6 @@ impl TypeEnvironment {
                 | ValueType::String
                 | ValueType::Uuid
                 | ValueType::Timestamp
-                | ValueType::String
                 | ValueType::Enum(_)
                 | ValueType::Composite(_)
                 | ValueType::Reference(_) => {}
@@ -2984,7 +2996,6 @@ impl TypeEnvironment {
                 | ValueType::String
                 | ValueType::Uuid
                 | ValueType::Timestamp
-                | ValueType::String
                 | ValueType::Enum(_)
                 | ValueType::Reference(_)
                 | ValueType::Population(_) => {}
@@ -3042,7 +3053,6 @@ impl TypeEnvironment {
                 | ValueType::String
                 | ValueType::Uuid
                 | ValueType::Timestamp
-                | ValueType::String
                 | ValueType::Enum(_)
                 | ValueType::Composite(_)
                 | ValueType::Reference(_) => {}
@@ -3206,7 +3216,6 @@ impl TypeEnvironment {
                     | ValueType::String
                     | ValueType::Uuid
                     | ValueType::Timestamp
-                    | ValueType::String
                     | ValueType::Enum(_)
                     | ValueType::Reference(_)
                     | ValueType::Population(_) => {}
@@ -4712,13 +4721,11 @@ impl TypeEnvironment {
     /// argument every caller -- including every non-enum test -- would
     /// otherwise need to thread through. An empty index is correct for any
     /// caller that never checks an enum equality.
-
     /// [`Self::check_equality`] against one checking stage's units, which
     /// add the compound units its expressions formed. `enum_members` gives
     /// the member index of one compared enum shape: exactly its own
     /// members. a checker's scope answers it from a table built
     /// once per shape, so an equality does not copy its enum.
-
     /// Check equality using the same cumulative SV budget as topology/admission.
     /// The outer result retains resource stops; the inner result retains IR712
     /// typed causes. Runtime comparison still uses its actual kernel meter.
@@ -5052,7 +5059,6 @@ fn integer_source_admits(lower: &Integer, upper: &Integer, target: &ValueType) -
         | ValueType::String
         | ValueType::Uuid
         | ValueType::Timestamp
-        | ValueType::String
         | ValueType::Enum(_)
         | ValueType::Option(_)
         | ValueType::Composite(_)
@@ -5469,10 +5475,11 @@ pub fn operand_value(
     // compares only the identity triple, so the kind check is sufficient.
     let admitted = match (&operand.source, value) {
         (ValueType::Reference(_), value) => matches!(value, Value::Reference(_)),
-        (ValueType::Composite(declared), Value::Composite(composite)) => {
-            types.composite_conforms(composite.declaration(), *declared)
-        }
-        (source, value) => source.admits(value),
+        (source, value) => types
+            .admits_walk(source, value, &mut |_| {
+                Ok::<(), core::convert::Infallible>(())
+            })
+            .unwrap_or_else(|never| match never {}),
     };
     if !admitted {
         return Err(invariant(

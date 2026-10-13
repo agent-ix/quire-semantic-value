@@ -42,5 +42,7 @@ These are SV source controls, not QSL run, codec or canonical minting evidence.
 
 ## Status
 
-All controls on the released-base integration head are UNRUN. TC-907's protected
-Union obligation remains open under IR-713 until the complete QSL-500 delivery.
+Implemented. The controls run in tests/union_registry.rs and
+tests/union_staging.rs and in the unit tests of src/declaration.rs. TC-907's
+protected Union obligation remains open under IR-713 until the complete QSL-500
+delivery.
