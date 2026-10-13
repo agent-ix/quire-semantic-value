@@ -28,7 +28,7 @@ Checked:
   `cfg(test)`.
 - `make ci` runs `build-no-std` (`cargo build --locked --target
   thumbv7em-none-eabi`) and a no_std clippy pass. The log at
-  ~/dev/worktrees/logs/ir582-quire-semantic-value-ci.log shows 15 tests passed,
+  <gate log> shows 15 tests passed,
   both no_std steps, `cargo deny check` (advisories, bans, licenses, sources
   ok) and docs, exit 0.
 - Removing `scripts/check_unsafe_comments.sh`, its baseline and `make
