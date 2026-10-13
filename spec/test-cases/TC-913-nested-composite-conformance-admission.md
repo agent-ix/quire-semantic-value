@@ -35,7 +35,10 @@ type constructors, and refuse nonconforming values with typed causes.
 4. Call `operand_value` with source type `P` and values `C`, `M`, and
    `Option<P>` and `Sequence<P>` holding a `C`; then with `U`, and with a `P`
    value at source type `C`; then with a `Reference<T>` operand.
-5. After quire-exact FR-376 to FR-378 land, build a `Set<P>` and a `Bag<P>`
+5. Query `admits` for an `Option<Reference<T>>` and a `Sequence<Reference<T>>`
+   holding a reference whose object type is a subtype of `T`, one of `T`, an
+   unrelated object type, and (at a subtype slot) a supertype object.
+6. After quire-exact FR-376 to FR-378 land, build a `Set<P>` and a `Bag<P>`
    holding a `C` and a `P` of equal shared fields and admit them.
 
 ## Expected Results
@@ -48,5 +51,7 @@ type constructors, and refuse nonconforming values with typed causes.
 4. Conforming operands return unchanged with their own keys. `U` and the
    reverse case return `EqualityOperandSourceNotAdmitted`. The `Reference<T>`
    operand is still checked by kind only.
-5. Both collections are admitted with two elements. This step depends on the
+5. The subtype and identical object types are admitted; the unrelated and
+   supertype-at-subtype cases return `false`.
+6. Both collections are admitted with two elements. This step depends on the
    quire-exact change and cannot pass before it lands.

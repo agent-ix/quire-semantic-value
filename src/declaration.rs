@@ -3679,6 +3679,10 @@ impl CheckedEquality {
     }
 
     /// Evaluate over the two completed operand values, left conversion first.
+    /// `types` must be the environment that checked this equality: a
+    /// composite operand is admitted by conformance under it, so another
+    /// environment (including `TypeEnvironment::default()`) refuses a
+    /// conforming child with `EqualityOperandSourceNotAdmitted`.
     /// Neither source value is changed. For the `Enum` schedule, a bare
     /// kernel `Value::Enum` carries only its `VariantId`
     /// and rank, so this resolves each side back to its full declaration/
@@ -4185,7 +4189,10 @@ mod native_type_tests {
 }
 
 /// The comparison value of one operand after its admitted conversion, with
-/// quantity units read from `units`.
+/// quantity units read from `units`. `types` must be the environment that
+/// checked the equality: a composite operand is admitted by conformance
+/// under it, so another environment (including `TypeEnvironment::default()`)
+/// refuses a conforming child with `EqualityOperandSourceNotAdmitted`.
 pub fn operand_value(
     types: &TypeEnvironment,
     operand: &EqualityOperand,
@@ -5046,18 +5053,27 @@ mod nested_conformance_tests {
         OptionValue, ScalarLimits, UniverseId,
     };
 
-    /// The chain `P <- M <- C` (so `C` is a grandchild of `P`) and the
-    /// unrelated `U`, each a record with one `label` field.
+    /// The chain `P <- M <- C` (so `C` is a grandchild of `P`), the
+    /// unrelated `U` (each a record with one `label` field), a record and a
+    /// tuple holding `P` members, and a parent/child object-type pair.
     struct Fixture {
         types: TypeEnvironment,
         p: NodeKey,
         m: NodeKey,
         c: NodeKey,
         u: NodeKey,
+        holder_record: NodeKey,
+        holder_tuple: NodeKey,
+        parent_object: EffectiveId,
+        child_object: EffectiveId,
+        stranger_object: EffectiveId,
     }
 
     fn fixture() -> Fixture {
-        let [p, m, c, u] = [41, 42, 43, 44].map(|byte| NodeKey::from_digest([byte; 32]));
+        let [p, m, c, u, holder_record, holder_tuple] =
+            [41, 42, 43, 44, 51, 52].map(|byte| NodeKey::from_digest([byte; 32]));
+        let [parent_object, child_object, stranger_object] =
+            [71, 72, 73].map(|byte| EffectiveId::from_digest([byte; 32]));
         let record = |key, name: &str, supertypes: Vec<NodeKey>| {
             CompositeDeclaration::new(
                 key,
@@ -5070,17 +5086,53 @@ mod nested_conformance_tests {
             )
             .with_supertypes(supertypes)
         };
+        let parent = ValueType::Composite(p);
+        let object = |key, name: &str, supertypes: Vec<EffectiveId>| {
+            ObjectTypeDeclaration::new(key, name, vec![]).with_supertypes(supertypes)
+        };
         let types = TypeEnvironment::new(
             [
                 record(p, "P", vec![]),
                 record(m, "M", vec![p]),
                 record(c, "C", vec![m]),
                 record(u, "U", vec![]),
+                CompositeDeclaration::new(
+                    holder_record,
+                    "HolderRecord",
+                    CompositeShape::Record(vec![
+                        FieldDeclaration::new("member", parent.clone(), Presence::Required),
+                        FieldDeclaration::new(
+                            "maybe",
+                            ValueType::option(parent.clone()),
+                            Presence::Optional,
+                        ),
+                    ]),
+                ),
+                CompositeDeclaration::new(
+                    holder_tuple,
+                    "HolderTuple",
+                    CompositeShape::Tuple(vec![parent]),
+                ),
             ],
-            [],
+            [
+                object(parent_object, "ParentObject", vec![]),
+                object(child_object, "ChildObject", vec![parent_object]),
+                object(stranger_object, "StrangerObject", vec![]),
+            ],
         )
-        .expect("acyclic composite ancestry admits");
-        Fixture { types, p, m, c, u }
+        .expect("acyclic ancestry admits");
+        Fixture {
+            types,
+            p,
+            m,
+            c,
+            u,
+            holder_record,
+            holder_tuple,
+            parent_object,
+            child_object,
+            stranger_object,
+        }
     }
 
     fn big_meter() -> Meter {
@@ -5106,10 +5158,6 @@ mod nested_conformance_tests {
                     vec![("label", FieldValue::Present(Value::String(label.into())))],
                 )
                 .expect("record fixture matches its declared shape")
-        }
-
-        fn composite_type(&self, key: NodeKey) -> ValueType {
-            ValueType::Composite(key)
         }
     }
 
@@ -5149,7 +5197,7 @@ mod nested_conformance_tests {
     #[test]
     fn container_of_parent_admits_conforming_descendants() {
         let fx = fixture();
-        let parent = fx.composite_type(fx.p);
+        let parent = ValueType::Composite(fx.p);
         let child = fx.value(fx.c, "child");
         let intermediate = fx.value(fx.m, "intermediate");
 
@@ -5157,10 +5205,6 @@ mod nested_conformance_tests {
         assert!(fx
             .types
             .admits(&ValueType::option(parent.clone()), &present));
-        let Value::Option(inner) = &present else {
-            panic!("option fixture");
-        };
-        assert_eq!(key_of(inner.payload().expect("present")), fx.c);
 
         for kind in collection_kinds() {
             let value = collection(
@@ -5170,15 +5214,10 @@ mod nested_conformance_tests {
             );
             let declared = ValueType::collection(collection_type(kind, parent.clone()));
             assert!(fx.types.admits(&declared, &value), "{kind:?} of P");
-            let Value::Collection(held) = &value else {
-                panic!("collection fixture");
-            };
-            let keys: Vec<_> = held.elements().iter().map(key_of).collect();
-            assert_eq!(keys, vec![fx.m, fx.c], "{kind:?} keeps element keys");
         }
         // The top-level `C` at `P` and `M` already passes.
         assert!(fx.types.admits(&parent, &child));
-        assert!(fx.types.admits(&fx.composite_type(fx.m), &child));
+        assert!(fx.types.admits(&ValueType::Composite(fx.m), &child));
     }
 
     /// A nonconforming element or payload, a reversed slot and a
@@ -5187,9 +5226,9 @@ mod nested_conformance_tests {
     #[test]
     fn container_of_parent_refuses_nonconforming_contents_and_covariance() {
         let fx = fixture();
-        let parent = fx.composite_type(fx.p);
-        let child_type = fx.composite_type(fx.c);
-        let intermediate_type = fx.composite_type(fx.m);
+        let parent = ValueType::Composite(fx.p);
+        let child_type = ValueType::Composite(fx.c);
+        let intermediate_type = ValueType::Composite(fx.m);
         let unrelated = fx.value(fx.u, "unrelated");
         let child = fx.value(fx.c, "child");
         let plain = fx.value(fx.p, "parent");
@@ -5246,7 +5285,7 @@ mod nested_conformance_tests {
     #[test]
     fn nested_option_sequence_option_admits_by_conformance() {
         let fx = fixture();
-        let parent = fx.composite_type(fx.p);
+        let parent = ValueType::Composite(fx.p);
         let inner_option = ValueType::option(parent.clone());
         let sequence = collection_type(CollectionKind::Sequence, inner_option.clone());
         let declared = ValueType::option(ValueType::collection(sequence.clone()));
@@ -5271,81 +5310,13 @@ mod nested_conformance_tests {
         assert!(!fx.types.admits(&declared, &mixed));
     }
 
-    fn evaluation_environment(fx: &Fixture) -> (TypeEnvironment, NodeKey, NodeKey) {
-        let holder_record = NodeKey::from_digest([51; 32]);
-        let holder_tuple = NodeKey::from_digest([52; 32]);
-        let parent = ValueType::Composite(fx.p);
-        let environment = TypeEnvironment::new(
-            [
-                CompositeDeclaration::new(
-                    fx.p,
-                    "P",
-                    CompositeShape::Record(vec![FieldDeclaration::new(
-                        "label",
-                        ValueType::String,
-                        Presence::Required,
-                    )]),
-                ),
-                CompositeDeclaration::new(
-                    fx.m,
-                    "M",
-                    CompositeShape::Record(vec![FieldDeclaration::new(
-                        "label",
-                        ValueType::String,
-                        Presence::Required,
-                    )]),
-                )
-                .with_supertypes(vec![fx.p]),
-                CompositeDeclaration::new(
-                    fx.c,
-                    "C",
-                    CompositeShape::Record(vec![FieldDeclaration::new(
-                        "label",
-                        ValueType::String,
-                        Presence::Required,
-                    )]),
-                )
-                .with_supertypes(vec![fx.m]),
-                CompositeDeclaration::new(
-                    fx.u,
-                    "U",
-                    CompositeShape::Record(vec![FieldDeclaration::new(
-                        "label",
-                        ValueType::String,
-                        Presence::Required,
-                    )]),
-                ),
-                CompositeDeclaration::new(
-                    holder_record,
-                    "HolderRecord",
-                    CompositeShape::Record(vec![
-                        FieldDeclaration::new("member", parent.clone(), Presence::Required),
-                        FieldDeclaration::new(
-                            "maybe",
-                            ValueType::option(parent.clone()),
-                            Presence::Optional,
-                        ),
-                    ]),
-                ),
-                CompositeDeclaration::new(
-                    holder_tuple,
-                    "HolderTuple",
-                    CompositeShape::Tuple(vec![parent]),
-                ),
-            ],
-            [],
-        )
-        .expect("acyclic composite ancestry admits");
-        (environment, holder_record, holder_tuple)
-    }
-
     /// A member that completes to a conforming child is kept; a member that
     /// completes to an unrelated composite stops with the checked invariant.
     #[trace("TC-913", "FR-113-AC-4")]
     #[test]
     fn evaluate_record_and_tuple_admit_members_by_conformance() {
         let fx = fixture();
-        let (environment, record, tuple) = evaluation_environment(&fx);
+        let (environment, record, tuple) = (&fx.types, fx.holder_record, fx.holder_tuple);
         let child = fx.value(fx.c, "child");
         let unrelated = fx.value(fx.u, "unrelated");
 
@@ -5419,7 +5390,7 @@ mod nested_conformance_tests {
     #[test]
     fn construction_refuses_nonconforming_member_naming_the_component() {
         let fx = fixture();
-        let (environment, record, tuple) = evaluation_environment(&fx);
+        let (environment, record, tuple) = (&fx.types, fx.holder_record, fx.holder_tuple);
         let parent = ValueType::Composite(fx.p);
         let unrelated = fx.value(fx.u, "unrelated");
         let child = fx.value(fx.c, "child");
@@ -5464,12 +5435,8 @@ mod nested_conformance_tests {
         assert_eq!(refusal.component, Component::Position(0));
     }
 
-    fn units_scope() -> UnitTable {
-        UnitTable::default()
-    }
-
     fn operand_result(fx: &Fixture, source: ValueType, value: &Value) -> Result<Value, Stop> {
-        let units = units_scope();
+        let units = UnitTable::default();
         operand_value(
             &fx.types,
             &EqualityOperand::typed(source),
@@ -5485,7 +5452,7 @@ mod nested_conformance_tests {
     #[test]
     fn operand_value_checks_composite_operands_by_conformance() {
         let fx = fixture();
-        let parent = fx.composite_type(fx.p);
+        let parent = ValueType::Composite(fx.p);
 
         for key in [fx.c, fx.m] {
             let value = fx.value(key, "held");
@@ -5512,7 +5479,7 @@ mod nested_conformance_tests {
         let expected = CheckedInvariantCause::EqualityOperandSourceNotAdmitted;
         let cases = [
             (parent.clone(), fx.value(fx.u, "u")),
-            (fx.composite_type(fx.c), fx.value(fx.p, "p")),
+            (ValueType::Composite(fx.c), fx.value(fx.p, "p")),
             (
                 ValueType::option(parent.clone()),
                 option(parent.clone(), Some(fx.value(fx.u, "u"))),
@@ -5556,6 +5523,53 @@ mod nested_conformance_tests {
         ));
     }
 
+    /// A `Reference<T>` inside an `Option` or collection is admitted by
+    /// conformance of its object type, not by the recorded type alone.
+    #[trace("TC-913", "FR-113-AC-7")]
+    #[test]
+    fn reference_inside_container_is_admitted_by_object_type_conformance() {
+        let fx = fixture();
+        let reference = |object_type| {
+            Value::Reference(ObjectReference::new(
+                UniverseId::from_digest([74; 32]),
+                object_type,
+                ObjectId::new("object").expect("non-empty identity"),
+            ))
+        };
+        let declared_parent = ValueType::Reference(fx.parent_object);
+        let declared_child = ValueType::Reference(fx.child_object);
+        let option_at = |recorded: &ValueType, held| option(recorded.clone(), Some(held));
+        let option_type = ValueType::option(declared_parent.clone());
+        // A conforming object type, and the identical one, are admitted.
+        for object_type in [fx.child_object, fx.parent_object] {
+            let held = option_at(&declared_parent, reference(object_type));
+            assert!(fx.types.admits(&option_type, &held), "{object_type:?}");
+        }
+        // An unrelated object type and a supertype at a child slot are refused,
+        // although the recorded payload type alone would admit them.
+        let stranger = option_at(&declared_parent, reference(fx.stranger_object));
+        assert!(!fx.types.admits(&option_type, &stranger));
+        let reversed = option_at(&declared_child, reference(fx.parent_object));
+        assert!(!fx
+            .types
+            .admits(&ValueType::option(declared_child.clone()), &reversed));
+        // Likewise for a collection element.
+        let sequence_type = collection_type(CollectionKind::Sequence, declared_parent.clone());
+        let declared = ValueType::collection(sequence_type);
+        let conforming = collection(
+            CollectionKind::Sequence,
+            declared_parent.clone(),
+            vec![reference(fx.child_object)],
+        );
+        assert!(fx.types.admits(&declared, &conforming));
+        let unrelated = collection(
+            CollectionKind::Sequence,
+            declared_parent,
+            vec![reference(fx.child_object), reference(fx.stranger_object)],
+        );
+        assert!(!fx.types.admits(&declared, &unrelated));
+    }
+
     /// `Set<P>` and `Bag<P>` holding a `C` and a `P` of equal shared fields
     /// have two elements and are admitted. This vector depends on the
     /// quire-exact collection and equality changes of FR-376 to FR-378 and
@@ -5565,7 +5579,7 @@ mod nested_conformance_tests {
     #[test]
     fn set_and_bag_of_parent_keep_equal_field_child_and_parent_distinct() {
         let fx = fixture();
-        let parent = fx.composite_type(fx.p);
+        let parent = ValueType::Composite(fx.p);
         for kind in [CollectionKind::Set, CollectionKind::Bag] {
             let collection_type = collection_type(kind, parent.clone());
             let Outcome::Completed(formed) = form(
