@@ -865,6 +865,295 @@ struct EffectiveStorage {
     slots: Vec<AttributeSlot>,
 }
 
+/// Model-assembly admission awaiting the caller's completed conformance verdict.
+/// Dropping this value abandons admission. Only [`Self::complete`] can produce
+/// a public environment; its declaration and attribute storage stays private.
+pub struct PendingTypeEnvironment {
+    environment: TypeEnvironment,
+    storage: EffectiveStorage,
+    budget: WorkBudget,
+    needs_widening_check: bool,
+}
+
+/// One field declared directly by an object type while model admission is pending.
+pub struct PendingDeclaredField<'a> {
+    /// The actual declaration identity.
+    pub field: FieldRef,
+    /// Its declared value type.
+    pub value_type: &'a ValueType,
+    /// Its declared presence.
+    pub presence: Presence,
+}
+
+/// A source-backed projection through one immediate parent while admission is pending.
+pub struct PendingParentField<'a, S, O> {
+    /// The field selected from the immediate parent's effective view.
+    pub field: FieldRef,
+    /// That parent's declared value type.
+    pub value_type: &'a ValueType,
+    /// That parent's declared presence.
+    pub presence: Presence,
+    /// The caller's original child source occurrence.
+    pub source: S,
+    /// The caller's original observation identity.
+    pub observation: O,
+}
+
+/// Why a pending immediate-parent field projection cannot be used.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PendingFieldFailure {
+    /// The child names no admitted model object type.
+    UnknownChild(EffectiveId),
+    /// The declaration owner names no admitted model object type.
+    UnknownObjectType(EffectiveId),
+    /// The selected parent is not an immediate parent of the child.
+    NotImmediateParent {
+        /// The child whose direct supertype was requested.
+        child: EffectiveId,
+        /// The requested parent.
+        parent: EffectiveId,
+    },
+    /// The parent has no field with that name.
+    UnknownField,
+    /// The selected immediate parent's private lineage contains no such target.
+    UnknownTarget(FieldRef),
+    /// More than one parent slot stands for the target.
+    AmbiguousTarget(FieldRef),
+    /// The pending admission's original work or cancellation limit was reached.
+    Limit(EnvironmentLimit),
+    /// A reservation needed to preserve the actual field identity failed.
+    Storage(EnvironmentFailure),
+}
+
+impl PendingTypeEnvironment {
+    /// Work units spent by structural admission and restricted pending reads.
+    pub fn spent(&self) -> u64 {
+        self.budget.spent
+    }
+
+    /// The admitted composite declaration, without effective attributes.
+    pub fn composite(
+        &mut self,
+        key: NodeKey,
+    ) -> Result<Option<&CompositeDeclaration>, PendingFieldFailure> {
+        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+        Ok(self.environment.composites.get(&key))
+    }
+
+    /// Admitted composite declarations in key order.
+    pub fn composites(
+        &mut self,
+    ) -> Result<impl Iterator<Item = &CompositeDeclaration>, PendingFieldFailure> {
+        self.budget
+            .charge(self.environment.composites.len().saturating_add(1))
+            .map_err(PendingFieldFailure::Limit)?;
+        Ok(self.environment.composites.values())
+    }
+
+    /// The admitted object declaration, without a completed attribute view.
+    pub fn object_type(
+        &mut self,
+        key: EffectiveId,
+    ) -> Result<Option<&ObjectTypeDeclaration>, PendingFieldFailure> {
+        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+        Ok(self.environment.object_types.get(&key))
+    }
+
+    /// Admitted object declarations in key order.
+    pub fn object_types(
+        &mut self,
+    ) -> Result<impl Iterator<Item = &ObjectTypeDeclaration>, PendingFieldFailure> {
+        self.budget
+            .charge(self.environment.object_types.len().saturating_add(1))
+            .map_err(PendingFieldFailure::Limit)?;
+        Ok(self.environment.object_types.values())
+    }
+
+    /// Whether the admitted ancestry makes `sub` a subtype of `sup`.
+    pub fn conforms(
+        &mut self,
+        sub: EffectiveId,
+        sup: EffectiveId,
+    ) -> Result<bool, PendingFieldFailure> {
+        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+        Ok(self.environment.conforms(sub, sup))
+    }
+
+    /// Read only a field declared directly by `owner`. Inherited and
+    /// effective attribute lookup remains unavailable while pending.
+    pub fn declared_field(
+        &mut self,
+        owner: EffectiveId,
+        name: &str,
+    ) -> Result<PendingDeclaredField<'_>, PendingFieldFailure> {
+        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+        let declaration = self
+            .environment
+            .object_types
+            .get(&owner)
+            .ok_or(PendingFieldFailure::UnknownObjectType(owner))?;
+        let mut found = None;
+        for field in &declaration.attributes {
+            self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+            if field.name() == name {
+                found = Some(field);
+                break;
+            }
+        }
+        let field = found.ok_or(PendingFieldFailure::UnknownField)?;
+        Ok(PendingDeclaredField {
+            field: FieldRef {
+                owner,
+                name: try_clone_str(field.name(), &GlobalReservations)
+                    .map_err(PendingFieldFailure::Storage)?,
+            },
+            value_type: field.value_type(),
+            presence: field.presence(),
+        })
+    }
+
+    /// Read one source-backed redefined field through an immediate parent. The source
+    /// occurrence and observation are returned unchanged to the caller's
+    /// checked-fact graph; no completed environment or fact is created here.
+    pub fn parent_field<S, O>(
+        &mut self,
+        child: EffectiveId,
+        parent: EffectiveId,
+        target: &FieldRef,
+        source: S,
+        observation: O,
+    ) -> Result<PendingParentField<'_, S, O>, PendingFieldFailure> {
+        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+        let child_type = self
+            .environment
+            .object_types
+            .get(&child)
+            .ok_or(PendingFieldFailure::UnknownChild(child))?;
+        let mut direct_parent = false;
+        for supertype in &child_type.supertypes {
+            self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+            if *supertype == parent {
+                direct_parent = true;
+                break;
+            }
+        }
+        if !direct_parent {
+            return Err(PendingFieldFailure::NotImmediateParent { child, parent });
+        }
+        let unknown = || {
+            try_clone_field_ref(target, &GlobalReservations)
+                .map(PendingFieldFailure::UnknownTarget)
+                .map_err(PendingFieldFailure::Storage)
+        };
+        let mut target_position = None;
+        for (position, (owner, field_index)) in self.environment.field_keys.iter().enumerate() {
+            self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+            if *owner == target.owner
+                && self
+                    .environment
+                    .object_types
+                    .get(owner)
+                    .and_then(|declaration| declaration.attributes.get(*field_index))
+                    .is_some_and(|field| field.name() == target.name)
+            {
+                target_position = Some(position);
+                break;
+            }
+        }
+        let Some(target_position) = target_position else {
+            return Err(unknown()?);
+        };
+        let slots = self
+            .storage
+            .index
+            .get(&parent)
+            .ok_or(PendingFieldFailure::NotImmediateParent { child, parent })?;
+        let mut selected = None;
+        for &index in slots {
+            self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+            let Some(slot) = self.storage.slots.get(index) else {
+                continue;
+            };
+            self.budget
+                .charge(slot.members.len())
+                .map_err(PendingFieldFailure::Limit)?;
+            if slot.members.binary_search(&target_position).is_err() {
+                continue;
+            }
+            if selected.is_some() {
+                return Err(PendingFieldFailure::AmbiguousTarget(
+                    try_clone_field_ref(target, &GlobalReservations)
+                        .map_err(PendingFieldFailure::Storage)?,
+                ));
+            }
+            let Some(declaration) = self.environment.object_types.get(&slot.owner) else {
+                continue;
+            };
+            let Some(field) = declaration.attributes.get(slot.field_index) else {
+                continue;
+            };
+            selected = Some((slot.owner, field));
+        }
+        let Some((owner, field)) = selected else {
+            return Err(unknown()?);
+        };
+        let identity = FieldRef {
+            owner,
+            name: try_clone_str(field.name(), &GlobalReservations)
+                .map_err(PendingFieldFailure::Storage)?,
+        };
+        Ok(PendingParentField {
+            field: identity,
+            value_type: field.value_type(),
+            presence: field.presence(),
+            source,
+            observation,
+        })
+    }
+
+    /// Complete QSV's value-type safety and storage checks after the caller's
+    /// conformance verdict. An error consumes the pending admission, so no
+    /// partially admitted environment can escape.
+    pub fn complete(self) -> Admission<TypeEnvironment> {
+        self.complete_with_reservations(&GlobalReservations)
+    }
+
+    fn complete_with_reservations<R: ReservationPolicy>(
+        mut self,
+        reserve: &R,
+    ) -> Admission<TypeEnvironment> {
+        // The same cancel handle remains live across the pending interval.
+        if self.needs_widening_check {
+            self.budget.charge(0).map_err(EnvironmentFailure::Limit)?;
+        } else {
+            reserve.phase(StoragePhase::KeyJoin);
+        }
+        let table = FieldTable::new(&self.environment.object_types, reserve)?;
+        if self.needs_widening_check {
+            for (owner, indices) in &self.storage.index {
+                let Some(declaration) = self.environment.object_types.get(owner) else {
+                    continue;
+                };
+                for &index in indices {
+                    if let Some(widened) =
+                        self.environment
+                            .widened(index, &self.storage.slots, &table, reserve)?
+                    {
+                        return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                            declaration: try_clone_str(declaration.name(), reserve)?,
+                            cause: DeclarationCause::RedefinitionWidens(widened),
+                        }));
+                    }
+                }
+            }
+        }
+        self.environment.effective = self.storage.index;
+        self.environment.attribute_slots = self.storage.slots;
+        self.environment.admission_work_units = self.budget.spent;
+        Ok(self.environment)
+    }
+}
+
 impl<'a> EffectiveAttribute<'a> {
     /// The object type that declares this field.
     pub fn owner(&self) -> EffectiveId {
@@ -985,18 +1274,18 @@ impl Default for TypeEnvironmentLimits {
 }
 
 /// The admission work meter: charges fail once `limit` units are spent.
-struct WorkBudget<'a> {
+struct WorkBudget {
     spent: u64,
     limit: u64,
-    cancel: Option<&'a quire_exact::Cancel>,
+    cancel: Option<quire_exact::Cancel>,
 }
 
-impl<'a> WorkBudget<'a> {
-    fn new(limit: u64, cancel: Option<&'a quire_exact::Cancel>) -> Self {
+impl WorkBudget {
+    fn new(limit: u64, cancel: Option<&quire_exact::Cancel>) -> Self {
         Self {
             spent: 0,
             limit,
-            cancel,
+            cancel: cancel.cloned(),
         }
     }
 
@@ -1008,7 +1297,7 @@ impl<'a> WorkBudget<'a> {
         // A cancelled handle (QSL FR-276) denies the charge as an exhausted
         // budget does; the caller that owns the handle reports the
         // cancellation.
-        let cancelled = self.cancel.is_some_and(quire_exact::Cancel::poll);
+        let cancelled = self.cancel.as_ref().is_some_and(quire_exact::Cancel::poll);
         match self.spent.checked_add(units) {
             Some(spent) if spent <= self.limit && !cancelled => {
                 self.spent = spent;
@@ -1457,7 +1746,7 @@ pub enum DeclarationCause {
 
 /// One checked package's closed, admitted record, tuple and object-type
 /// declarations.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct TypeEnvironment {
     composites: OrderedIndex<NodeKey, CompositeDeclaration>,
     /// Each composite declaration's proper ancestors, computed once after
@@ -1479,7 +1768,24 @@ pub struct TypeEnvironment {
     field_keys: Vec<(EffectiveId, usize)>,
     /// The units a `ValueType::Quantity` of this package names by id.
     units: UnitTable,
+    /// Admission work is observed separately from semantic equality.
+    admission_work_units: u64,
 }
+
+impl PartialEq for TypeEnvironment {
+    fn eq(&self, other: &Self) -> bool {
+        self.composites == other.composites
+            && self.composite_ancestry == other.composite_ancestry
+            && self.object_types == other.object_types
+            && self.ancestry == other.ancestry
+            && self.effective == other.effective
+            && self.attribute_slots == other.attribute_slots
+            && self.field_keys == other.field_keys
+            && self.units == other.units
+    }
+}
+
+impl Eq for TypeEnvironment {}
 
 /// One containment edge of the recursion rule.
 #[derive(Clone, Copy)]
@@ -1490,6 +1796,11 @@ struct Edge {
 }
 
 impl TypeEnvironment {
+    /// Work units spent admitting the completed environment.
+    pub fn spent(&self) -> u64 {
+        self.admission_work_units
+    }
+
     /// Admit `composites` and `object_types` as one closed environment,
     /// under the QSL NFR-012 default ceilings ([`TypeEnvironmentLimits::default`]).
     /// See [`Self::bounded`].
@@ -1540,6 +1851,25 @@ impl TypeEnvironment {
         )
     }
 
+    /// Begin admission for QSL's model assembly under the same limits and
+    /// cancellation handle as direct admission. The caller must finish its
+    /// complete conformance verdict before calling [`PendingTypeEnvironment::complete`].
+    pub fn stage_model_with_cancel(
+        composites: impl IntoIterator<Item = CompositeDeclaration>,
+        object_types: impl IntoIterator<Item = ObjectTypeDeclaration>,
+        limits: TypeEnvironmentLimits,
+        cancel: &quire_exact::Cancel,
+    ) -> Admission<PendingTypeEnvironment> {
+        Self::prepare(
+            composites,
+            object_types,
+            limits,
+            Some(cancel),
+            &GlobalReservations,
+            false,
+        )
+    }
+
     fn bounded_with_reservations<R: ReservationPolicy>(
         composites: impl IntoIterator<Item = CompositeDeclaration>,
         object_types: impl IntoIterator<Item = ObjectTypeDeclaration>,
@@ -1547,6 +1877,18 @@ impl TypeEnvironment {
         cancel: Option<&quire_exact::Cancel>,
         reserve: &R,
     ) -> Admission<Self> {
+        Self::prepare(composites, object_types, limits, cancel, reserve, true)?
+            .complete_with_reservations(reserve)
+    }
+
+    fn prepare<R: ReservationPolicy>(
+        composites: impl IntoIterator<Item = CompositeDeclaration>,
+        object_types: impl IntoIterator<Item = ObjectTypeDeclaration>,
+        limits: TypeEnvironmentLimits,
+        cancel: Option<&quire_exact::Cancel>,
+        reserve: &R,
+        check_widening: bool,
+    ) -> Admission<PendingTypeEnvironment> {
         let mut environment = Self::default();
         reserve.phase(StoragePhase::Registry);
         for declaration in composites {
@@ -1616,15 +1958,19 @@ impl TypeEnvironment {
         let table = FieldTable::new(&environment.object_types, reserve)?;
         environment.check_redefinitions(&table, reserve)?;
         reserve.phase(StoragePhase::Sealing);
-        let storage = environment.compute_effective(&table, &mut budget, reserve)?;
-        environment.effective = storage.index;
-        environment.attribute_slots = storage.slots;
+        let storage =
+            environment.compute_effective(&table, &mut budget, reserve, check_widening)?;
         reserve.phase(StoragePhase::KeyJoin);
         reserve_elements(&mut environment.field_keys, table.fields.len(), reserve)?;
         for (owner, _, _, index) in &table.fields {
             environment.field_keys.push((*owner, *index));
         }
-        Ok(environment)
+        Ok(PendingTypeEnvironment {
+            environment,
+            storage,
+            budget,
+            needs_widening_check: !check_widening,
+        })
     }
 
     /// The object type's effective attribute set, in slot order: its own
@@ -2626,7 +2972,7 @@ impl TypeEnvironment {
         let found = attribute.members.iter().find(|member| {
             table.field(**member).is_some_and(|redefined| {
                 (field.presence == Presence::Optional && redefined.presence == Presence::Required)
-                    || !Self::narrows(&field.value_type, &redefined.value_type)
+                    || !self.narrows(&field.value_type, &redefined.value_type)
             })
         });
         match found {
@@ -2637,18 +2983,17 @@ impl TypeEnvironment {
 
     /// Whether every value `narrower` admits, `wider` admits *and*
     /// evaluation's `ValueType::admits` accepts a value of `narrower` where
-    /// `wider` is declared: the same type, or an `Int` interval within
-    /// `Integer` or within a wider `Int` interval. A reference field is
-    /// redefined only with the identical reference type, since `admits`
-    /// matches a reference's object type exactly. Any other pair is refused,
-    /// never guessed.
-    fn narrows(narrower: &ValueType, wider: &ValueType) -> bool {
+    /// `wider` is declared: the same type, an `Int` interval within
+    /// `Integer` or a wider interval, or a reference to a subtype of the
+    /// parent reference's object type. Other pairs are refused.
+    fn narrows(&self, narrower: &ValueType, wider: &ValueType) -> bool {
         match (narrower, wider) {
             (narrower, wider) if narrower == wider => true,
             (ValueType::Int(_), ValueType::Integer) => true,
             (ValueType::Int(inner), ValueType::Int(outer)) => {
                 outer.contains(inner.lower()) && outer.contains(inner.upper())
             }
+            (ValueType::Reference(sub), ValueType::Reference(sup)) => self.conforms(*sub, *sup),
             _ => false,
         }
     }
@@ -2677,10 +3022,11 @@ impl TypeEnvironment {
         table: &FieldTable<'_>,
         budget: &mut WorkBudget,
         reserve: &R,
+        check_widening: bool,
     ) -> Admission<EffectiveStorage> {
         let mut effective: OrderedIndex<EffectiveId, Vec<usize>> = OrderedIndex::default();
         let mut slots = Vec::new();
-        let mut scratch = Scratch::new(table.len(), table.name_count(), reserve)?;
+        let mut scratch = Scratch::new(table.len(), table.name_count(), reserve, check_widening)?;
         for (root, declaration) in &self.object_types {
             if effective.contains_key(root) {
                 continue;
@@ -2906,7 +3252,7 @@ impl TypeEnvironment {
         // An attribute a supertype already admitted unchanged was checked
         // there; only this type's own and merged attributes can widen.
         for (&attribute, &fresh) in attributes.iter().zip(&checked) {
-            if fresh {
+            if fresh && scratch.check_widening {
                 if let Some(widened) = self.widened(attribute, slots, table, reserve)? {
                     return Err(DeclarationCause::RedefinitionWidens(widened).into());
                 }
@@ -3284,6 +3630,7 @@ impl<'e> FieldTable<'e> {
 /// to the next type clears every mark at once.
 struct Scratch {
     epoch: u64,
+    check_widening: bool,
     /// By field position: the candidate holding that field as its identity.
     identities: Vec<(u64, usize)>,
     /// By field position: the first candidate whose lineage names it.
@@ -3293,7 +3640,12 @@ struct Scratch {
 }
 
 impl Scratch {
-    fn new<R: ReservationPolicy>(fields: usize, names: usize, reserve: &R) -> Admission<Self> {
+    fn new<R: ReservationPolicy>(
+        fields: usize,
+        names: usize,
+        reserve: &R,
+        check_widening: bool,
+    ) -> Admission<Self> {
         let mut identities = Vec::new();
         reserve_elements(&mut identities, fields, reserve)?;
         identities.resize(fields, (0, 0));
@@ -3305,6 +3657,7 @@ impl Scratch {
         marks.resize(names, 0);
         Ok(Self {
             epoch: 0,
+            check_widening,
             identities,
             holders,
             names: marks,
@@ -5036,6 +5389,957 @@ mod work_budget_tests {
         );
         assert_eq!(budget.spent, 3);
         assert_eq!(budget.charge(1), Ok(()));
+    }
+}
+
+#[cfg(test)]
+mod staged_admission_tests {
+    use super::*;
+    use ix_trace_rs::trace;
+    use quire_exact::{ObjectId, ObjectReference, UniverseId};
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "fixtures supply model-minted effective identities"
+    )]
+    fn id(n: u8) -> EffectiveId {
+        EffectiveId::from_digest([n; 32])
+    }
+
+    fn parent_child(child_type: ValueType, parent_type: ValueType) -> Vec<ObjectTypeDeclaration> {
+        vec![
+            ObjectTypeDeclaration::new(
+                id(1),
+                "Parent",
+                vec![FieldDeclaration::new("f", parent_type, Presence::Required)],
+            ),
+            ObjectTypeDeclaration::new(
+                id(2),
+                "Child",
+                vec![FieldDeclaration::new("f", child_type, Presence::Required)
+                    .with_redefines(FieldRef::new(id(1), "f"))],
+            )
+            .with_supertypes(vec![id(1)]),
+        ]
+    }
+
+    /// A QSL refusal can abandon a structurally valid widening without QSV
+    /// reporting it; completion still refuses the same unsafe field.
+    #[trace("TC-909", "FR-110-AC-1", "FR-110-AC-4")]
+    #[test]
+    fn pending_widening_is_private_until_completion() {
+        let cancel = quire_exact::Cancel::new();
+        let declarations = || parent_child(ValueType::Boolean, ValueType::Integer);
+        let pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations(),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits");
+        drop(pending);
+        assert!(matches!(
+            TypeEnvironment::new([], declarations()),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::RedefinitionWidens(_),
+                ..
+            }))
+        ));
+        let pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations(),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits");
+        assert!(matches!(
+            pending.complete(),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::RedefinitionWidens(_),
+                ..
+            }))
+        ));
+    }
+
+    /// All direct entry points retain the same safety checks and completed
+    /// effective view while the staged entry point is available.
+    #[trace("TC-909", "FR-110-AC-4")]
+    #[test]
+    fn direct_admission_entry_points_retain_refusals_and_effective_fields() {
+        type Entry =
+            fn(Vec<ObjectTypeDeclaration>, &quire_exact::Cancel) -> Admission<TypeEnvironment>;
+        let entries: [(&str, Entry); 3] = [
+            ("new", |types, _| TypeEnvironment::new([], types)),
+            ("bounded", |types, _| {
+                TypeEnvironment::bounded([], types, TypeEnvironmentLimits::default())
+            }),
+            ("bounded_with_cancel", |types, cancel| {
+                TypeEnvironment::bounded_with_cancel(
+                    [],
+                    types,
+                    TypeEnvironmentLimits::default(),
+                    cancel,
+                )
+            }),
+        ];
+        let cancel = quire_exact::Cancel::new();
+        let invalid_target = || {
+            vec![
+                ObjectTypeDeclaration::new(id(1), "Parent", vec![]),
+                ObjectTypeDeclaration::new(
+                    id(2),
+                    "Child",
+                    vec![
+                        FieldDeclaration::new("f", ValueType::Integer, Presence::Required)
+                            .with_redefines(FieldRef::new(id(1), "missing")),
+                    ],
+                )
+                .with_supertypes(vec![id(1)]),
+            ]
+        };
+        let conflict = || {
+            vec![
+                ObjectTypeDeclaration::new(
+                    id(1),
+                    "Root",
+                    vec![FieldDeclaration::new(
+                        "f",
+                        ValueType::Integer,
+                        Presence::Required,
+                    )],
+                ),
+                ObjectTypeDeclaration::new(
+                    id(2),
+                    "Left",
+                    vec![
+                        FieldDeclaration::new("f", ValueType::Integer, Presence::Required)
+                            .with_redefines(FieldRef::new(id(1), "f")),
+                    ],
+                )
+                .with_supertypes(vec![id(1)]),
+                ObjectTypeDeclaration::new(
+                    id(3),
+                    "Right",
+                    vec![
+                        FieldDeclaration::new("f", ValueType::Integer, Presence::Required)
+                            .with_redefines(FieldRef::new(id(1), "f")),
+                    ],
+                )
+                .with_supertypes(vec![id(1)]),
+                ObjectTypeDeclaration::new(id(4), "Join", vec![])
+                    .with_supertypes(vec![id(2), id(3)]),
+            ]
+        };
+        let duplicate = || {
+            vec![
+                ObjectTypeDeclaration::new(
+                    id(1),
+                    "Left",
+                    vec![FieldDeclaration::new(
+                        "f",
+                        ValueType::Integer,
+                        Presence::Required,
+                    )],
+                ),
+                ObjectTypeDeclaration::new(
+                    id(2),
+                    "Right",
+                    vec![FieldDeclaration::new(
+                        "f",
+                        ValueType::Integer,
+                        Presence::Required,
+                    )],
+                ),
+                ObjectTypeDeclaration::new(id(3), "Join", vec![])
+                    .with_supertypes(vec![id(1), id(2)]),
+            ]
+        };
+        for (name, entry) in entries {
+            assert!(
+                matches!(
+                    entry(invalid_target(), &cancel),
+                    Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        cause: DeclarationCause::RedefinitionTarget(_),
+                        ..
+                    }))
+                ),
+                "{name} must reject an invalid target"
+            );
+            assert!(
+                matches!(
+                    entry(conflict(), &cancel),
+                    Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        cause: DeclarationCause::RedefinitionConflict(_),
+                        ..
+                    }))
+                ),
+                "{name} must reject an undominated conflict"
+            );
+            assert!(
+                matches!(
+                    entry(duplicate(), &cancel),
+                    Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        cause: DeclarationCause::DuplicateMember(member), ..
+                    })) if member == "f"
+                ),
+                "{name} must reject a duplicate effective name"
+            );
+            assert!(
+                matches!(
+                    entry(
+                        parent_child(ValueType::Boolean, ValueType::Integer),
+                        &cancel
+                    ),
+                    Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        cause: DeclarationCause::RedefinitionWidens(_),
+                        ..
+                    }))
+                ),
+                "{name} must reject widening"
+            );
+            let admitted = entry(
+                parent_child(ValueType::Integer, ValueType::Integer),
+                &cancel,
+            )
+            .expect("valid redefinition admits");
+            let field = admitted.attribute(id(2), "f").expect("effective field");
+            assert_eq!(field.identity(), FieldRef::new(id(2), "f"), "{name}");
+            assert!(field.stands_for(&FieldRef::new(id(1), "f")), "{name}");
+        }
+    }
+
+    /// The pending view keeps the parent's type and the caller's child source.
+    #[trace("TC-909", "FR-110-AC-3", "FR-110-AC-5")]
+    #[test]
+    fn pending_parent_projection_preserves_source_and_charges_budget() {
+        let cancel = quire_exact::Cancel::new();
+        let declarations = parent_child(ValueType::Integer, ValueType::Integer);
+        let direct = TypeEnvironment::new([], declarations.clone()).expect("strict admits");
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations,
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits");
+        assert_eq!(pending.spent(), direct.spent());
+        assert_eq!(
+            pending
+                .object_types()
+                .expect("budget permits iteration")
+                .count(),
+            2
+        );
+        assert!(pending
+            .object_type(id(2))
+            .expect("budget permits lookup")
+            .is_some());
+        assert!(pending
+            .conforms(id(2), id(1))
+            .expect("budget permits ancestry read"));
+        let declared = pending.declared_field(id(2), "f").expect("own field");
+        assert_eq!(declared.field, FieldRef::new(id(2), "f"));
+        assert_eq!(declared.value_type, &ValueType::Integer);
+        assert_eq!(declared.presence, Presence::Required);
+        assert!(matches!(
+            pending.declared_field(id(2), "missing"),
+            Err(PendingFieldFailure::UnknownField)
+        ));
+        let spent = pending.spent();
+        let projected = pending
+            .parent_field(
+                id(2),
+                id(1),
+                &FieldRef::new(id(1), "f"),
+                "child.self.f",
+                17_u32,
+            )
+            .expect("parent field resolves");
+        assert_eq!(projected.field, FieldRef::new(id(1), "f"));
+        assert_eq!(projected.value_type, &ValueType::Integer);
+        assert_eq!(projected.presence, Presence::Required);
+        assert_eq!(projected.source, "child.self.f");
+        assert_eq!(projected.observation, 17);
+        assert!(pending.spent() > spent);
+        assert!(matches!(
+            pending.parent_field(id(9), id(1), &FieldRef::new(id(1), "f"), "bad.child", 19),
+            Err(PendingFieldFailure::UnknownChild(key)) if key == id(9)
+        ));
+        assert!(matches!(
+            pending.parent_field(id(2), id(2), &FieldRef::new(id(1), "f"), "bad.parent", 20),
+            Err(PendingFieldFailure::NotImmediateParent { child, parent })
+                if child == id(2) && parent == id(2)
+        ));
+        assert!(matches!(
+            pending.parent_field(id(2), id(1), &FieldRef::new(id(1), "missing"), "child.self.missing", 18),
+            Err(PendingFieldFailure::UnknownTarget(target)) if target == FieldRef::new(id(1), "missing")
+        ));
+        let completed = pending.complete().expect("completion admits");
+        assert!(completed.spent() > direct.spent());
+        assert_eq!(completed, direct);
+        let expected = direct.attribute(id(2), "f").expect("direct slot");
+        let actual = completed.attribute(id(2), "f").expect("staged slot");
+        assert_eq!(actual.identity(), expected.identity());
+        assert_eq!(actual.field().value_type(), expected.field().value_type());
+        assert!(actual.stands_for(&FieldRef::new(id(1), "f")));
+        let other_cancel = quire_exact::Cancel::new();
+        let pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            TypeEnvironmentLimits::default(),
+            &other_cancel,
+        )
+        .expect("structure admits before cancellation");
+        other_cancel.cancel(quire_exact::CancelCause::Requested);
+        assert!(matches!(
+            pending.complete(),
+            Err(EnvironmentFailure::Limit(found)) if found.kind() == EnvironmentLimitKind::WorkUnits
+        ));
+        assert_eq!(
+            other_cancel.tripped(),
+            Some(quire_exact::CancelCause::Requested)
+        );
+        let original = quire_exact::Cancel::new();
+        let shared = original.clone();
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            TypeEnvironmentLimits::default(),
+            &original,
+        )
+        .expect("structure admits");
+        drop(original);
+        shared.cancel(quire_exact::CancelCause::Requested);
+        assert!(matches!(
+            pending.declared_field(id(2), "f"),
+            Err(PendingFieldFailure::Limit(found)) if found.kind() == EnvironmentLimitKind::WorkUnits
+        ));
+        assert_eq!(shared.tripped(), Some(quire_exact::CancelCause::Requested));
+    }
+
+    /// Pending declaration reads expose only a type's own field, not an
+    /// inherited effective attribute or an evaluator entry point.
+    #[trace("TC-909", "FR-110-AC-5", "FR-110-AC-6")]
+    #[test]
+    fn pending_declared_field_does_not_resolve_inheritance() {
+        let cancel = quire_exact::Cancel::new();
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            [
+                ObjectTypeDeclaration::new(
+                    id(1),
+                    "Parent",
+                    vec![FieldDeclaration::new(
+                        "inherited",
+                        ValueType::Boolean,
+                        Presence::Required,
+                    )],
+                ),
+                ObjectTypeDeclaration::new(
+                    id(2),
+                    "Child",
+                    vec![FieldDeclaration::new(
+                        "own",
+                        ValueType::Integer,
+                        Presence::Optional,
+                    )],
+                )
+                .with_supertypes(vec![id(1)]),
+            ],
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("declarations admit");
+        let own = pending
+            .declared_field(id(2), "own")
+            .expect("own declaration");
+        assert_eq!(own.field, FieldRef::new(id(2), "own"));
+        assert_eq!(own.presence, Presence::Optional);
+        assert!(matches!(
+            pending.declared_field(id(2), "inherited"),
+            Err(PendingFieldFailure::UnknownField)
+        ));
+        assert!(matches!(
+            pending.declared_field(id(9), "own"),
+            Err(PendingFieldFailure::UnknownObjectType(key)) if key == id(9)
+        ));
+        assert_eq!(
+            pending
+                .object_type(id(2))
+                .expect("budget permits lookup")
+                .expect("child")
+                .attributes()
+                .len(),
+            1
+        );
+    }
+
+    /// Every restricted declaration read shares the admission meter and
+    /// observes cancellation, including reads that expose an iterator.
+    #[trace("TC-909", "FR-110-AC-2", "FR-110-AC-3", "FR-110-AC-5")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test supplies a checked composite identity"
+    )]
+    #[test]
+    fn pending_declaration_reads_charge_and_observe_cancellation() {
+        let cancel = quire_exact::Cancel::new();
+        let declarations = parent_child(ValueType::Integer, ValueType::Integer);
+        let baseline = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations.clone(),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits")
+        .spent();
+        let limits = TypeEnvironmentLimits {
+            work_units: baseline + 1,
+            ..TypeEnvironmentLimits::default()
+        };
+        let mut pending =
+            TypeEnvironment::stage_model_with_cancel([], declarations, limits, &cancel)
+                .expect("structure fits exactly before pending reads");
+        assert!(pending
+            .object_type(id(2))
+            .expect("first read fits")
+            .is_some());
+        assert_eq!(pending.spent(), baseline + 1);
+        assert!(matches!(
+            pending.conforms(id(2), id(1)),
+            Err(PendingFieldFailure::Limit(limit))
+                if limit.kind() == EnvironmentLimitKind::WorkUnits
+                    && limit.configured_bound() == baseline + 1
+                    && limit.actual() == u128::from(baseline + 2)
+        ));
+        assert_eq!(pending.spent(), baseline + 1);
+
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits");
+        let before = pending.spent();
+        assert_eq!(pending.object_types().expect("iteration fits").count(), 2);
+        assert_eq!(pending.spent(), before + 3);
+        cancel.cancel(quire_exact::CancelCause::Requested);
+        assert!(matches!(
+            pending.composite(NodeKey::from_digest([1; 32])),
+            Err(PendingFieldFailure::Limit(_))
+        ));
+        assert!(matches!(
+            pending.composites(),
+            Err(PendingFieldFailure::Limit(_))
+        ));
+        assert!(matches!(
+            pending.object_type(id(2)),
+            Err(PendingFieldFailure::Limit(_))
+        ));
+        assert!(matches!(
+            pending.object_types(),
+            Err(PendingFieldFailure::Limit(_))
+        ));
+        assert!(matches!(
+            pending.conforms(id(2), id(1)),
+            Err(PendingFieldFailure::Limit(_))
+        ));
+        assert_eq!(pending.spent(), before + 3);
+    }
+
+    /// A pending lineage lookup spends for the traversal, so repeated lookups
+    /// cannot scan a large field table under a one-unit allowance.
+    #[trace("TC-909", "FR-110-AC-2", "FR-110-AC-5")]
+    #[test]
+    fn pending_parent_field_charges_each_scanned_entry() {
+        let cancel = quire_exact::Cancel::new();
+        let declarations = parent_child(ValueType::Integer, ValueType::Integer);
+        let baseline = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations.clone(),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits")
+        .spent();
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations,
+            TypeEnvironmentLimits {
+                work_units: baseline + 2,
+                ..TypeEnvironmentLimits::default()
+            },
+            &cancel,
+        )
+        .expect("staging leaves two units");
+        assert!(matches!(
+            pending.parent_field(id(2), id(1), &FieldRef::new(id(1), "f"), "source", 1_u8),
+            Err(PendingFieldFailure::Limit(limit))
+                if limit.kind() == EnvironmentLimitKind::WorkUnits
+                    && limit.configured_bound() == baseline + 2
+                    && limit.actual() == u128::from(baseline + 3)
+        ));
+        assert_eq!(pending.spent(), baseline + 2);
+    }
+
+    /// Each selected immediate parent resolves one proper-ancestor target
+    /// through its own private slot lineage.
+    #[trace("TC-909", "FR-110-AC-3", "FR-110-AC-5")]
+    #[test]
+    fn proper_ancestor_target_uses_selected_immediate_parent_slot() {
+        let cancel = quire_exact::Cancel::new();
+        let target = FieldRef::new(id(1), "x");
+        let types = vec![
+            ObjectTypeDeclaration::new(
+                id(1),
+                "A",
+                vec![FieldDeclaration::new(
+                    "x",
+                    ValueType::Integer,
+                    Presence::Required,
+                )],
+            ),
+            ObjectTypeDeclaration::new(
+                id(2),
+                "B1",
+                vec![
+                    FieldDeclaration::new("y", ValueType::Integer, Presence::Required)
+                        .with_redefines(target.clone()),
+                ],
+            )
+            .with_supertypes(vec![id(1)]),
+            ObjectTypeDeclaration::new(
+                id(3),
+                "B2",
+                vec![
+                    FieldDeclaration::new("z", ValueType::Integer, Presence::Required)
+                        .with_redefines(target.clone()),
+                ],
+            )
+            .with_supertypes(vec![id(1)]),
+            ObjectTypeDeclaration::new(
+                id(4),
+                "C",
+                vec![
+                    FieldDeclaration::new("w", ValueType::Integer, Presence::Required)
+                        .with_redefines(target.clone()),
+                ],
+            )
+            .with_supertypes(vec![id(2), id(3)]),
+        ];
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            types,
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("C dominates both parent redefinitions");
+        let initial = pending.spent();
+        let left = pending
+            .parent_field(id(4), id(2), &target, "C.self.w", 1_u8)
+            .expect("B1 lineage resolves");
+        assert_eq!(left.field, FieldRef::new(id(2), "y"));
+        assert_eq!(left.value_type, &ValueType::Integer);
+        assert_eq!(left.presence, Presence::Required);
+        assert_eq!(left.source, "C.self.w");
+        assert_eq!(left.observation, 1);
+        let right = pending
+            .parent_field(id(4), id(3), &target, "C.self.w", 2_u8)
+            .expect("B2 lineage resolves");
+        assert_eq!(right.field, FieldRef::new(id(3), "z"));
+        assert_eq!(right.source, "C.self.w");
+        assert_eq!(right.observation, 2);
+        assert!(pending.spent() > initial + 2);
+        assert!(matches!(
+            pending.parent_field(id(4), id(1), &target, "C.self.w", 3_u8),
+            Err(PendingFieldFailure::NotImmediateParent { child, parent })
+                if child == id(4) && parent == id(1)
+        ));
+        assert!(matches!(
+            pending.parent_field(id(4), id(2), &FieldRef::new(id(3), "z"), "C.self.w", 4_u8),
+            Err(PendingFieldFailure::UnknownTarget(missing)) if missing == FieldRef::new(id(3), "z")
+        ));
+        let completed = pending.complete().expect("safe slots complete");
+        assert_eq!(
+            completed.attribute(id(4), "w").expect("C slot").identity(),
+            FieldRef::new(id(4), "w")
+        );
+    }
+
+    /// The parent projection must not substitute the child's narrowed type
+    /// or required presence for the selected parent's declaration.
+    #[trace("TC-909", "FR-110-AC-5")]
+    #[test]
+    fn pending_parent_projection_retains_distinct_parent_type_and_presence() {
+        let cancel = quire_exact::Cancel::new();
+        let target = FieldRef::new(id(1), "f");
+        let declarations = [
+            ObjectTypeDeclaration::new(
+                id(1),
+                "Parent",
+                vec![FieldDeclaration::new(
+                    "f",
+                    ValueType::Reference(id(3)),
+                    Presence::Optional,
+                )],
+            ),
+            ObjectTypeDeclaration::new(
+                id(2),
+                "Child",
+                vec![
+                    FieldDeclaration::new("f", ValueType::Reference(id(4)), Presence::Required)
+                        .with_redefines(target.clone()),
+                ],
+            )
+            .with_supertypes(vec![id(1)]),
+            ObjectTypeDeclaration::new(id(3), "Target", vec![]),
+            ObjectTypeDeclaration::new(id(4), "Subtype", vec![]).with_supertypes(vec![id(3)]),
+        ];
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations,
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("narrowed declaration is structurally valid");
+        let child = pending
+            .declared_field(id(2), "f")
+            .expect("child declaration");
+        assert_eq!(child.value_type, &ValueType::Reference(id(4)));
+        assert_eq!(child.presence, Presence::Required);
+        let projected = pending
+            .parent_field(id(2), id(1), &target, "C.self.f", 41_u8)
+            .expect("parent lineage resolves");
+        assert_eq!(projected.field, target);
+        assert_eq!(projected.value_type, &ValueType::Reference(id(3)));
+        assert_eq!(projected.presence, Presence::Optional);
+        assert_eq!(projected.source, "C.self.f");
+        assert_eq!(projected.observation, 41);
+    }
+
+    /// The same structural and resource refusals precede the caller verdict.
+    #[trace("TC-909", "FR-110-AC-2", "FR-110-AC-6")]
+    #[test]
+    fn staged_structural_and_resource_failures_keep_typed_causes() {
+        let cancel = quire_exact::Cancel::new();
+        let unknown_member = [ObjectTypeDeclaration::new(
+            id(1),
+            "UnknownMember",
+            vec![FieldDeclaration::new(
+                "f",
+                ValueType::Reference(id(9)),
+                Presence::Required,
+            )],
+        )];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [],
+                unknown_member,
+                TypeEnvironmentLimits::default(),
+                &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::Type(IllTypedCause::TypeMismatch),
+                ..
+            }))
+        ));
+        let missing_supertype =
+            [ObjectTypeDeclaration::new(id(1), "Missing", vec![]).with_supertypes(vec![id(9)])];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [], missing_supertype, TypeEnvironmentLimits::default(), &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::UnknownObjectType(key), ..
+            })) if key == id(9)
+        ));
+        let supertype_cycle = [
+            ObjectTypeDeclaration::new(id(1), "A", vec![]).with_supertypes(vec![id(2)]),
+            ObjectTypeDeclaration::new(id(2), "B", vec![]).with_supertypes(vec![id(1)]),
+        ];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [], supertype_cycle, TypeEnvironmentLimits::default(), &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::GeneralizationCycle { cycle }, ..
+            })) if cycle.len() == 3 && cycle.first() == cycle.last()
+        ));
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "test supplies checked composite identities"
+        )]
+        let composite_key = NodeKey::from_digest([17; 32]);
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "test supplies checked composite identities"
+        )]
+        let other_composite_key = NodeKey::from_digest([18; 32]);
+        let composite_cycle = [
+            CompositeDeclaration::new(composite_key, "A", CompositeShape::Tuple(vec![]))
+                .with_supertypes(vec![other_composite_key]),
+            CompositeDeclaration::new(other_composite_key, "B", CompositeShape::Tuple(vec![]))
+                .with_supertypes(vec![composite_key]),
+        ];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                composite_cycle, [], TypeEnvironmentLimits::default(), &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::CompositeGeneralizationCycle { cycle }, ..
+            })) if cycle.len() == 3 && cycle.first() == cycle.last()
+        ));
+        let bad_target = vec![
+            ObjectTypeDeclaration::new(
+                id(2),
+                "Child",
+                vec![
+                    FieldDeclaration::new("f", ValueType::Integer, Presence::Required)
+                        .with_redefines(FieldRef::new(id(1), "missing")),
+                ],
+            )
+            .with_supertypes(vec![id(1)]),
+            ObjectTypeDeclaration::new(id(1), "Parent", vec![]),
+        ];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [],
+                bad_target,
+                TypeEnvironmentLimits::default(),
+                &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::RedefinitionTarget(_),
+                ..
+            }))
+        ));
+        let mut unrelated = parent_child(ValueType::Reference(id(5)), ValueType::Reference(id(3)));
+        unrelated.push(ObjectTypeDeclaration::new(id(3), "Target", vec![]));
+        unrelated.push(ObjectTypeDeclaration::new(id(5), "Other", vec![]));
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [],
+                unrelated,
+                TypeEnvironmentLimits::default(),
+                &cancel
+            )
+            .expect("unrelated structure admits")
+            .complete(),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::RedefinitionWidens(_),
+                ..
+            }))
+        ));
+        let limit = TypeEnvironmentLimits {
+            ancestor_steps: 0,
+            ..TypeEnvironmentLimits::default()
+        };
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel([], parent_child(ValueType::Integer, ValueType::Integer), limit, &cancel),
+            Err(EnvironmentFailure::Limit(found)) if found.kind() == EnvironmentLimitKind::AncestorSteps
+        ));
+        let one_edge = TypeEnvironmentLimits {
+            ancestor_steps: 1,
+            ..TypeEnvironmentLimits::default()
+        };
+        assert!(TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            one_edge,
+            &cancel
+        )
+        .is_ok());
+        let conflict = vec![
+            ObjectTypeDeclaration::new(
+                id(1),
+                "Root",
+                vec![FieldDeclaration::new(
+                    "f",
+                    ValueType::Integer,
+                    Presence::Required,
+                )],
+            ),
+            ObjectTypeDeclaration::new(
+                id(2),
+                "Left",
+                vec![
+                    FieldDeclaration::new("f", ValueType::Integer, Presence::Required)
+                        .with_redefines(FieldRef::new(id(1), "f")),
+                ],
+            )
+            .with_supertypes(vec![id(1)]),
+            ObjectTypeDeclaration::new(
+                id(3),
+                "Right",
+                vec![
+                    FieldDeclaration::new("f", ValueType::Integer, Presence::Required)
+                        .with_redefines(FieldRef::new(id(1), "f")),
+                ],
+            )
+            .with_supertypes(vec![id(1)]),
+            ObjectTypeDeclaration::new(id(4), "Join", vec![]).with_supertypes(vec![id(2), id(3)]),
+        ];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [],
+                conflict,
+                TypeEnvironmentLimits::default(),
+                &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::RedefinitionConflict(_),
+                ..
+            }))
+        ));
+        let duplicate = vec![
+            ObjectTypeDeclaration::new(
+                id(1),
+                "Left",
+                vec![FieldDeclaration::new(
+                    "f",
+                    ValueType::Integer,
+                    Presence::Required,
+                )],
+            ),
+            ObjectTypeDeclaration::new(
+                id(2),
+                "Right",
+                vec![FieldDeclaration::new(
+                    "f",
+                    ValueType::Integer,
+                    Presence::Required,
+                )],
+            ),
+            ObjectTypeDeclaration::new(id(3), "Join", vec![]).with_supertypes(vec![id(1), id(2)]),
+        ];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel([], duplicate, TypeEnvironmentLimits::default(), &cancel),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::DuplicateMember(name), ..
+            })) if name == "f"
+        ));
+        let limit = TypeEnvironmentLimits {
+            work_units: 0,
+            ..TypeEnvironmentLimits::default()
+        };
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel([], parent_child(ValueType::Integer, ValueType::Integer), limit, &cancel),
+            Err(EnvironmentFailure::Limit(found)) if found.kind() == EnvironmentLimitKind::WorkUnits && found.configured_bound() == 0 && found.actual() > 0
+        ));
+        let baseline_spent = TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("staging admits")
+        .spent();
+        assert!(TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            TypeEnvironmentLimits {
+                work_units: baseline_spent,
+                ..TypeEnvironmentLimits::default()
+            },
+            &cancel,
+        )
+        .is_ok());
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [], parent_child(ValueType::Integer, ValueType::Integer),
+                TypeEnvironmentLimits { work_units: baseline_spent - 1, ..TypeEnvironmentLimits::default() },
+                &cancel,
+            ),
+            Err(EnvironmentFailure::Limit(found))
+                if found.kind() == EnvironmentLimitKind::WorkUnits
+                    && found.configured_bound() == baseline_spent - 1
+                    && found.actual() == u128::from(baseline_spent)
+        ));
+        let cancelled = quire_exact::Cancel::new();
+        cancelled.cancel(quire_exact::CancelCause::Requested);
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel([], parent_child(ValueType::Integer, ValueType::Integer), TypeEnvironmentLimits::default(), &cancelled),
+            Err(EnvironmentFailure::Limit(found)) if found.kind() == EnvironmentLimitKind::WorkUnits
+        ));
+        assert_eq!(
+            cancelled.tripped(),
+            Some(quire_exact::CancelCause::Requested)
+        );
+    }
+
+    /// A proper reference subtype is safe for the completed parent slot.
+    #[trace("TC-909", "FR-110-AC-7")]
+    #[test]
+    fn reference_redefinition_accepts_only_subtype_and_preserves_identity() {
+        let cancel = quire_exact::Cancel::new();
+        let declarations = || {
+            let mut types = parent_child(ValueType::Reference(id(4)), ValueType::Reference(id(3)));
+            types.push(ObjectTypeDeclaration::new(id(3), "Target", vec![]));
+            types.push(
+                ObjectTypeDeclaration::new(id(4), "Subtype", vec![]).with_supertypes(vec![id(3)]),
+            );
+            types.push(ObjectTypeDeclaration::new(id(5), "Unrelated", vec![]));
+            types
+        };
+        let completed = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations(),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits")
+        .complete()
+        .expect("subtype safety admits");
+        let reference = Value::Reference(ObjectReference::new(
+            UniverseId::from_digest([7; 32]),
+            id(4),
+            ObjectId::new("object").expect("identity"),
+        ));
+        let parent_field = completed.attribute(id(1), "f").expect("parent field");
+        let child_field = completed
+            .attribute(id(2), "f")
+            .expect("effective child field");
+        assert_eq!(
+            parent_field.field().value_type(),
+            &ValueType::Reference(id(3))
+        );
+        assert_eq!(
+            child_field.field().value_type(),
+            &ValueType::Reference(id(4))
+        );
+        assert!(child_field.stands_for(&FieldRef::new(id(1), "f")));
+        assert!(completed.admits(parent_field.field().value_type(), &reference));
+        assert!(completed.admits(child_field.field().value_type(), &reference));
+        let unrelated = Value::Reference(ObjectReference::new(
+            UniverseId::from_digest([7; 32]),
+            id(5),
+            ObjectId::new("other").expect("identity"),
+        ));
+        assert!(!completed.admits(parent_field.field().value_type(), &unrelated));
+        let Value::Reference(actual) = reference else {
+            panic!("reference fixture")
+        };
+        assert_eq!(actual.object_type(), id(4));
+        let mut reversed = parent_child(ValueType::Reference(id(3)), ValueType::Reference(id(4)));
+        reversed.push(ObjectTypeDeclaration::new(id(3), "Target", vec![]));
+        reversed.push(
+            ObjectTypeDeclaration::new(id(4), "Subtype", vec![]).with_supertypes(vec![id(3)]),
+        );
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [],
+                reversed,
+                TypeEnvironmentLimits::default(),
+                &cancel
+            )
+            .expect("reverse structure admits")
+            .complete(),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::RedefinitionWidens(_),
+                ..
+            }))
+        ));
     }
 }
 
