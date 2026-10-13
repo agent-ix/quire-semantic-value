@@ -53,5 +53,4 @@ type constructors, and refuse nonconforming values with typed causes.
    operand is still checked by kind only.
 5. The subtype and identical object types are admitted; the unrelated and
    supertype-at-subtype cases return `false`.
-6. Both collections are admitted with two elements. This step depends on the
-   quire-exact change and cannot pass before it lands.
+6. Both collections are admitted with two elements.

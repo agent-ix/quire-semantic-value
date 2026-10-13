@@ -5571,11 +5571,9 @@ mod nested_conformance_tests {
     }
 
     /// `Set<P>` and `Bag<P>` holding a `C` and a `P` of equal shared fields
-    /// have two elements and are admitted. This vector depends on the
-    /// quire-exact collection and equality changes of FR-376 to FR-378 and
-    /// cannot pass before they land.
+    /// have two elements and are admitted. This vector rests on the
+    /// quire-exact collection and equality changes of FR-376 to FR-378.
     #[trace("TC-913", "FR-113-AC-6")]
-    #[ignore = "depends on quire-exact FR-376..FR-378 (composite equality across declarations)"]
     #[test]
     fn set_and_bag_of_parent_keep_equal_field_child_and_parent_distinct() {
         let fx = fixture();
