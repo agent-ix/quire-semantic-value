@@ -907,9 +907,18 @@ pub enum PendingFieldFailure {
     /// The declaration owner names no admitted model object type.
     UnknownObjectType(EffectiveId),
     /// The selected parent is not an immediate parent of the child.
-    NotImmediateParent,
+    NotImmediateParent {
+        /// The child whose direct supertype was requested.
+        child: EffectiveId,
+        /// The requested parent.
+        parent: EffectiveId,
+    },
     /// The parent has no field with that name.
     UnknownField,
+    /// The selected immediate parent's private lineage contains no such target.
+    UnknownTarget(FieldRef),
+    /// More than one parent slot stands for the target.
+    AmbiguousTarget(FieldRef),
     /// The pending admission's original work or cancellation limit was reached.
     Limit(EnvironmentLimit),
     /// A reservation needed to preserve the actual field identity failed.
@@ -976,14 +985,14 @@ impl PendingTypeEnvironment {
         })
     }
 
-    /// Read one source-backed field through an immediate parent. The source
+    /// Read one source-backed redefined field through an immediate parent. The source
     /// occurrence and observation are returned unchanged to the caller's
     /// checked-fact graph; no completed environment or fact is created here.
     pub fn parent_field<S, O>(
         &mut self,
         child: EffectiveId,
         parent: EffectiveId,
-        name: &str,
+        target: &FieldRef,
         source: S,
         observation: O,
     ) -> Result<PendingParentField<'_, S, O>, PendingFieldFailure> {
@@ -993,31 +1002,47 @@ impl PendingTypeEnvironment {
             .get(&child)
             .ok_or(PendingFieldFailure::UnknownChild(child))?;
         if !child_type.supertypes.contains(&parent) {
-            return Err(PendingFieldFailure::NotImmediateParent);
+            return Err(PendingFieldFailure::NotImmediateParent { child, parent });
         }
         self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+        let unknown = || {
+            try_clone_field_ref(target, &GlobalReservations)
+                .map(PendingFieldFailure::UnknownTarget)
+                .map_err(PendingFieldFailure::Storage)
+        };
+        let Some(target_position) = self.environment.field_position(target) else {
+            return Err(unknown()?);
+        };
         let slots = self
             .storage
             .index
             .get(&parent)
-            .ok_or(PendingFieldFailure::NotImmediateParent)?;
+            .ok_or(PendingFieldFailure::NotImmediateParent { child, parent })?;
         let mut selected = None;
         for &index in slots {
             let Some(slot) = self.storage.slots.get(index) else {
                 continue;
             };
+            if slot.members.binary_search(&target_position).is_err() {
+                continue;
+            }
+            if selected.is_some() {
+                return Err(PendingFieldFailure::AmbiguousTarget(
+                    try_clone_field_ref(target, &GlobalReservations)
+                        .map_err(PendingFieldFailure::Storage)?,
+                ));
+            }
             let Some(declaration) = self.environment.object_types.get(&slot.owner) else {
                 continue;
             };
             let Some(field) = declaration.attributes.get(slot.field_index) else {
                 continue;
             };
-            if field.name() == name {
-                selected = Some((slot.owner, field));
-                break;
-            }
+            selected = Some((slot.owner, field));
         }
-        let (owner, field) = selected.ok_or(PendingFieldFailure::UnknownField)?;
+        let Some((owner, field)) = selected else {
+            return Err(unknown()?);
+        };
         let identity = FieldRef {
             owner,
             name: try_clone_str(field.name(), &GlobalReservations)
@@ -1070,15 +1095,6 @@ impl PendingTypeEnvironment {
         }
         self.environment.effective = self.storage.index;
         self.environment.attribute_slots = self.storage.slots;
-        reserve.phase(StoragePhase::KeyJoin);
-        reserve_elements(
-            &mut self.environment.field_keys,
-            table.fields.len(),
-            reserve,
-        )?;
-        for (owner, _, _, index) in &table.fields {
-            self.environment.field_keys.push((*owner, *index));
-        }
         self.environment.admission_work_units = self.budget.spent;
         Ok(self.environment)
     }
@@ -1890,6 +1906,11 @@ impl TypeEnvironment {
         reserve.phase(StoragePhase::Sealing);
         let storage =
             environment.compute_effective(&table, &mut budget, reserve, check_widening)?;
+        reserve.phase(StoragePhase::KeyJoin);
+        reserve_elements(&mut environment.field_keys, table.fields.len(), reserve)?;
+        for (owner, _, _, index) in &table.fields {
+            environment.field_keys.push((*owner, *index));
+        }
         Ok(PendingTypeEnvironment {
             environment,
             storage,
@@ -5414,7 +5435,13 @@ mod staged_admission_tests {
         ));
         let spent = pending.spent();
         let projected = pending
-            .parent_field(id(2), id(1), "f", "child.self.f", 17_u32)
+            .parent_field(
+                id(2),
+                id(1),
+                &FieldRef::new(id(1), "f"),
+                "child.self.f",
+                17_u32,
+            )
             .expect("parent field resolves");
         assert_eq!(projected.field, FieldRef::new(id(1), "f"));
         assert_eq!(projected.value_type, &ValueType::Integer);
@@ -5423,12 +5450,17 @@ mod staged_admission_tests {
         assert_eq!(projected.observation, 17);
         assert_eq!(pending.spent(), spent + 1);
         assert!(matches!(
-            pending.parent_field(id(9), id(1), "f", "bad.child", 19),
+            pending.parent_field(id(9), id(1), &FieldRef::new(id(1), "f"), "bad.child", 19),
             Err(PendingFieldFailure::UnknownChild(key)) if key == id(9)
         ));
         assert!(matches!(
-            pending.parent_field(id(2), id(1), "missing", "child.self.missing", 18),
-            Err(PendingFieldFailure::UnknownField)
+            pending.parent_field(id(2), id(2), &FieldRef::new(id(1), "f"), "bad.parent", 20),
+            Err(PendingFieldFailure::NotImmediateParent { child, parent })
+                if child == id(2) && parent == id(2)
+        ));
+        assert!(matches!(
+            pending.parent_field(id(2), id(1), &FieldRef::new(id(1), "missing"), "child.self.missing", 18),
+            Err(PendingFieldFailure::UnknownTarget(target)) if target == FieldRef::new(id(1), "missing")
         ));
         let completed = pending.complete().expect("completion admits");
         assert_eq!(completed.spent(), direct.spent() + 4);
@@ -5526,6 +5558,90 @@ mod staged_admission_tests {
                 .attributes()
                 .len(),
             1
+        );
+    }
+
+    /// Each selected immediate parent resolves one proper-ancestor target
+    /// through its own private slot lineage.
+    #[trace("TC-909", "FR-110-AC-3", "FR-110-AC-5")]
+    #[test]
+    fn proper_ancestor_target_uses_selected_immediate_parent_slot() {
+        let cancel = quire_exact::Cancel::new();
+        let target = FieldRef::new(id(1), "x");
+        let types = vec![
+            ObjectTypeDeclaration::new(
+                id(1),
+                "A",
+                vec![FieldDeclaration::new(
+                    "x",
+                    ValueType::Integer,
+                    Presence::Required,
+                )],
+            ),
+            ObjectTypeDeclaration::new(
+                id(2),
+                "B1",
+                vec![
+                    FieldDeclaration::new("y", ValueType::Integer, Presence::Required)
+                        .with_redefines(target.clone()),
+                ],
+            )
+            .with_supertypes(vec![id(1)]),
+            ObjectTypeDeclaration::new(
+                id(3),
+                "B2",
+                vec![
+                    FieldDeclaration::new("z", ValueType::Integer, Presence::Required)
+                        .with_redefines(target.clone()),
+                ],
+            )
+            .with_supertypes(vec![id(1)]),
+            ObjectTypeDeclaration::new(
+                id(4),
+                "C",
+                vec![
+                    FieldDeclaration::new("w", ValueType::Integer, Presence::Required)
+                        .with_redefines(target.clone()),
+                ],
+            )
+            .with_supertypes(vec![id(2), id(3)]),
+        ];
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            types,
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("C dominates both parent redefinitions");
+        let initial = pending.spent();
+        let left = pending
+            .parent_field(id(4), id(2), &target, "C.self.w", 1_u8)
+            .expect("B1 lineage resolves");
+        assert_eq!(left.field, FieldRef::new(id(2), "y"));
+        assert_eq!(left.value_type, &ValueType::Integer);
+        assert_eq!(left.presence, Presence::Required);
+        assert_eq!(left.source, "C.self.w");
+        assert_eq!(left.observation, 1);
+        let right = pending
+            .parent_field(id(4), id(3), &target, "C.self.w", 2_u8)
+            .expect("B2 lineage resolves");
+        assert_eq!(right.field, FieldRef::new(id(3), "z"));
+        assert_eq!(right.source, "C.self.w");
+        assert_eq!(right.observation, 2);
+        assert_eq!(pending.spent(), initial + 2);
+        assert!(matches!(
+            pending.parent_field(id(4), id(1), &target, "C.self.w", 3_u8),
+            Err(PendingFieldFailure::NotImmediateParent { child, parent })
+                if child == id(4) && parent == id(1)
+        ));
+        assert!(matches!(
+            pending.parent_field(id(4), id(2), &FieldRef::new(id(3), "z"), "C.self.w", 4_u8),
+            Err(PendingFieldFailure::UnknownTarget(missing)) if missing == FieldRef::new(id(3), "z")
+        ));
+        let completed = pending.complete().expect("safe slots complete");
+        assert_eq!(
+            completed.attribute(id(4), "w").expect("C slot").identity(),
+            FieldRef::new(id(4), "w")
         );
     }
 
