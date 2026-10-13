@@ -8,7 +8,7 @@ relationships: []
 
 ## Description
 
-`EnumDeclaration::model_owned` SHALL build the runtime enumeration of a model-owned variant type, whose case names are any non-empty strings (QSpec FR-141-AC-8), and SHALL keep the identifier-only rule of `EnumDeclaration::new` for source-declared enumerations. A variant type with a case such as `Gold Plus`, `2x` or a non-ASCII name has a runtime enumeration.
+`EnumDeclaration::model_owned` SHALL build the runtime enumeration of a model-owned variant type, whose case names are any non-empty strings (QSpec FR-141-AC-8). `EnumDeclaration::new` keeps the identifier-only rule for source-declared enumerations. A variant type with a case such as `Gold Plus`, `2x` or a non-ASCII name has a runtime enumeration.
 
 ## Use case
 
