@@ -61,6 +61,38 @@ impl EnumDeclaration {
                 cause: SemanticGraphCause::NonCanonicalPreimage,
             });
         }
+        Self::sorted_if_unordered(key, ordered, members)
+    }
+
+    /// The declaration node `key` of a model-owned variant type (QSpec
+    /// FR-141, FR-144): an unordered enumeration whose case names are any
+    /// non-empty strings, kept verbatim. The caller supplies the cases in
+    /// ascending UTF-8 byte order of their names.
+    ///
+    /// An empty list, an empty case name or a repeated case is
+    /// `NonCanonicalPreimage`; cases not in ascending byte order are
+    /// `UnsortedUnorderedMembers`. Names are never normalized, so names that
+    /// differ in any byte are distinct cases. `key` is taken as given, as in
+    /// [`Self::new`]. Source-declared enums use [`Self::new`], which still
+    /// requires identifier cases.
+    pub fn model_owned(key: NodeKey, members: Vec<String>) -> Result<Self, InvalidSemanticGraph> {
+        let distinct: BTreeSet<_> = members.iter().collect();
+        if members.is_empty()
+            || distinct.len() != members.len()
+            || members.iter().any(String::is_empty)
+        {
+            return Err(InvalidSemanticGraph {
+                cause: SemanticGraphCause::NonCanonicalPreimage,
+            });
+        }
+        Self::sorted_if_unordered(key, false, members)
+    }
+
+    fn sorted_if_unordered(
+        key: NodeKey,
+        ordered: bool,
+        members: Vec<String>,
+    ) -> Result<Self, InvalidSemanticGraph> {
         if !ordered && !members.is_sorted() {
             return Err(InvalidSemanticGraph {
                 cause: SemanticGraphCause::UnsortedUnorderedMembers,
@@ -262,6 +294,8 @@ fn compare(
 mod tests {
     use super::*;
     use alloc::vec;
+    use ix_trace_rs::trace;
+    use quire_exact::ScalarLimits;
 
     #[allow(
         clippy::disallowed_methods,
@@ -315,5 +349,110 @@ mod tests {
             status.member("Closed", key(4)).unwrap_err().cause,
             SemanticGraphCause::UndeclaredCase
         );
+    }
+
+    #[trace("TC-916", "FR-116-AC-1", "FR-116-AC-2", "FR-116-AC-3")]
+    #[test]
+    fn a_model_owned_declaration_accepts_any_nonempty_case_name_verbatim() {
+        let names = ["  padded ", "2x", "Gold Plus", "Zürich", "日本"];
+        let mut sorted = cases(&names);
+        sorted.sort();
+        let declaration = EnumDeclaration::model_owned(key(1), sorted.clone()).unwrap();
+        assert!(!declaration.is_ordered());
+        assert_eq!(declaration.key(), key(1));
+        assert_eq!(declaration.members(), sorted.as_slice());
+        for (rank, case) in sorted.iter().enumerate() {
+            let value = declaration.member(case, key(10 + rank as u8)).unwrap();
+            assert_eq!(value.case(), case.as_str());
+            assert_eq!(value.position(), rank);
+            assert_eq!(value.declaration(), key(1));
+            assert!(!value.is_ordered());
+        }
+        assert_eq!(
+            declaration.member("gold plus", key(9)).unwrap_err().cause,
+            SemanticGraphCause::UndeclaredCase
+        );
+    }
+
+    #[trace("TC-916", "FR-116-AC-4")]
+    #[test]
+    fn a_model_owned_declaration_refuses_empty_duplicate_and_unsorted_cases() {
+        for members in [
+            vec![],
+            cases(&[""]),
+            cases(&["", "a"]),
+            cases(&["Gold Plus", "Gold Plus"]),
+            // Malformed and unsorted: the malformed cause wins.
+            cases(&["b", "a", "a"]),
+        ] {
+            assert_eq!(
+                EnumDeclaration::model_owned(key(1), members),
+                refused(SemanticGraphCause::NonCanonicalPreimage)
+            );
+        }
+        assert_eq!(
+            EnumDeclaration::model_owned(key(1), cases(&["b b", "a a"])),
+            refused(SemanticGraphCause::UnsortedUnorderedMembers)
+        );
+        // Names are distinct byte-wise, never normalized: a trailing space
+        // and a precomposed versus decomposed letter are different cases.
+        let decomposed =
+            EnumDeclaration::model_owned(key(1), cases(&["a", "a ", "e\u{301}", "\u{e9}"]))
+                .unwrap();
+        assert_eq!(decomposed.members().len(), 4);
+    }
+
+    #[trace("TC-916", "FR-116-AC-5")]
+    #[test]
+    fn two_model_owned_declarations_of_one_shape_agree_on_equality_and_variants() {
+        let names = cases(&["2x", "Gold Plus", "Silver"]);
+        let first = EnumDeclaration::model_owned(key(1), names.clone()).unwrap();
+        let second = EnumDeclaration::model_owned(key(1), names).unwrap();
+        assert_eq!(first, second);
+        let left = first.member("Gold Plus", key(5)).unwrap();
+        let right = second.member("Gold Plus", key(5)).unwrap();
+        assert_eq!(left, right);
+        assert_eq!(left.variant(), right.variant());
+        let other = first.member("Silver", key(6)).unwrap();
+        assert_ne!(left, other);
+        let mut index = EnumMemberIndex::default();
+        index.record(left.clone());
+        index.record(other.clone());
+        assert_eq!(index.resolve(left.variant()), Some(&left));
+        assert_eq!(index.resolve(other.variant()).unwrap().case(), "Silver");
+        let mut meter = Meter::new(ScalarLimits {
+            integer_bits: 1024,
+            decimal_digits: 1024,
+            scale_expansion: 1024,
+            text_input_bytes: 1024,
+            text_scalars: 1024,
+            normalized_scalars: 1024,
+            unit_edges: 1024,
+            value_occurrences: 1024,
+            work_units: 1024,
+            result_units: 1024,
+        });
+        assert_eq!(
+            compare_enum(ComparisonOperator::Equal, &left, &right, &mut meter),
+            Ok(Outcome::Completed(true))
+        );
+        assert_eq!(
+            compare_enum(ComparisonOperator::Less, &left, &other, &mut meter),
+            Err(IllTyped {
+                cause: IllTypedCause::UnorderedEnumOrdering
+            })
+        );
+    }
+
+    #[trace("TC-916", "FR-116-AC-6")]
+    #[test]
+    fn the_identifier_path_still_refuses_non_identifier_cases() {
+        for members in [cases(&["Gold Plus"]), cases(&["2x"]), cases(&[""])] {
+            assert_eq!(
+                EnumDeclaration::new(key(1), false, members),
+                refused(SemanticGraphCause::NonCanonicalPreimage)
+            );
+        }
+        assert!(!is_member_list(&cases(&["Gold Plus"])));
     }
 }
