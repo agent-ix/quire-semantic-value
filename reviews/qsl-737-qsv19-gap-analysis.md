@@ -63,3 +63,4 @@ Reviewed at agent-ix/quire-semantic-value@7616456f7379e25a9a14e515b7dfe2df47dc88
 | FND | outcome | sha/reason |
 | --- | --- | --- |
 | FND-001 | fixed 7616456 | FR-106 behavior item 3, FR-106-AC-11, and TC-904 rows 5 to 8 were added. `dangling_references_are_refused_through_option_collection_and_composite` covers the Option, collection and composite carriers, both refused and tolerated. `quire matrix` binds both AC-11 tests. FR-106-AC-11 appears on no other remote branch, including #12's `task/qsl-500-sv-union`. |
+| FND-002 | fixed 7c166c0 | The FR-106 title and Description SHALL sentence now name refusal of a dangling reference at any depth through Option payloads, composite slots, collection elements and union payloads, unless the reference is tolerated. |
