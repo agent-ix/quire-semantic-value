@@ -107,7 +107,9 @@ conformance.
     `EqualityOperandSourceNotAdmitted` cause. Equality conversion is
     unchanged: `admits_equality_conversion` between distinct composite keys
     stays unavailable, and whether two composites of different declarations
-    are equal belongs to the kernel's composite equality.
+    are equal belongs to the kernel's composite equality. `CheckedEquality::evaluate`
+    takes the `TypeEnvironment` that checked the equality and passes it to
+    `operand_value`.
 14. `admits` takes no `work_units` charge and reports no limit. It walks a
     value the caller already holds, once, in time linear in the value's
     occurrences, with an explicit worklist and no recursion, and the
@@ -125,7 +127,8 @@ conformance.
 | FR-113-AC-3 | With a chain parent `P`, intermediate `M`, child `C` (a grandchild of `P`) and an unrelated record `U`, built with the trusted constructors (`from_admitted`, `form`, `from_admitted_slots`) because the kernel's checked constructors are exact, `admits` accepts an `Option<P>`, a `Sequence`, `Set`, `Bag` or `OrderedSet` of `P`, each keeping its key; the top-level `C` at `P` and `M` already passes. It refuses the same `Option` and collection containers holding a `U`, a `P` at a `C`-typed or `M`-typed version, and `Option<C>` or `Sequence<C>` at `Option<P>` or `Sequence<P>` as a declared type. The refusals for a nonconforming element inside a container whose recorded element type is `P` are the cases only this requirement adds. | Test (TC-913) |
 | FR-113-AC-4 | `Option<Sequence<Option<P>>>` holding a `C` innermost is admitted, and one `U` among conforming elements refuses the whole value. `TypeEnvironment::evaluate_record` and `TypeEnvironment::evaluate_tuple` with a member that completes to a `C` at a `P` member succeed with the child kept, and with a `U` stop with `DeferredResultNotAdmitted`. Record and tuple construction holding a `U` refuses with `TypeMismatch` at the field or position. | Test (TC-913) |
 | FR-113-AC-5 | `operand_value` admits a composite operand of source type `P` holding a `C` or an `M` unchanged and with its own key, and an `Option<P>` or `Sequence<P>` operand holding one. It refuses a `P` operand holding `U`, and a `P` value at source type `C`, with `EqualityOperandSourceNotAdmitted`. A `Reference<T>` operand is still checked by kind only. | Test (TC-913) |
-| FR-113-AC-6 | A `Set<P>` or `Bag<P>` holding a `C` and a `P` of equal shared fields has two elements and is admitted. This vector requires the quire-exact collection and equality changes of FR-376 to FR-378 and cannot pass before they land. | Test (TC-913) |
+| FR-113-AC-6 | A `Set<P>` or `Bag<P>` holding a `C` and a `P` of equal shared fields has two elements and is admitted. This vector rests on the quire-exact collection and equality behavior of FR-376 to FR-378. | Test (TC-913) |
+| FR-113-AC-7 | A `Reference<T>` inside an `Option` payload or collection element is admitted only when the reference's object type is `T` or conforms to `T`: an `Option<Reference<T>>` or `Sequence<Reference<T>>` holding a reference to a subtype object is admitted, and one holding a reference to an unrelated object type, or a supertype object at a subtype `T`, is refused although the recorded payload or element type matches. | Test (TC-913) |
 
 ## Dependencies
 
@@ -138,4 +141,4 @@ conformance.
   (cross-repo requirement 1).
 - quire-exact FR-376 to FR-378 define the kernel collection, canonical-key and
   equality behavior for composites of distinct declarations that FR-113-AC-6
-  needs; they are specified in quire-exact and not yet implemented.
+  needs.
