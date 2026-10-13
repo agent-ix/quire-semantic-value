@@ -17,27 +17,37 @@ type constructors, and refuse nonconforming values with typed causes.
 ## Test Procedure
 
 1. Declare parent `P`, intermediate `M` (supertype `P`), child `C` (supertype
-   `M`) and unrelated `U`, each a record with distinct keys. Build one value of
-   each. Query `admits` for `C` at `Option<P>`, `Option<M>`, and `Sequence`,
-   `Set`, `Bag` and `OrderedSet` of `P`; for a tuple position and a record
-   field typed `P`; and for `Option<Sequence<Option<P>>>` with `C` innermost.
-2. Query the negative set: `P` at `C`-typed and `M`-typed versions of those
-   slots, `U` at `P`-typed versions, an `Option<C>` value and a `Sequence<C>`
-   value at `Option<P>` and `Sequence<P>`, and a nested value with one
-   nonconforming element among conforming ones. Build a `Set` of `P` holding a
-   `C` and a `P` of equal shared fields.
-3. Construct a record and a tuple with a conforming child member and with an
-   unrelated member.
-4. Call `operand_value` with source type `P` and values `C`, a grandchild,
-   `Option<P>` and `Sequence<P>` holding a `C`, then with `U` and with a `P`
-   value at source type `C`. Call it with a `Reference<T>` operand.
+   `M`, so a grandchild of `P`) and unrelated `U`, each a record with distinct
+   keys, and one value of each. The kernel's checked constructors are exact, so
+   build every container holding a `C`, `M` or `U` at a `P`-typed slot with the
+   trusted `from_admitted`, `form` and `from_admitted_slots` paths. Query
+   `admits` for those holding a `C` or `M`: `Option<P>`, `Sequence`, `Set`,
+   `Bag` and `OrderedSet` of `P`, a tuple position and a record field typed
+   `P`, and `Option<Sequence<Option<P>>>` with `C` innermost. A top-level `C`
+   at `P` already passes today.
+2. Query the negative set, of which the nested cases alone test this
+   requirement: the same containers holding a `U`; a nested value with one `U`
+   among conforming elements; `P` at `C`-typed and `M`-typed slots; an
+   `Option<C>` and a `Sequence<C>` value at declared `Option<P>` and
+   `Sequence<P>`.
+3. Run `evaluate_record` and `evaluate_tuple` with a member that completes to
+   a `C` and to a `U` at a `P` member. Construct a record and a tuple holding
+   a `U`.
+4. Call `operand_value` with source type `P` and values `C`, `M`, and
+   `Option<P>` and `Sequence<P>` holding a `C`; then with `U`, and with a `P`
+   value at source type `C`; then with a `Reference<T>` operand.
+5. After quire-exact FR-376 to FR-378 land, build a `Set<P>` and a `Bag<P>`
+   holding a `C` and a `P` of equal shared fields and admit them.
 
 ## Expected Results
 
-1. Every positive query is admitted and the admitted values keep key `C`.
-2. Every negative query returns `false`. The `Set` holds both elements.
-3. The conforming construction succeeds with the child kept. The unrelated
-   member is refused with `TypeMismatch` naming the field or position.
-4. Conforming operands are returned unchanged with their own keys. `U` and the
+1. Every positive query is admitted and keeps its key.
+2. Every negative query returns `false`.
+3. The `C` member evaluates with the child kept; the `U` member stops with
+   `DeferredResultNotAdmitted`; construction with `U` is refused with
+   `TypeMismatch` naming the field or position.
+4. Conforming operands return unchanged with their own keys. `U` and the
    reverse case return `EqualityOperandSourceNotAdmitted`. The `Reference<T>`
    operand is still checked by kind only.
+5. Both collections are admitted with two elements. This step depends on the
+   quire-exact change and cannot pass before it lands.
