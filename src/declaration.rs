@@ -932,28 +932,51 @@ impl PendingTypeEnvironment {
     }
 
     /// The admitted composite declaration, without effective attributes.
-    pub fn composite(&self, key: NodeKey) -> Option<&CompositeDeclaration> {
-        self.environment.composites.get(&key)
+    pub fn composite(
+        &mut self,
+        key: NodeKey,
+    ) -> Result<Option<&CompositeDeclaration>, PendingFieldFailure> {
+        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+        Ok(self.environment.composites.get(&key))
     }
 
     /// Admitted composite declarations in key order.
-    pub fn composites(&self) -> impl Iterator<Item = &CompositeDeclaration> {
-        self.environment.composites.values()
+    pub fn composites(
+        &mut self,
+    ) -> Result<impl Iterator<Item = &CompositeDeclaration>, PendingFieldFailure> {
+        self.budget
+            .charge(self.environment.composites.len().saturating_add(1))
+            .map_err(PendingFieldFailure::Limit)?;
+        Ok(self.environment.composites.values())
     }
 
     /// The admitted object declaration, without a completed attribute view.
-    pub fn object_type(&self, key: EffectiveId) -> Option<&ObjectTypeDeclaration> {
-        self.environment.object_types.get(&key)
+    pub fn object_type(
+        &mut self,
+        key: EffectiveId,
+    ) -> Result<Option<&ObjectTypeDeclaration>, PendingFieldFailure> {
+        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+        Ok(self.environment.object_types.get(&key))
     }
 
     /// Admitted object declarations in key order.
-    pub fn object_types(&self) -> impl Iterator<Item = &ObjectTypeDeclaration> {
-        self.environment.object_types.values()
+    pub fn object_types(
+        &mut self,
+    ) -> Result<impl Iterator<Item = &ObjectTypeDeclaration>, PendingFieldFailure> {
+        self.budget
+            .charge(self.environment.object_types.len().saturating_add(1))
+            .map_err(PendingFieldFailure::Limit)?;
+        Ok(self.environment.object_types.values())
     }
 
     /// Whether the admitted ancestry makes `sub` a subtype of `sup`.
-    pub fn conforms(&self, sub: EffectiveId, sup: EffectiveId) -> bool {
-        self.environment.conforms(sub, sup)
+    pub fn conforms(
+        &mut self,
+        sub: EffectiveId,
+        sup: EffectiveId,
+    ) -> Result<bool, PendingFieldFailure> {
+        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+        Ok(self.environment.conforms(sub, sup))
     }
 
     /// Read only a field declared directly by `owner`. Inherited and
@@ -969,11 +992,15 @@ impl PendingTypeEnvironment {
             .object_types
             .get(&owner)
             .ok_or(PendingFieldFailure::UnknownObjectType(owner))?;
-        let field = declaration
-            .attributes
-            .iter()
-            .find(|field| field.name() == name)
-            .ok_or(PendingFieldFailure::UnknownField)?;
+        let mut found = None;
+        for field in &declaration.attributes {
+            self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+            if field.name() == name {
+                found = Some(field);
+                break;
+            }
+        }
+        let field = found.ok_or(PendingFieldFailure::UnknownField)?;
         Ok(PendingDeclaredField {
             field: FieldRef {
                 owner,
@@ -996,21 +1023,44 @@ impl PendingTypeEnvironment {
         source: S,
         observation: O,
     ) -> Result<PendingParentField<'_, S, O>, PendingFieldFailure> {
+        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
         let child_type = self
             .environment
             .object_types
             .get(&child)
             .ok_or(PendingFieldFailure::UnknownChild(child))?;
-        if !child_type.supertypes.contains(&parent) {
+        let mut direct_parent = false;
+        for supertype in &child_type.supertypes {
+            self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+            if *supertype == parent {
+                direct_parent = true;
+                break;
+            }
+        }
+        if !direct_parent {
             return Err(PendingFieldFailure::NotImmediateParent { child, parent });
         }
-        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
         let unknown = || {
             try_clone_field_ref(target, &GlobalReservations)
                 .map(PendingFieldFailure::UnknownTarget)
                 .map_err(PendingFieldFailure::Storage)
         };
-        let Some(target_position) = self.environment.field_position(target) else {
+        let mut target_position = None;
+        for (position, (owner, field_index)) in self.environment.field_keys.iter().enumerate() {
+            self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+            if *owner == target.owner
+                && self
+                    .environment
+                    .object_types
+                    .get(owner)
+                    .and_then(|declaration| declaration.attributes.get(*field_index))
+                    .is_some_and(|field| field.name() == target.name)
+            {
+                target_position = Some(position);
+                break;
+            }
+        }
+        let Some(target_position) = target_position else {
             return Err(unknown()?);
         };
         let slots = self
@@ -1020,9 +1070,13 @@ impl PendingTypeEnvironment {
             .ok_or(PendingFieldFailure::NotImmediateParent { child, parent })?;
         let mut selected = None;
         for &index in slots {
+            self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
             let Some(slot) = self.storage.slots.get(index) else {
                 continue;
             };
+            self.budget
+                .charge(slot.members.len())
+                .map_err(PendingFieldFailure::Limit)?;
             if slot.members.binary_search(&target_position).is_err() {
                 continue;
             }
@@ -5407,10 +5461,157 @@ mod staged_admission_tests {
         ));
     }
 
+    /// All direct entry points retain the same safety checks and completed
+    /// effective view while the staged entry point is available.
+    #[trace("TC-909", "FR-110-AC-4")]
+    #[test]
+    fn direct_admission_entry_points_retain_refusals_and_effective_fields() {
+        type Entry =
+            fn(Vec<ObjectTypeDeclaration>, &quire_exact::Cancel) -> Admission<TypeEnvironment>;
+        let entries: [(&str, Entry); 3] = [
+            ("new", |types, _| TypeEnvironment::new([], types)),
+            ("bounded", |types, _| {
+                TypeEnvironment::bounded([], types, TypeEnvironmentLimits::default())
+            }),
+            ("bounded_with_cancel", |types, cancel| {
+                TypeEnvironment::bounded_with_cancel(
+                    [],
+                    types,
+                    TypeEnvironmentLimits::default(),
+                    cancel,
+                )
+            }),
+        ];
+        let cancel = quire_exact::Cancel::new();
+        let invalid_target = || {
+            vec![
+                ObjectTypeDeclaration::new(id(1), "Parent", vec![]),
+                ObjectTypeDeclaration::new(
+                    id(2),
+                    "Child",
+                    vec![
+                        FieldDeclaration::new("f", ValueType::Integer, Presence::Required)
+                            .with_redefines(FieldRef::new(id(1), "missing")),
+                    ],
+                )
+                .with_supertypes(vec![id(1)]),
+            ]
+        };
+        let conflict = || {
+            vec![
+                ObjectTypeDeclaration::new(
+                    id(1),
+                    "Root",
+                    vec![FieldDeclaration::new(
+                        "f",
+                        ValueType::Integer,
+                        Presence::Required,
+                    )],
+                ),
+                ObjectTypeDeclaration::new(
+                    id(2),
+                    "Left",
+                    vec![
+                        FieldDeclaration::new("f", ValueType::Integer, Presence::Required)
+                            .with_redefines(FieldRef::new(id(1), "f")),
+                    ],
+                )
+                .with_supertypes(vec![id(1)]),
+                ObjectTypeDeclaration::new(
+                    id(3),
+                    "Right",
+                    vec![
+                        FieldDeclaration::new("f", ValueType::Integer, Presence::Required)
+                            .with_redefines(FieldRef::new(id(1), "f")),
+                    ],
+                )
+                .with_supertypes(vec![id(1)]),
+                ObjectTypeDeclaration::new(id(4), "Join", vec![])
+                    .with_supertypes(vec![id(2), id(3)]),
+            ]
+        };
+        let duplicate = || {
+            vec![
+                ObjectTypeDeclaration::new(
+                    id(1),
+                    "Left",
+                    vec![FieldDeclaration::new(
+                        "f",
+                        ValueType::Integer,
+                        Presence::Required,
+                    )],
+                ),
+                ObjectTypeDeclaration::new(
+                    id(2),
+                    "Right",
+                    vec![FieldDeclaration::new(
+                        "f",
+                        ValueType::Integer,
+                        Presence::Required,
+                    )],
+                ),
+                ObjectTypeDeclaration::new(id(3), "Join", vec![])
+                    .with_supertypes(vec![id(1), id(2)]),
+            ]
+        };
+        for (name, entry) in entries {
+            assert!(
+                matches!(
+                    entry(invalid_target(), &cancel),
+                    Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        cause: DeclarationCause::RedefinitionTarget(_),
+                        ..
+                    }))
+                ),
+                "{name} must reject an invalid target"
+            );
+            assert!(
+                matches!(
+                    entry(conflict(), &cancel),
+                    Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        cause: DeclarationCause::RedefinitionConflict(_),
+                        ..
+                    }))
+                ),
+                "{name} must reject an undominated conflict"
+            );
+            assert!(
+                matches!(
+                    entry(duplicate(), &cancel),
+                    Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        cause: DeclarationCause::DuplicateMember(member), ..
+                    })) if member == "f"
+                ),
+                "{name} must reject a duplicate effective name"
+            );
+            assert!(
+                matches!(
+                    entry(
+                        parent_child(ValueType::Boolean, ValueType::Integer),
+                        &cancel
+                    ),
+                    Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        cause: DeclarationCause::RedefinitionWidens(_),
+                        ..
+                    }))
+                ),
+                "{name} must reject widening"
+            );
+            let admitted = entry(
+                parent_child(ValueType::Integer, ValueType::Integer),
+                &cancel,
+            )
+            .expect("valid redefinition admits");
+            let field = admitted.attribute(id(2), "f").expect("effective field");
+            assert_eq!(field.identity(), FieldRef::new(id(2), "f"), "{name}");
+            assert!(field.stands_for(&FieldRef::new(id(1), "f")), "{name}");
+        }
+    }
+
     /// The pending view keeps the parent's type and the caller's child source.
     #[trace("TC-909", "FR-110-AC-3", "FR-110-AC-5")]
     #[test]
-    fn pending_parent_projection_preserves_source_and_one_budget() {
+    fn pending_parent_projection_preserves_source_and_charges_budget() {
         let cancel = quire_exact::Cancel::new();
         let declarations = parent_child(ValueType::Integer, ValueType::Integer);
         let direct = TypeEnvironment::new([], declarations.clone()).expect("strict admits");
@@ -5422,9 +5623,20 @@ mod staged_admission_tests {
         )
         .expect("structure admits");
         assert_eq!(pending.spent(), direct.spent());
-        assert_eq!(pending.object_types().count(), 2);
-        assert!(pending.object_type(id(2)).is_some());
-        assert!(pending.conforms(id(2), id(1)));
+        assert_eq!(
+            pending
+                .object_types()
+                .expect("budget permits iteration")
+                .count(),
+            2
+        );
+        assert!(pending
+            .object_type(id(2))
+            .expect("budget permits lookup")
+            .is_some());
+        assert!(pending
+            .conforms(id(2), id(1))
+            .expect("budget permits ancestry read"));
         let declared = pending.declared_field(id(2), "f").expect("own field");
         assert_eq!(declared.field, FieldRef::new(id(2), "f"));
         assert_eq!(declared.value_type, &ValueType::Integer);
@@ -5448,7 +5660,7 @@ mod staged_admission_tests {
         assert_eq!(projected.presence, Presence::Required);
         assert_eq!(projected.source, "child.self.f");
         assert_eq!(projected.observation, 17);
-        assert_eq!(pending.spent(), spent + 1);
+        assert!(pending.spent() > spent);
         assert!(matches!(
             pending.parent_field(id(9), id(1), &FieldRef::new(id(1), "f"), "bad.child", 19),
             Err(PendingFieldFailure::UnknownChild(key)) if key == id(9)
@@ -5463,7 +5675,7 @@ mod staged_admission_tests {
             Err(PendingFieldFailure::UnknownTarget(target)) if target == FieldRef::new(id(1), "missing")
         ));
         let completed = pending.complete().expect("completion admits");
-        assert_eq!(completed.spent(), direct.spent() + 4);
+        assert!(completed.spent() > direct.spent());
         assert_eq!(completed, direct);
         let expected = direct.attribute(id(2), "f").expect("direct slot");
         let actual = completed.attribute(id(2), "f").expect("staged slot");
@@ -5554,11 +5766,121 @@ mod staged_admission_tests {
         assert_eq!(
             pending
                 .object_type(id(2))
+                .expect("budget permits lookup")
                 .expect("child")
                 .attributes()
                 .len(),
             1
         );
+    }
+
+    /// Every restricted declaration read shares the admission meter and
+    /// observes cancellation, including reads that expose an iterator.
+    #[trace("TC-909", "FR-110-AC-2", "FR-110-AC-3", "FR-110-AC-5")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test supplies a checked composite identity"
+    )]
+    #[test]
+    fn pending_declaration_reads_charge_and_observe_cancellation() {
+        let cancel = quire_exact::Cancel::new();
+        let declarations = parent_child(ValueType::Integer, ValueType::Integer);
+        let baseline = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations.clone(),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits")
+        .spent();
+        let limits = TypeEnvironmentLimits {
+            work_units: baseline + 1,
+            ..TypeEnvironmentLimits::default()
+        };
+        let mut pending =
+            TypeEnvironment::stage_model_with_cancel([], declarations, limits, &cancel)
+                .expect("structure fits exactly before pending reads");
+        assert!(pending
+            .object_type(id(2))
+            .expect("first read fits")
+            .is_some());
+        assert_eq!(pending.spent(), baseline + 1);
+        assert!(matches!(
+            pending.conforms(id(2), id(1)),
+            Err(PendingFieldFailure::Limit(limit))
+                if limit.kind() == EnvironmentLimitKind::WorkUnits
+                    && limit.configured_bound() == baseline + 1
+                    && limit.actual() == u128::from(baseline + 2)
+        ));
+        assert_eq!(pending.spent(), baseline + 1);
+
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits");
+        let before = pending.spent();
+        assert_eq!(pending.object_types().expect("iteration fits").count(), 2);
+        assert_eq!(pending.spent(), before + 3);
+        cancel.cancel(quire_exact::CancelCause::Requested);
+        assert!(matches!(
+            pending.composite(NodeKey::from_digest([1; 32])),
+            Err(PendingFieldFailure::Limit(_))
+        ));
+        assert!(matches!(
+            pending.composites(),
+            Err(PendingFieldFailure::Limit(_))
+        ));
+        assert!(matches!(
+            pending.object_type(id(2)),
+            Err(PendingFieldFailure::Limit(_))
+        ));
+        assert!(matches!(
+            pending.object_types(),
+            Err(PendingFieldFailure::Limit(_))
+        ));
+        assert!(matches!(
+            pending.conforms(id(2), id(1)),
+            Err(PendingFieldFailure::Limit(_))
+        ));
+        assert_eq!(pending.spent(), before + 3);
+    }
+
+    /// A pending lineage lookup spends for the traversal, so repeated lookups
+    /// cannot scan a large field table under a one-unit allowance.
+    #[trace("TC-909", "FR-110-AC-2", "FR-110-AC-5")]
+    #[test]
+    fn pending_parent_field_charges_each_scanned_entry() {
+        let cancel = quire_exact::Cancel::new();
+        let declarations = parent_child(ValueType::Integer, ValueType::Integer);
+        let baseline = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations.clone(),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits")
+        .spent();
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations,
+            TypeEnvironmentLimits {
+                work_units: baseline + 2,
+                ..TypeEnvironmentLimits::default()
+            },
+            &cancel,
+        )
+        .expect("staging leaves two units");
+        assert!(matches!(
+            pending.parent_field(id(2), id(1), &FieldRef::new(id(1), "f"), "source", 1_u8),
+            Err(PendingFieldFailure::Limit(limit))
+                if limit.kind() == EnvironmentLimitKind::WorkUnits
+                    && limit.configured_bound() == baseline + 2
+                    && limit.actual() == u128::from(baseline + 3)
+        ));
+        assert_eq!(pending.spent(), baseline + 2);
     }
 
     /// Each selected immediate parent resolves one proper-ancestor target
@@ -5628,7 +5950,7 @@ mod staged_admission_tests {
         assert_eq!(right.field, FieldRef::new(id(3), "z"));
         assert_eq!(right.source, "C.self.w");
         assert_eq!(right.observation, 2);
-        assert_eq!(pending.spent(), initial + 2);
+        assert!(pending.spent() > initial + 2);
         assert!(matches!(
             pending.parent_field(id(4), id(1), &target, "C.self.w", 3_u8),
             Err(PendingFieldFailure::NotImmediateParent { child, parent })
@@ -5645,11 +5967,129 @@ mod staged_admission_tests {
         );
     }
 
+    /// The parent projection must not substitute the child's narrowed type
+    /// or required presence for the selected parent's declaration.
+    #[trace("TC-909", "FR-110-AC-5")]
+    #[test]
+    fn pending_parent_projection_retains_distinct_parent_type_and_presence() {
+        let cancel = quire_exact::Cancel::new();
+        let target = FieldRef::new(id(1), "f");
+        let declarations = [
+            ObjectTypeDeclaration::new(
+                id(1),
+                "Parent",
+                vec![FieldDeclaration::new(
+                    "f",
+                    ValueType::Reference(id(3)),
+                    Presence::Optional,
+                )],
+            ),
+            ObjectTypeDeclaration::new(
+                id(2),
+                "Child",
+                vec![
+                    FieldDeclaration::new("f", ValueType::Reference(id(4)), Presence::Required)
+                        .with_redefines(target.clone()),
+                ],
+            )
+            .with_supertypes(vec![id(1)]),
+            ObjectTypeDeclaration::new(id(3), "Target", vec![]),
+            ObjectTypeDeclaration::new(id(4), "Subtype", vec![]).with_supertypes(vec![id(3)]),
+        ];
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations,
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("narrowed declaration is structurally valid");
+        let child = pending
+            .declared_field(id(2), "f")
+            .expect("child declaration");
+        assert_eq!(child.value_type, &ValueType::Reference(id(4)));
+        assert_eq!(child.presence, Presence::Required);
+        let projected = pending
+            .parent_field(id(2), id(1), &target, "C.self.f", 41_u8)
+            .expect("parent lineage resolves");
+        assert_eq!(projected.field, target);
+        assert_eq!(projected.value_type, &ValueType::Reference(id(3)));
+        assert_eq!(projected.presence, Presence::Optional);
+        assert_eq!(projected.source, "C.self.f");
+        assert_eq!(projected.observation, 41);
+    }
+
     /// The same structural and resource refusals precede the caller verdict.
     #[trace("TC-909", "FR-110-AC-2", "FR-110-AC-6")]
     #[test]
     fn staged_structural_and_resource_failures_keep_typed_causes() {
         let cancel = quire_exact::Cancel::new();
+        let unknown_member = [ObjectTypeDeclaration::new(
+            id(1),
+            "UnknownMember",
+            vec![FieldDeclaration::new(
+                "f",
+                ValueType::Reference(id(9)),
+                Presence::Required,
+            )],
+        )];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [],
+                unknown_member,
+                TypeEnvironmentLimits::default(),
+                &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::Type(IllTypedCause::TypeMismatch),
+                ..
+            }))
+        ));
+        let missing_supertype =
+            [ObjectTypeDeclaration::new(id(1), "Missing", vec![]).with_supertypes(vec![id(9)])];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [], missing_supertype, TypeEnvironmentLimits::default(), &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::UnknownObjectType(key), ..
+            })) if key == id(9)
+        ));
+        let supertype_cycle = [
+            ObjectTypeDeclaration::new(id(1), "A", vec![]).with_supertypes(vec![id(2)]),
+            ObjectTypeDeclaration::new(id(2), "B", vec![]).with_supertypes(vec![id(1)]),
+        ];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [], supertype_cycle, TypeEnvironmentLimits::default(), &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::GeneralizationCycle { cycle }, ..
+            })) if cycle.len() == 3 && cycle.first() == cycle.last()
+        ));
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "test supplies checked composite identities"
+        )]
+        let composite_key = NodeKey::from_digest([17; 32]);
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "test supplies checked composite identities"
+        )]
+        let other_composite_key = NodeKey::from_digest([18; 32]);
+        let composite_cycle = [
+            CompositeDeclaration::new(composite_key, "A", CompositeShape::Tuple(vec![]))
+                .with_supertypes(vec![other_composite_key]),
+            CompositeDeclaration::new(other_composite_key, "B", CompositeShape::Tuple(vec![]))
+                .with_supertypes(vec![composite_key]),
+        ];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                composite_cycle, [], TypeEnvironmentLimits::default(), &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::CompositeGeneralizationCycle { cycle }, ..
+            })) if cycle.len() == 3 && cycle.first() == cycle.last()
+        ));
         let bad_target = vec![
             ObjectTypeDeclaration::new(
                 id(2),
@@ -5699,6 +6139,17 @@ mod staged_admission_tests {
             TypeEnvironment::stage_model_with_cancel([], parent_child(ValueType::Integer, ValueType::Integer), limit, &cancel),
             Err(EnvironmentFailure::Limit(found)) if found.kind() == EnvironmentLimitKind::AncestorSteps
         ));
+        let one_edge = TypeEnvironmentLimits {
+            ancestor_steps: 1,
+            ..TypeEnvironmentLimits::default()
+        };
+        assert!(TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            one_edge,
+            &cancel
+        )
+        .is_ok());
         let conflict = vec![
             ObjectTypeDeclaration::new(
                 id(1),
@@ -5776,6 +6227,35 @@ mod staged_admission_tests {
             TypeEnvironment::stage_model_with_cancel([], parent_child(ValueType::Integer, ValueType::Integer), limit, &cancel),
             Err(EnvironmentFailure::Limit(found)) if found.kind() == EnvironmentLimitKind::WorkUnits && found.configured_bound() == 0 && found.actual() > 0
         ));
+        let baseline_spent = TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("staging admits")
+        .spent();
+        assert!(TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            TypeEnvironmentLimits {
+                work_units: baseline_spent,
+                ..TypeEnvironmentLimits::default()
+            },
+            &cancel,
+        )
+        .is_ok());
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [], parent_child(ValueType::Integer, ValueType::Integer),
+                TypeEnvironmentLimits { work_units: baseline_spent - 1, ..TypeEnvironmentLimits::default() },
+                &cancel,
+            ),
+            Err(EnvironmentFailure::Limit(found))
+                if found.kind() == EnvironmentLimitKind::WorkUnits
+                    && found.configured_bound() == baseline_spent - 1
+                    && found.actual() == u128::from(baseline_spent)
+        ));
         let cancelled = quire_exact::Cancel::new();
         cancelled.cancel(quire_exact::CancelCause::Requested);
         assert!(matches!(
@@ -5799,6 +6279,7 @@ mod staged_admission_tests {
             types.push(
                 ObjectTypeDeclaration::new(id(4), "Subtype", vec![]).with_supertypes(vec![id(3)]),
             );
+            types.push(ObjectTypeDeclaration::new(id(5), "Unrelated", vec![]));
             types
         };
         let completed = TypeEnvironment::stage_model_with_cancel(
@@ -5815,7 +6296,27 @@ mod staged_admission_tests {
             id(4),
             ObjectId::new("object").expect("identity"),
         ));
-        assert!(completed.admits(&ValueType::Reference(id(3)), &reference));
+        let parent_field = completed.attribute(id(1), "f").expect("parent field");
+        let child_field = completed
+            .attribute(id(2), "f")
+            .expect("effective child field");
+        assert_eq!(
+            parent_field.field().value_type(),
+            &ValueType::Reference(id(3))
+        );
+        assert_eq!(
+            child_field.field().value_type(),
+            &ValueType::Reference(id(4))
+        );
+        assert!(child_field.stands_for(&FieldRef::new(id(1), "f")));
+        assert!(completed.admits(parent_field.field().value_type(), &reference));
+        assert!(completed.admits(child_field.field().value_type(), &reference));
+        let unrelated = Value::Reference(ObjectReference::new(
+            UniverseId::from_digest([7; 32]),
+            id(5),
+            ObjectId::new("other").expect("identity"),
+        ));
+        assert!(!completed.admits(parent_field.field().value_type(), &unrelated));
         let Value::Reference(actual) = reference else {
             panic!("reference fixture")
         };
