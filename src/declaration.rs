@@ -868,11 +868,21 @@ struct EffectiveStorage {
 /// Model-assembly admission awaiting the caller's completed conformance verdict.
 /// Dropping this value abandons admission. Only [`Self::complete`] can produce
 /// a public environment; its declaration and attribute storage stays private.
-pub struct PendingTypeEnvironment<'a> {
+pub struct PendingTypeEnvironment {
     environment: TypeEnvironment,
     storage: EffectiveStorage,
-    budget: WorkBudget<'a>,
+    budget: WorkBudget,
     needs_widening_check: bool,
+}
+
+/// One field declared directly by an object type while model admission is pending.
+pub struct PendingDeclaredField<'a> {
+    /// The actual declaration identity.
+    pub field: FieldRef,
+    /// Its declared value type.
+    pub value_type: &'a ValueType,
+    /// Its declared presence.
+    pub presence: Presence,
 }
 
 /// A source-backed projection through one immediate parent while admission is pending.
@@ -892,6 +902,10 @@ pub struct PendingParentField<'a, S, O> {
 /// Why a pending immediate-parent field projection cannot be used.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PendingFieldFailure {
+    /// The child names no admitted model object type.
+    UnknownChild(EffectiveId),
+    /// The declaration owner names no admitted model object type.
+    UnknownObjectType(EffectiveId),
     /// The selected parent is not an immediate parent of the child.
     NotImmediateParent,
     /// The parent has no field with that name.
@@ -902,7 +916,66 @@ pub enum PendingFieldFailure {
     Storage(EnvironmentFailure),
 }
 
-impl PendingTypeEnvironment<'_> {
+impl PendingTypeEnvironment {
+    /// Work units spent by structural admission and restricted pending reads.
+    pub fn spent(&self) -> u64 {
+        self.budget.spent
+    }
+
+    /// The admitted composite declaration, without effective attributes.
+    pub fn composite(&self, key: NodeKey) -> Option<&CompositeDeclaration> {
+        self.environment.composites.get(&key)
+    }
+
+    /// Admitted composite declarations in key order.
+    pub fn composites(&self) -> impl Iterator<Item = &CompositeDeclaration> {
+        self.environment.composites.values()
+    }
+
+    /// The admitted object declaration, without a completed attribute view.
+    pub fn object_type(&self, key: EffectiveId) -> Option<&ObjectTypeDeclaration> {
+        self.environment.object_types.get(&key)
+    }
+
+    /// Admitted object declarations in key order.
+    pub fn object_types(&self) -> impl Iterator<Item = &ObjectTypeDeclaration> {
+        self.environment.object_types.values()
+    }
+
+    /// Whether the admitted ancestry makes `sub` a subtype of `sup`.
+    pub fn conforms(&self, sub: EffectiveId, sup: EffectiveId) -> bool {
+        self.environment.conforms(sub, sup)
+    }
+
+    /// Read only a field declared directly by `owner`. Inherited and
+    /// effective attribute lookup remains unavailable while pending.
+    pub fn declared_field(
+        &mut self,
+        owner: EffectiveId,
+        name: &str,
+    ) -> Result<PendingDeclaredField<'_>, PendingFieldFailure> {
+        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+        let declaration = self
+            .environment
+            .object_types
+            .get(&owner)
+            .ok_or(PendingFieldFailure::UnknownObjectType(owner))?;
+        let field = declaration
+            .attributes
+            .iter()
+            .find(|field| field.name() == name)
+            .ok_or(PendingFieldFailure::UnknownField)?;
+        Ok(PendingDeclaredField {
+            field: FieldRef {
+                owner,
+                name: try_clone_str(field.name(), &GlobalReservations)
+                    .map_err(PendingFieldFailure::Storage)?,
+            },
+            value_type: field.value_type(),
+            presence: field.presence(),
+        })
+    }
+
     /// Read one source-backed field through an immediate parent. The source
     /// occurrence and observation are returned unchanged to the caller's
     /// checked-fact graph; no completed environment or fact is created here.
@@ -918,7 +991,7 @@ impl PendingTypeEnvironment<'_> {
             .environment
             .object_types
             .get(&child)
-            .ok_or(PendingFieldFailure::NotImmediateParent)?;
+            .ok_or(PendingFieldFailure::UnknownChild(child))?;
         if !child_type.supertypes.contains(&parent) {
             return Err(PendingFieldFailure::NotImmediateParent);
         }
@@ -1006,6 +1079,7 @@ impl PendingTypeEnvironment<'_> {
         for (owner, _, _, index) in &table.fields {
             self.environment.field_keys.push((*owner, *index));
         }
+        self.environment.admission_work_units = self.budget.spent;
         Ok(self.environment)
     }
 }
@@ -1130,18 +1204,18 @@ impl Default for TypeEnvironmentLimits {
 }
 
 /// The admission work meter: charges fail once `limit` units are spent.
-struct WorkBudget<'a> {
+struct WorkBudget {
     spent: u64,
     limit: u64,
-    cancel: Option<&'a quire_exact::Cancel>,
+    cancel: Option<quire_exact::Cancel>,
 }
 
-impl<'a> WorkBudget<'a> {
-    fn new(limit: u64, cancel: Option<&'a quire_exact::Cancel>) -> Self {
+impl WorkBudget {
+    fn new(limit: u64, cancel: Option<&quire_exact::Cancel>) -> Self {
         Self {
             spent: 0,
             limit,
-            cancel,
+            cancel: cancel.cloned(),
         }
     }
 
@@ -1153,7 +1227,7 @@ impl<'a> WorkBudget<'a> {
         // A cancelled handle (QSL FR-276) denies the charge as an exhausted
         // budget does; the caller that owns the handle reports the
         // cancellation.
-        let cancelled = self.cancel.is_some_and(quire_exact::Cancel::poll);
+        let cancelled = self.cancel.as_ref().is_some_and(quire_exact::Cancel::poll);
         match self.spent.checked_add(units) {
             Some(spent) if spent <= self.limit && !cancelled => {
                 self.spent = spent;
@@ -1602,7 +1676,7 @@ pub enum DeclarationCause {
 
 /// One checked package's closed, admitted record, tuple and object-type
 /// declarations.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct TypeEnvironment {
     composites: OrderedIndex<NodeKey, CompositeDeclaration>,
     /// Each composite declaration's proper ancestors, computed once after
@@ -1624,7 +1698,24 @@ pub struct TypeEnvironment {
     field_keys: Vec<(EffectiveId, usize)>,
     /// The units a `ValueType::Quantity` of this package names by id.
     units: UnitTable,
+    /// Admission work is observed separately from semantic equality.
+    admission_work_units: u64,
 }
+
+impl PartialEq for TypeEnvironment {
+    fn eq(&self, other: &Self) -> bool {
+        self.composites == other.composites
+            && self.composite_ancestry == other.composite_ancestry
+            && self.object_types == other.object_types
+            && self.ancestry == other.ancestry
+            && self.effective == other.effective
+            && self.attribute_slots == other.attribute_slots
+            && self.field_keys == other.field_keys
+            && self.units == other.units
+    }
+}
+
+impl Eq for TypeEnvironment {}
 
 /// One containment edge of the recursion rule.
 #[derive(Clone, Copy)]
@@ -1635,6 +1726,11 @@ struct Edge {
 }
 
 impl TypeEnvironment {
+    /// Work units spent admitting the completed environment.
+    pub fn spent(&self) -> u64 {
+        self.admission_work_units
+    }
+
     /// Admit `composites` and `object_types` as one closed environment,
     /// under the QSL NFR-012 default ceilings ([`TypeEnvironmentLimits::default`]).
     /// See [`Self::bounded`].
@@ -1688,12 +1784,12 @@ impl TypeEnvironment {
     /// Begin admission for QSL's model assembly under the same limits and
     /// cancellation handle as direct admission. The caller must finish its
     /// complete conformance verdict before calling [`PendingTypeEnvironment::complete`].
-    pub fn stage_model_with_cancel<'a>(
+    pub fn stage_model_with_cancel(
         composites: impl IntoIterator<Item = CompositeDeclaration>,
         object_types: impl IntoIterator<Item = ObjectTypeDeclaration>,
         limits: TypeEnvironmentLimits,
-        cancel: &'a quire_exact::Cancel,
-    ) -> Admission<PendingTypeEnvironment<'a>> {
+        cancel: &quire_exact::Cancel,
+    ) -> Admission<PendingTypeEnvironment> {
         Self::prepare(
             composites,
             object_types,
@@ -1715,14 +1811,14 @@ impl TypeEnvironment {
             .complete_with_reservations(reserve)
     }
 
-    fn prepare<'a, R: ReservationPolicy>(
+    fn prepare<R: ReservationPolicy>(
         composites: impl IntoIterator<Item = CompositeDeclaration>,
         object_types: impl IntoIterator<Item = ObjectTypeDeclaration>,
         limits: TypeEnvironmentLimits,
-        cancel: Option<&'a quire_exact::Cancel>,
+        cancel: Option<&quire_exact::Cancel>,
         reserve: &R,
         check_widening: bool,
-    ) -> Admission<PendingTypeEnvironment<'a>> {
+    ) -> Admission<PendingTypeEnvironment> {
         let mut environment = Self::default();
         reserve.phase(StoragePhase::Registry);
         for declaration in composites {
@@ -5304,7 +5400,19 @@ mod staged_admission_tests {
             &cancel,
         )
         .expect("structure admits");
-        let spent = pending.budget.spent;
+        assert_eq!(pending.spent(), direct.spent());
+        assert_eq!(pending.object_types().count(), 2);
+        assert!(pending.object_type(id(2)).is_some());
+        assert!(pending.conforms(id(2), id(1)));
+        let declared = pending.declared_field(id(2), "f").expect("own field");
+        assert_eq!(declared.field, FieldRef::new(id(2), "f"));
+        assert_eq!(declared.value_type, &ValueType::Integer);
+        assert_eq!(declared.presence, Presence::Required);
+        assert!(matches!(
+            pending.declared_field(id(2), "missing"),
+            Err(PendingFieldFailure::UnknownField)
+        ));
+        let spent = pending.spent();
         let projected = pending
             .parent_field(id(2), id(1), "f", "child.self.f", 17_u32)
             .expect("parent field resolves");
@@ -5313,12 +5421,18 @@ mod staged_admission_tests {
         assert_eq!(projected.presence, Presence::Required);
         assert_eq!(projected.source, "child.self.f");
         assert_eq!(projected.observation, 17);
-        assert_eq!(pending.budget.spent, spent + 1);
+        assert_eq!(pending.spent(), spent + 1);
+        assert!(matches!(
+            pending.parent_field(id(9), id(1), "f", "bad.child", 19),
+            Err(PendingFieldFailure::UnknownChild(key)) if key == id(9)
+        ));
         assert!(matches!(
             pending.parent_field(id(2), id(1), "missing", "child.self.missing", 18),
             Err(PendingFieldFailure::UnknownField)
         ));
         let completed = pending.complete().expect("completion admits");
+        assert_eq!(completed.spent(), direct.spent() + 4);
+        assert_eq!(completed, direct);
         let expected = direct.attribute(id(2), "f").expect("direct slot");
         let actual = completed.attribute(id(2), "f").expect("staged slot");
         assert_eq!(actual.identity(), expected.identity());
@@ -5340,6 +5454,78 @@ mod staged_admission_tests {
         assert_eq!(
             other_cancel.tripped(),
             Some(quire_exact::CancelCause::Requested)
+        );
+        let original = quire_exact::Cancel::new();
+        let shared = original.clone();
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            TypeEnvironmentLimits::default(),
+            &original,
+        )
+        .expect("structure admits");
+        drop(original);
+        shared.cancel(quire_exact::CancelCause::Requested);
+        assert!(matches!(
+            pending.declared_field(id(2), "f"),
+            Err(PendingFieldFailure::Limit(found)) if found.kind() == EnvironmentLimitKind::WorkUnits
+        ));
+        assert_eq!(shared.tripped(), Some(quire_exact::CancelCause::Requested));
+    }
+
+    /// Pending declaration reads expose only a type's own field, not an
+    /// inherited effective attribute or an evaluator entry point.
+    #[trace("TC-909", "FR-110-AC-5", "FR-110-AC-6")]
+    #[test]
+    fn pending_declared_field_does_not_resolve_inheritance() {
+        let cancel = quire_exact::Cancel::new();
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            [
+                ObjectTypeDeclaration::new(
+                    id(1),
+                    "Parent",
+                    vec![FieldDeclaration::new(
+                        "inherited",
+                        ValueType::Boolean,
+                        Presence::Required,
+                    )],
+                ),
+                ObjectTypeDeclaration::new(
+                    id(2),
+                    "Child",
+                    vec![FieldDeclaration::new(
+                        "own",
+                        ValueType::Integer,
+                        Presence::Optional,
+                    )],
+                )
+                .with_supertypes(vec![id(1)]),
+            ],
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("declarations admit");
+        let own = pending
+            .declared_field(id(2), "own")
+            .expect("own declaration");
+        assert_eq!(own.field, FieldRef::new(id(2), "own"));
+        assert_eq!(own.presence, Presence::Optional);
+        assert!(matches!(
+            pending.declared_field(id(2), "inherited"),
+            Err(PendingFieldFailure::UnknownField)
+        ));
+        assert!(matches!(
+            pending.declared_field(id(9), "own"),
+            Err(PendingFieldFailure::UnknownObjectType(key)) if key == id(9)
+        ));
+        assert_eq!(
+            pending
+                .object_type(id(2))
+                .expect("child")
+                .attributes()
+                .len(),
+            1
         );
     }
 
