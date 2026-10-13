@@ -23,7 +23,7 @@ Checked:
   `#[allow(clippy::disallowed_methods, reason = ...)]`. No other
   `EffectiveId::from_digest` or `PopulationId::from_digest` call is in `src/`
   (grep).
-- Gate: `~/dev/worktrees/logs/ir582-quire-semantic-value-ci4.log` ends
+- Gate: `<gate log>` ends
   `exit=0`, written after the head commit. Clippy re-checked the crate
   ("Checking quire-semantic-value") and printed no unresolved-path warning for
   the new entries.

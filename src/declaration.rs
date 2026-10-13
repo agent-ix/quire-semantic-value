@@ -131,10 +131,14 @@ mod storage_reservation_tests {
     fn union_bindings() -> Vec<UnionMember> {
         vec![
             UnionMember::from_admitted(
-                union_key(40), union_key(10), Identifier::new("End").unwrap(),
+                union_key(40),
+                union_key(10),
+                Identifier::new("End").unwrap(),
             ),
             UnionMember::from_admitted(
-                union_key(40), union_key(11), Identifier::new("Next").unwrap(),
+                union_key(40),
+                union_key(11),
+                Identifier::new("Next").unwrap(),
             ),
         ]
     }
@@ -165,25 +169,47 @@ mod storage_reservation_tests {
         }
     }
 
-    /// Trace: FR-108-AC-1, FR-108-AC-3, FR-112-AC-3
-    #[trace("TC-907", "TC-911", "FR-108-AC-1", "FR-108-AC-3", "FR-112-AC-3")]
+    /// Trace: FR-108-AC-1, FR-108-AC-3, FR-115-AC-3
+    #[trace("TC-907", "TC-915", "FR-108-AC-1", "FR-108-AC-3", "FR-115-AC-3")]
     #[test]
     fn union_topology_storage_denial_and_retry_use_the_production_boundary() {
-        for selected in [StoragePhase::Registry, StoragePhase::MemberTypes, StoragePhase::Traversal] {
+        for selected in [
+            StoragePhase::Registry,
+            StoragePhase::MemberTypes,
+            StoragePhase::Traversal,
+        ] {
             let denial = DenyUnionPhase {
-                selected, phase: Cell::new(None), next: 1,
-                calls: Cell::new(0), denied: Cell::new(None),
+                selected,
+                phase: Cell::new(None),
+                next: 1,
+                calls: Cell::new(0),
+                denied: Cell::new(None),
             };
             let mut work = WorkBudget::new(100, None);
             let result = TypeEnvironment::admit_with_reservations(
-                [union_topology()], [], 0, &mut work, &denial,
+                [union_topology()],
+                [],
+                0,
+                &mut work,
+                &denial,
             );
-            let requested = denial.denied.get().expect("selected Union boundary reached");
-            assert_eq!(requested, StorageRequest::new(1, StorageUnit::AdditionalElements));
+            let requested = denial
+                .denied
+                .get()
+                .expect("selected Union boundary reached");
+            assert_eq!(
+                requested,
+                StorageRequest::new(1, StorageUnit::AdditionalElements)
+            );
             assert_eq!(result, Err(EnvironmentFailure::Allocation(requested)));
             let retry = TypeEnvironment::admit_with_reservations(
-                [union_topology()], [], 0, &mut work, &GlobalReservations,
-            ).expect("same input admits after denial with the same cumulative caller budget");
+                [union_topology()],
+                [],
+                0,
+                &mut work,
+                &GlobalReservations,
+            )
+            .expect("same input admits after denial with the same cumulative caller budget");
             let fresh = TypeEnvironment::new([union_topology()], []).unwrap();
             assert_eq!(retry, fresh);
             assert_eq!(retry.union_key(union_key(1)), None);
@@ -191,66 +217,113 @@ mod storage_reservation_tests {
         }
     }
 
-    /// Trace: FR-108-AC-3, FR-112-AC-2, FR-112-AC-3
-    #[trace("TC-907", "TC-911", "FR-108-AC-3", "FR-112-AC-2", "FR-112-AC-3")]
+    /// Trace: FR-108-AC-3, FR-115-AC-2, FR-115-AC-3
+    #[trace("TC-907", "TC-915", "FR-108-AC-3", "FR-115-AC-2", "FR-115-AC-3")]
     #[test]
     fn each_union_seal_destination_denies_before_any_binding_is_published() {
         for (next, expected_amount) in [(1, 2), (2, 1), (3, 1)] {
             let mut work = WorkBudget::new(100, None);
-            let mut environment = TypeEnvironment::bounded_with_budget(
-                [union_topology()], [], 0, &mut work,
-            ).unwrap();
+            let mut environment =
+                TypeEnvironment::bounded_with_budget([union_topology()], [], 0, &mut work).unwrap();
             let before = environment.clone();
             let denial = DenyUnionPhase {
-                selected: StoragePhase::KeyJoin, phase: Cell::new(None), next,
-                calls: Cell::new(0), denied: Cell::new(None),
+                selected: StoragePhase::KeyJoin,
+                phase: Cell::new(None),
+                next,
+                calls: Cell::new(0),
+                denied: Cell::new(None),
             };
             let spent = work.spent();
             let result = environment.seal_union_with_reservations(
-                union_key(1), union_key(40), union_bindings(), &mut work, &denial,
+                union_key(1),
+                union_key(40),
+                union_bindings(),
+                &mut work,
+                &denial,
             );
-            let requested = denial.denied.get().expect("selected join reservation reached");
-            assert_eq!(requested, StorageRequest::new(expected_amount, StorageUnit::AdditionalElements));
+            let requested = denial
+                .denied
+                .get()
+                .expect("selected join reservation reached");
+            assert_eq!(
+                requested,
+                StorageRequest::new(expected_amount, StorageUnit::AdditionalElements)
+            );
             assert_eq!(result, Err(EnvironmentFailure::Allocation(requested)));
             assert_eq!(work.spent(), spent + 2);
             assert_eq!(environment, before);
             assert_eq!(environment.union_key(union_key(1)), None);
             assert_eq!(environment.union_handle(union_key(40)), None);
-            let CompositeShape::Union(members) = environment.composite(union_key(1)).unwrap().shape() else {
+            let CompositeShape::Union(members) =
+                environment.composite(union_key(1)).unwrap().shape()
+            else {
                 panic!("resolved Union descriptor retained");
             };
             assert!(members.iter().all(|member| member.member().is_none()));
-            environment.seal_union_verified(union_key(1), union_key(40), union_bindings(), &mut work).unwrap();
+            environment
+                .seal_union_verified(union_key(1), union_key(40), union_bindings(), &mut work)
+                .unwrap();
             let mut fresh = before;
-            fresh.seal_union_verified(
-                union_key(1), union_key(40), union_bindings(), &mut WorkBudget::new(2, None),
-            ).unwrap();
+            fresh
+                .seal_union_verified(
+                    union_key(1),
+                    union_key(40),
+                    union_bindings(),
+                    &mut WorkBudget::new(2, None),
+                )
+                .unwrap();
             assert_eq!(environment, fresh);
             assert_eq!(environment.union_key(union_key(1)), Some(union_key(40)));
             assert_eq!(environment.union_handle(union_key(40)), Some(union_key(1)));
         }
     }
 
-    /// Trace: FR-108-AC-1, FR-108-AC-4, FR-112-AC-3
-    #[trace("TC-907", "TC-911", "FR-108-AC-1", "FR-108-AC-4", "FR-112-AC-3")]
+    /// Trace: FR-108-AC-1, FR-108-AC-4, FR-115-AC-3
+    #[trace("TC-907", "TC-915", "FR-108-AC-1", "FR-108-AC-4", "FR-115-AC-3")]
     #[test]
     fn union_binding_validation_byte_failure_retains_its_native_request() {
         let mut environment = TypeEnvironment::new([union_topology()], []).unwrap();
         let before = environment.clone();
-        let denial = DenyBytes { seen: Cell::new(None) };
-        let bad = || vec![UnionMember::from_admitted(
-            union_key(40), union_key(10), Identifier::new("End").unwrap(),
-        )];
-        assert_eq!(environment.seal_union_with_reservations(
-            union_key(1), union_key(40), bad(), &mut WorkBudget::new(10, None), &denial,
-        ), Err(EnvironmentFailure::Allocation(StorageRequest::new(4, StorageUnit::Bytes))));
-        assert_eq!(denial.seen.get(), Some(StorageRequest::new(4, StorageUnit::Bytes)));
+        let denial = DenyBytes {
+            seen: Cell::new(None),
+        };
+        let bad = || {
+            vec![UnionMember::from_admitted(
+                union_key(40),
+                union_key(10),
+                Identifier::new("End").unwrap(),
+            )]
+        };
+        assert_eq!(
+            environment.seal_union_with_reservations(
+                union_key(1),
+                union_key(40),
+                bad(),
+                &mut WorkBudget::new(10, None),
+                &denial,
+            ),
+            Err(EnvironmentFailure::Allocation(StorageRequest::new(
+                4,
+                StorageUnit::Bytes
+            )))
+        );
+        assert_eq!(
+            denial.seen.get(),
+            Some(StorageRequest::new(4, StorageUnit::Bytes))
+        );
         assert_eq!(environment, before);
-        assert_eq!(environment.seal_union_verified(
-            union_key(1), union_key(40), bad(), &mut WorkBudget::new(10, None),
-        ), Err(EnvironmentFailure::Refused(InvalidDeclaration {
-            declaration: "Tree".into(), cause: DeclarationCause::Type(IllTypedCause::TypeMismatch),
-        })));
+        assert_eq!(
+            environment.seal_union_verified(
+                union_key(1),
+                union_key(40),
+                bad(),
+                &mut WorkBudget::new(10, None),
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                declaration: "Tree".into(),
+                cause: DeclarationCause::Type(IllTypedCause::TypeMismatch),
+            }))
+        );
         assert_eq!(environment, before);
     }
 
@@ -951,12 +1024,15 @@ pub enum CompositeShape {
     Union(Vec<UnionMemberDeclaration>),
 }
 
-/// A record, tuple or union declaration with its producer-assigned node key.
+/// A record, tuple or union declaration with its producer-assigned node key and
+/// optional direct composite supertypes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompositeDeclaration {
     key: NodeKey,
     name: String,
     shape: CompositeShape,
+    /// Direct composite supertypes, kept in producer order.
+    supertypes: Vec<NodeKey>,
 }
 
 impl CompositeDeclaration {
@@ -966,7 +1042,15 @@ impl CompositeDeclaration {
             key,
             name: name.into(),
             shape,
+            supertypes: Vec::new(),
         }
+    }
+
+    /// Declares the direct composite supertypes of this record or tuple.
+    /// Each key must identify another admitted composite declaration.
+    pub fn with_supertypes(mut self, supertypes: Vec<NodeKey>) -> Self {
+        self.supertypes = supertypes;
+        self
     }
 
     /// The declaration node key.
@@ -982,6 +1066,11 @@ impl CompositeDeclaration {
     /// The declared shape.
     pub fn shape(&self) -> &CompositeShape {
         &self.shape
+    }
+
+    /// The directly declared composite supertypes, in declaration order.
+    pub fn supertypes(&self) -> &[NodeKey] {
+        &self.supertypes
     }
 }
 
@@ -1172,17 +1261,18 @@ pub const DEFAULT_ANCESTOR_STEPS: u64 = 16_777_216;
 /// `PopulationAdmissionLimits::work_units` defaults.
 pub const DEFAULT_WORK_UNITS: u64 = 16_777_216;
 
-/// The ceilings [`TypeEnvironment::bounded`] admits object types under.
+/// The ceilings [`TypeEnvironment::bounded`] admits object types and
+/// composites under.
 /// Every member is a real limit; zero is never "unlimited".
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TypeEnvironmentLimits {
-    /// QSL FR-082's `ancestor_steps`: the most `supertypes` edges one
-    /// conformance walk may follow, an edge count over the walk's closure
-    /// and never a chain depth.
+    /// QSL FR-082's `ancestor_steps`: the most distinct `supertypes` edges one
+    /// object-type or composite conformance walk may follow, an edge count
+    /// over the walk's closure and never a chain depth.
     pub ancestor_steps: u64,
     /// Cumulative work units admission may spend retaining union members and
-    /// walking their payload type links, building the ancestor
-    /// closure and flattening every object type's attributes. One unit is
+    /// walking their payload type links, building the object/composite
+    /// ancestor closure and flattening every object type's attributes. One unit is
     /// one ancestor or attribute copied into a type's set, or one field a
     /// lineage names. Running out is an
     /// [`EnvironmentLimitKind::WorkUnits`] limit.
@@ -1293,11 +1383,11 @@ impl Stopped {
 /// Which [`TypeEnvironmentLimits`] ceiling admission reached.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum EnvironmentLimitKind {
-    /// `ancestor_steps`: one object type's conformance walk would follow
-    /// more `supertypes` edges than the ceiling (QSL FR-082).
+    /// `ancestor_steps`: one object type's or composite's conformance walk
+    /// would follow more distinct `supertypes` edges than the ceiling (QSL FR-082).
     AncestorSteps,
-    /// `work_units`: the admission's cumulative ancestor-closure and
-    /// flattening work.
+    /// `work_units`: the admission's cumulative object/composite
+    /// ancestor-closure and flattening work.
     WorkUnits,
 }
 
@@ -1610,6 +1700,7 @@ impl InvalidDeclaration {
             DeclarationCause::Type(_)
             | DeclarationCause::Recursion { .. }
             | DeclarationCause::GeneralizationCycle { .. }
+            | DeclarationCause::CompositeGeneralizationCycle { .. }
             | DeclarationCause::RedefinitionWidens(_) => IllTyped::CODE,
         }
     }
@@ -1669,6 +1760,11 @@ pub enum DeclarationCause {
         /// The object-type names along the cycle, first and last equal.
         cycle: Vec<String>,
     },
+    /// A record or tuple's declared composite supertypes form a cycle.
+    CompositeGeneralizationCycle {
+        /// The composite declaration names along the cycle, first and last equal.
+        cycle: Vec<String>,
+    },
 }
 
 /// One checked package's closed, admitted record, tuple, union and object-type
@@ -1676,6 +1772,9 @@ pub enum DeclarationCause {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TypeEnvironment {
     composites: OrderedIndex<NodeKey, CompositeDeclaration>,
+    /// Each composite declaration's proper ancestors, computed once after
+    /// the composite-generalization graph is known acyclic.
+    composite_ancestry: OrderedIndex<NodeKey, Vec<NodeKey>>,
     object_types: OrderedIndex<EffectiveId, ObjectTypeDeclaration>,
     /// Every object type's own proper ancestor set:
     /// transitive, not just direct, `supertypes`. Precomputed once in
@@ -1840,14 +1939,14 @@ impl TypeEnvironment {
     ///
     /// `limits.ancestor_steps` is the QSL FR-082 ceiling the model walks this
     /// package's conformance under at evaluation (the population binding's
-    /// own `ancestor_steps`). An object type whose walk would follow more
-    /// `supertypes` edges than that stops admission with an
+    /// own `ancestor_steps`). An object type or composite whose walk would
+    /// follow more distinct `supertypes` edges than that stops admission with an
     /// [`EnvironmentLimitKind::AncestorSteps`] limit (QSL FR-082). Check time is the stricter
     /// side: every conformance question the checker answers from this
     /// environment is one evaluation completes with the same verdict.
     ///
-    /// `limits.work_units` bounds the whole admission's ancestor-closure
-    /// and flattening work; running out is an
+    /// `limits.work_units` bounds the whole admission's object/composite
+    /// ancestor-closure and flattening work; running out is an
     /// [`EnvironmentLimitKind::WorkUnits`] limit.
     pub fn bounded(
         composites: impl IntoIterator<Item = CompositeDeclaration>,
@@ -1867,7 +1966,13 @@ impl TypeEnvironment {
         limits: TypeEnvironmentLimits,
         cancel: &quire_exact::Cancel,
     ) -> Admission<Self> {
-        Self::bounded_with_reservations(composites, object_types, limits, Some(cancel), &GlobalReservations)
+        Self::bounded_with_reservations(
+            composites,
+            object_types,
+            limits,
+            Some(cancel),
+            &GlobalReservations,
+        )
     }
 
     /// Admit topology using the caller's cumulative authored-declaration budget.
@@ -1877,7 +1982,13 @@ impl TypeEnvironment {
         ancestor_steps: u64,
         budget: &mut WorkBudget,
     ) -> Admission<Self> {
-        Self::admit_with_reservations(composites, object_types, ancestor_steps, budget, &GlobalReservations)
+        Self::admit_with_reservations(
+            composites,
+            object_types,
+            ancestor_steps,
+            budget,
+            &GlobalReservations,
+        )
     }
 
     fn bounded_with_reservations<R: ReservationPolicy>(
@@ -1888,7 +1999,13 @@ impl TypeEnvironment {
         reserve: &R,
     ) -> Admission<Self> {
         let mut budget = WorkBudget::new(limits.work_units, cancel);
-        Self::admit_with_reservations(composites, object_types, limits.ancestor_steps, &mut budget, reserve)
+        Self::admit_with_reservations(
+            composites,
+            object_types,
+            limits.ancestor_steps,
+            &mut budget,
+            reserve,
+        )
     }
 
     fn admit_with_reservations<R: ReservationPolicy>(
@@ -1932,10 +2049,14 @@ impl TypeEnvironment {
                     if member.member().is_some() != sealed {
                         return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch))?);
                     }
-                    if names.try_insert(member.identifier().as_str(), (), reserve)?.is_some() {
-                        return Err(refuse(DeclarationCause::DuplicateMember(
-                            try_clone_str(member.identifier().as_str(), reserve)?,
-                        ))?);
+                    if names
+                        .try_insert(member.identifier().as_str(), (), reserve)?
+                        .is_some()
+                    {
+                        return Err(refuse(DeclarationCause::DuplicateMember(try_clone_str(
+                            member.identifier().as_str(),
+                            reserve,
+                        )?))?);
                     }
                     if sealed {
                         let Some(binding) = member.member() else {
@@ -1975,6 +2096,7 @@ impl TypeEnvironment {
                                 | ValueType::Text(_)
                                 | ValueType::Uuid
                                 | ValueType::Timestamp
+                                | ValueType::String
                                 | ValueType::Enum(_)
                                 | ValueType::Composite(_)
                                 | ValueType::Reference(_)
@@ -1987,9 +2109,11 @@ impl TypeEnvironment {
                     environment
                         .union_keys
                         .try_insert(declaration.key, declaration.key, reserve)?;
-                    environment
-                        .union_handles
-                        .try_insert(declaration.key, declaration.key, reserve)?;
+                    environment.union_handles.try_insert(
+                        declaration.key,
+                        declaration.key,
+                        reserve,
+                    )?;
                 }
             }
             if environment.composites.contains_key(&declaration.key) {
@@ -2023,11 +2147,17 @@ impl TypeEnvironment {
         reserve.phase(StoragePhase::Traversal);
         environment.check_recursion(RecursionEdges::Unnamed, budget, reserve)?;
         environment.check_recursion(RecursionEdges::NonEscaping, budget, reserve)?;
+        environment.check_composite_supertypes(budget, reserve)?;
+        environment.composite_ancestry =
+            environment.compute_composite_ancestors(budget, reserve)?;
         environment.check_supertypes(budget, reserve)?;
         reserve.phase(StoragePhase::Ancestors);
         environment.ancestry = environment.compute_ancestors(budget, reserve)?;
         environment
             .check_ancestor_steps(ancestor_steps)
+            .map_err(EnvironmentFailure::Limit)?;
+        environment
+            .check_composite_ancestor_steps(ancestor_steps)
             .map_err(EnvironmentFailure::Limit)?;
         reserve.phase(StoragePhase::FieldIndex);
         let table = FieldTable::new(&environment.object_types, reserve)?;
@@ -2134,11 +2264,16 @@ impl TypeEnvironment {
         sub == sup || self.ancestry.is_ancestor(sub, sup)
     }
 
-    /// Whether `value_type` admits `value` under this environment's
-    /// conformance: a `Reference<T>` admits a reference whose object's
-    /// most-specific type conforms to `T` (QSpec FR-151, [`Self::conforms`]);
-    /// composites resolve their declared shapes and nested values iteratively.
-    /// Scalar leaves use [`ValueType::admits`].
+    /// Whether composite declaration `sub` conforms to `sup`: reflexive, or
+    /// `sup` is in `sub`'s admitted transitive composite-supertype closure.
+    /// Unknown unequal keys never conform.
+    pub fn composite_conforms(&self, sub: NodeKey, sup: NodeKey) -> bool {
+        sub == sup
+            || self
+                .composite_ancestry
+                .get(&sub)
+                .is_some_and(|ancestors| ancestors.binary_search(&sup).is_ok())
+    }
 
     /// The settled canonical key explicitly attached to this internal union handle.
     /// Returns `None` before sealing; no temporary handle is promoted implicitly.
@@ -2302,6 +2437,7 @@ impl TypeEnvironment {
                     | ValueType::Text(_)
                     | ValueType::Uuid
                     | ValueType::Timestamp
+                    | ValueType::String
                     | ValueType::Enum(_)
                     | ValueType::Composite(_)
                     | ValueType::Reference(_)
@@ -2357,6 +2493,7 @@ impl TypeEnvironment {
                 | ValueType::Text(_)
                 | ValueType::Uuid
                 | ValueType::Timestamp
+                | ValueType::String
                 | ValueType::Enum(_)
                 | ValueType::Composite(_)
                 | ValueType::Reference(_)
@@ -2390,6 +2527,7 @@ impl TypeEnvironment {
             | ValueType::Text(_)
             | ValueType::Uuid
             | ValueType::Timestamp
+            | ValueType::String
             | ValueType::Enum(_)
             | ValueType::Reference(_)
             | ValueType::Population(_) => link.clone(),
@@ -2416,6 +2554,7 @@ impl TypeEnvironment {
                 | ValueType::Text(_)
                 | ValueType::Uuid
                 | ValueType::Timestamp
+                | ValueType::String
                 | ValueType::Enum(_)
                 | ValueType::Composite(_)
                 | ValueType::Reference(_)
@@ -2525,39 +2664,19 @@ impl TypeEnvironment {
                     pending.extend(member.positions.iter().zip(union.payload()).rev());
                 }
                 (ValueType::Composite(key), Value::Composite(value)) => {
-                    if value.declaration() != *key {
+                    // A composite is admitted by declared-supertype conformance
+                    // and the walk stops there: its own members were admitted
+                    // against its own declaration.
+                    if !self.composite_conforms(value.declaration(), *key) {
                         return Ok(false);
                     }
-                    match self.shape(*key) {
-                        Some(CompositeShape::Record(fields)) => {
-                            if fields.len() != value.slots().len() {
-                                return Ok(false);
-                            }
-                            charge(fields.len())?;
-                            for (field, slot) in fields.iter().zip(value.slots()).rev() {
-                                match slot {
-                                    FieldValue::Present(value) => {
-                                        pending.push((field.value_type(), value))
-                                    }
-                                    FieldValue::Absent | FieldValue::Null
-                                        if field.presence() == Presence::Optional => {}
-                                    FieldValue::Absent | FieldValue::Null => return Ok(false),
-                                }
-                            }
-                        }
-                        Some(CompositeShape::Tuple(positions)) => {
-                            if positions.len() != value.slots().len() {
-                                return Ok(false);
-                            }
-                            charge(positions.len())?;
-                            for (ty, slot) in positions.iter().zip(value.slots()).rev() {
-                                let FieldValue::Present(value) = slot else {
-                                    return Ok(false);
-                                };
-                                pending.push((ty, value));
-                            }
-                        }
-                        Some(CompositeShape::Union(_)) | None => return Ok(false),
+                    if matches!(
+                        self.shape(*key),
+                        Some(CompositeShape::Record(_) | CompositeShape::Tuple(_))
+                    ) {
+                        charge(1)?;
+                    } else {
+                        return Ok(false);
                     }
                 }
                 (ValueType::Reference(declared), Value::Reference(reference)) => {
@@ -2612,6 +2731,7 @@ impl TypeEnvironment {
                     | ValueType::Text(_)
                     | ValueType::Uuid
                     | ValueType::Timestamp
+                    | ValueType::String
                     | ValueType::Enum(_)
                     | ValueType::Composite(_)
                     | ValueType::Reference(_)
@@ -2696,8 +2816,10 @@ impl TypeEnvironment {
                 | ValueType::Decimal(_)
                 | ValueType::Quantity(_)
                 | ValueType::Text(_)
+                | ValueType::String
                 | ValueType::Uuid
                 | ValueType::Timestamp
+                | ValueType::String
                 | ValueType::Enum(_)
                 | ValueType::Reference(_)
                 | ValueType::Population(_) => {}
@@ -2786,8 +2908,10 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::Text(_)
+                | ValueType::String
                 | ValueType::Uuid
                 | ValueType::Timestamp
+                | ValueType::String
                 | ValueType::Enum(_)
                 | ValueType::Composite(_)
                 | ValueType::Reference(_) => {}
@@ -2842,7 +2966,9 @@ impl TypeEnvironment {
                             charge(members.len())?;
                             for member in members {
                                 charge(member.positions.len())?;
-                                for ty in &member.positions { try_push(&mut pending, ty, reserve)?; }
+                                for ty in &member.positions {
+                                    try_push(&mut pending, ty, reserve)?;
+                                }
                             }
                         }
                         None => {}
@@ -2855,8 +2981,10 @@ impl TypeEnvironment {
                 | ValueType::Decimal(_)
                 | ValueType::Quantity(_)
                 | ValueType::Text(_)
+                | ValueType::String
                 | ValueType::Uuid
                 | ValueType::Timestamp
+                | ValueType::String
                 | ValueType::Enum(_)
                 | ValueType::Reference(_)
                 | ValueType::Population(_) => {}
@@ -2911,8 +3039,10 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::Text(_)
+                | ValueType::String
                 | ValueType::Uuid
                 | ValueType::Timestamp
+                | ValueType::String
                 | ValueType::Enum(_)
                 | ValueType::Composite(_)
                 | ValueType::Reference(_) => {}
@@ -2945,19 +3075,29 @@ impl TypeEnvironment {
             };
             match &declaration.shape {
                 CompositeShape::Record(fields) => {
-                    for field in fields { check(field.value_type(), false)?; }
+                    for field in fields {
+                        check(field.value_type(), false)?;
+                    }
                 }
                 CompositeShape::Tuple(positions) => {
-                    for ty in positions { check(ty, false)?; }
+                    for ty in positions {
+                        check(ty, false)?;
+                    }
                 }
                 CompositeShape::Union(members) => {
                     // Charge the original declaration/member/position events before growth.
                     for member in members {
                         budget.charge(1).map_err(EnvironmentFailure::Limit)?;
-                        budget.charge(member.positions.len()).map_err(EnvironmentFailure::Limit)?;
+                        budget
+                            .charge(member.positions.len())
+                            .map_err(EnvironmentFailure::Limit)?;
                         for ty in &member.positions {
                             if let Some(cause) = self.type_refusal_admission(
-                                ty, &mut |units| budget.charge(units).map_err(EnvironmentFailure::Limit), reserve,
+                                ty,
+                                &mut |units| {
+                                    budget.charge(units).map_err(EnvironmentFailure::Limit)
+                                },
+                                reserve,
                             )? {
                                 return Err(EnvironmentFailure::Refused(InvalidDeclaration {
                                     declaration: try_clone_str(&declaration.name, reserve)?,
@@ -2971,9 +3111,9 @@ impl TypeEnvironment {
         }
         for declaration in self.object_types.values() {
             for field in &declaration.attributes {
-                if let Some(cause) = self.type_refusal_admission(
-                    field.value_type(), &mut |_| Ok(()), reserve,
-                )? {
+                if let Some(cause) =
+                    self.type_refusal_admission(field.value_type(), &mut |_| Ok(()), reserve)?
+                {
                     return Err(EnvironmentFailure::Refused(InvalidDeclaration {
                         declaration: try_clone_str(&declaration.name, reserve)?,
                         cause,
@@ -3008,7 +3148,9 @@ impl TypeEnvironment {
             CompositeShape::Union(union_members) => {
                 for member in union_members {
                     budget.charge(1).map_err(EnvironmentFailure::Limit)?;
-                    budget.charge(member.positions.len()).map_err(EnvironmentFailure::Limit)?;
+                    budget
+                        .charge(member.positions.len())
+                        .map_err(EnvironmentFailure::Limit)?;
                     for ty in &member.positions {
                         try_push(&mut members, (ty, true, false), reserve)?;
                     }
@@ -3061,8 +3203,10 @@ impl TypeEnvironment {
                     | ValueType::Float(_)
                     | ValueType::Quantity(_)
                     | ValueType::Text(_)
+                    | ValueType::String
                     | ValueType::Uuid
                     | ValueType::Timestamp
+                    | ValueType::String
                     | ValueType::Enum(_)
                     | ValueType::Reference(_)
                     | ValueType::Population(_) => {}
@@ -3128,7 +3272,9 @@ impl TypeEnvironment {
                 *next += 1;
                 if let Some(&start) = active.get(target) {
                     if matches!(self.shape(*target), Some(CompositeShape::Union(_))) {
-                        budget.charge(path.len() - start + 1).map_err(EnvironmentFailure::Limit)?;
+                        budget
+                            .charge(path.len() - start + 1)
+                            .map_err(EnvironmentFailure::Limit)?;
                     }
                     let mut cycle = Vec::new();
                     for (key, _) in path.iter().skip(start) {
@@ -3147,6 +3293,158 @@ impl TypeEnvironment {
                     active.try_insert(*target, path.len(), reserve)?;
                     try_push(&mut path, (*target, 0), reserve)?;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Every composite's direct supertypes name admitted composites, and the
+    /// separate composite-generalization graph is acyclic. The explicit DFS
+    /// stack keeps admission safe for arbitrarily deep authored chains; each
+    /// followed edge consumes the same bounded work budget as object ancestry.
+    fn check_composite_supertypes<R: ReservationPolicy>(
+        &self,
+        budget: &mut WorkBudget,
+        reserve: &R,
+    ) -> Admission<()> {
+        let name = |key: &NodeKey| {
+            self.composites
+                .get(key)
+                .map_or("", |declaration| declaration.name.as_str())
+        };
+        for declaration in self.composites.values() {
+            for supertype in &declaration.supertypes {
+                if !self.composites.contains_key(supertype) {
+                    return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        declaration: try_clone_str(&declaration.name, reserve)?,
+                        cause: DeclarationCause::UnknownDeclaration(*supertype),
+                    }));
+                }
+            }
+        }
+        let mut finished: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
+        let mut on_path: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
+        for root in self.composites.keys() {
+            if finished.contains_key(root) {
+                continue;
+            }
+            let mut path: Vec<(NodeKey, usize)> = Vec::new();
+            try_push(&mut path, (*root, 0), reserve)?;
+            on_path.try_insert(*root, (), reserve)?;
+            while let Some((node, next)) = path.last_mut() {
+                let node = *node;
+                let Some(target) = self
+                    .composites
+                    .get(&node)
+                    .and_then(|declaration| declaration.supertypes.get(*next))
+                else {
+                    finished.try_insert(node, (), reserve)?;
+                    on_path.remove(&node);
+                    path.pop();
+                    continue;
+                };
+                *next += 1;
+                budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+                if on_path.contains_key(target) {
+                    let start = path
+                        .iter()
+                        .position(|(on_path, _)| on_path == target)
+                        .unwrap_or_default();
+                    let mut cycle = Vec::new();
+                    for (key, _) in path.iter().skip(start) {
+                        try_push(&mut cycle, try_clone_str(name(key), reserve)?, reserve)?;
+                    }
+                    try_push(&mut cycle, try_clone_str(name(target), reserve)?, reserve)?;
+                    return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        declaration: try_clone_str(name(target), reserve)?,
+                        cause: DeclarationCause::CompositeGeneralizationCycle { cycle },
+                    }));
+                }
+                if !finished.contains_key(target) {
+                    on_path.try_insert(*target, (), reserve)?;
+                    try_push(&mut path, (*target, 0), reserve)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Build the proper-ancestor closure for each admitted composite in
+    /// post-order. The retained vectors are sorted so conformance is a bounded
+    /// binary search and duplicate paths to one ancestor count only once.
+    fn compute_composite_ancestors<R: ReservationPolicy>(
+        &self,
+        budget: &mut WorkBudget,
+        reserve: &R,
+    ) -> Admission<OrderedIndex<NodeKey, Vec<NodeKey>>> {
+        let mut ancestry = OrderedIndex::default();
+        for root in self.composites.keys() {
+            if ancestry.contains_key(root) {
+                continue;
+            }
+            let mut path: Vec<(NodeKey, usize)> = Vec::new();
+            try_push(&mut path, (*root, 0), reserve)?;
+            while let Some((node, next)) = path.last_mut() {
+                let node = *node;
+                let declaration = self.composites.get(&node).expect("validated composite key");
+                if let Some(target) = declaration.supertypes.get(*next) {
+                    *next += 1;
+                    if !ancestry.contains_key(target) {
+                        try_push(&mut path, (*target, 0), reserve)?;
+                    }
+                    continue;
+                }
+                path.pop();
+                let mut ancestors = Vec::new();
+                for supertype in &declaration.supertypes {
+                    let further = ancestry.get(supertype).map_or(&[][..], Vec::as_slice);
+                    budget
+                        .charge(further.len().saturating_add(1))
+                        .map_err(EnvironmentFailure::Limit)?;
+                    try_push(&mut ancestors, *supertype, reserve)?;
+                    try_extend_copy(&mut ancestors, further, reserve)?;
+                }
+                if !ancestors.is_empty() {
+                    let gathered = ancestors.len();
+                    let doublings = usize::try_from(gathered.max(1).ilog2())
+                        .unwrap_or(usize::MAX)
+                        .saturating_add(1);
+                    budget
+                        .charge(gathered.saturating_mul(doublings))
+                        .map_err(EnvironmentFailure::Limit)?;
+                    ancestors.sort_unstable();
+                    ancestors.dedup();
+                }
+                ancestry.try_insert(node, ancestors, reserve)?;
+            }
+        }
+        Ok(ancestry)
+    }
+
+    /// Ensure every composite conformance walk follows no more distinct
+    /// ancestor edges than the configured `ancestor_steps` ceiling.
+    fn check_composite_ancestor_steps(&self, limit: u64) -> Result<(), EnvironmentLimit> {
+        for declaration in self.composites.values() {
+            let followed = self
+                .composite_ancestry
+                .get(&declaration.key)
+                .into_iter()
+                .flatten()
+                .filter_map(|ancestor| self.composites.get(ancestor))
+                .fold(
+                    u64::try_from(declaration.supertypes.len()).unwrap_or(u64::MAX),
+                    |total, ancestor| {
+                        total.saturating_add(
+                            u64::try_from(ancestor.supertypes.len()).unwrap_or(u64::MAX),
+                        )
+                    },
+                );
+            if followed > limit {
+                return Err(EnvironmentLimit::new(
+                    EnvironmentLimitKind::AncestorSteps,
+                    limit,
+                    u128::from(limit) + 1,
+                ));
             }
         }
         Ok(())
@@ -3761,17 +4059,26 @@ impl TypeEnvironment {
 
     /// Construct declared record slots under the caller's cumulative work budget.
     pub fn record(
-        &self, declaration: NodeKey, fields: Vec<(&str, FieldValue)>, budget: &mut WorkBudget,
+        &self,
+        declaration: NodeKey,
+        fields: Vec<(&str, FieldValue)>,
+        budget: &mut WorkBudget,
     ) -> Result<Result<Value, ConstructionRefusal>, EnvironmentLimit> {
         let Some(CompositeShape::Record(declared)) = self.shape(declaration) else {
-            return Ok(refuse(Component::Value, ConstructionCause::UnknownDeclaration));
+            return Ok(refuse(
+                Component::Value,
+                ConstructionCause::UnknownDeclaration,
+            ));
         };
         Ok(fill_slots(self, declared, fields, budget)?.map(|slots| composite(declaration, slots)))
     }
 
     /// Construct the exact declared tuple arity under the same caller budget.
     pub fn tuple(
-        &self, declaration: NodeKey, positions: Vec<Value>, budget: &mut WorkBudget,
+        &self,
+        declaration: NodeKey,
+        positions: Vec<Value>,
+        budget: &mut WorkBudget,
     ) -> Result<Result<Value, ConstructionRefusal>, EnvironmentLimit> {
         let declared = match self.tuple_positions(declaration, positions.len()) {
             Ok(declared) => declared,
@@ -3780,7 +4087,10 @@ impl TypeEnvironment {
         budget.charge(positions.len())?;
         for (position, (ty, value)) in declared.iter().zip(&positions).enumerate() {
             if !self.admits(ty, value, budget)? {
-                return Ok(refuse(Component::Position(position), ConstructionCause::TypeMismatch));
+                return Ok(refuse(
+                    Component::Position(position),
+                    ConstructionCause::TypeMismatch,
+                ));
             }
         }
         let slots = positions.into_iter().map(FieldValue::Present).collect();
@@ -3790,26 +4100,35 @@ impl TypeEnvironment {
     /// Validate fields before callbacks; preserve declaration order and the first
     /// stopped outcome. Admission work and semantic retention use distinct meters.
     pub fn evaluate_record(
-        &self, declaration: NodeKey, fields: Vec<(&str, FieldExpression<'_>)>,
-        meter: &mut Meter, budget: &mut WorkBudget,
+        &self,
+        declaration: NodeKey,
+        fields: Vec<(&str, FieldExpression<'_>)>,
+        meter: &mut Meter,
+        budget: &mut WorkBudget,
     ) -> Result<Result<Outcome<Value>, ConstructionRefusal>, EnvironmentLimit> {
         let Some(CompositeShape::Record(declared)) = self.shape(declaration) else {
-            return Ok(refuse(Component::Value, ConstructionCause::UnknownDeclaration));
+            return Ok(refuse(
+                Component::Value,
+                ConstructionCause::UnknownDeclaration,
+            ));
         };
-        let mut supplied = match match_names_walk(
-            declared, fields, &mut |units| budget.charge(units),
-        )? {
-            Ok(supplied) => supplied,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
+        let mut supplied =
+            match match_names_walk(declared, fields, &mut |units| budget.charge(units))? {
+                Ok(supplied) => supplied,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
         budget.charge(declared.len())?;
         let mut plan = Vec::with_capacity(declared.len());
         for field in declared {
             let expression = supplied.remove(field.name());
             let component = || Component::Field(field.name().to_owned());
             match (&expression, field.presence()) {
-                (None, Presence::Required) => return Ok(refuse(component(), ConstructionCause::MissingField)),
-                (Some(FieldExpression::Null), Presence::Required) => return Ok(refuse(component(), ConstructionCause::NullForRequiredField)),
+                (None, Presence::Required) => {
+                    return Ok(refuse(component(), ConstructionCause::MissingField))
+                }
+                (Some(FieldExpression::Null), Presence::Required) => {
+                    return Ok(refuse(component(), ConstructionCause::NullForRequiredField))
+                }
                 (None | Some(FieldExpression::Null | FieldExpression::Evaluate(_)), _) => {}
             }
             plan.push((field, expression));
@@ -3836,14 +4155,20 @@ impl TypeEnvironment {
             };
             slots.push(slot);
         }
-        Ok(Ok(retain_composite(composite(declaration, slots.into_boxed_slice()), meter)))
+        Ok(Ok(retain_composite(
+            composite(declaration, slots.into_boxed_slice()),
+            meter,
+        )))
     }
 
     /// Evaluate exact tuple positions in order with the first-stop rule and the
     /// existing composite retention charge, sharing the caller admission budget.
     pub fn evaluate_tuple(
-        &self, declaration: NodeKey, positions: Vec<Deferred<'_>>,
-        meter: &mut Meter, budget: &mut WorkBudget,
+        &self,
+        declaration: NodeKey,
+        positions: Vec<Deferred<'_>>,
+        meter: &mut Meter,
+        budget: &mut WorkBudget,
     ) -> Result<Result<Outcome<Value>, ConstructionRefusal>, EnvironmentLimit> {
         let declared = match self.tuple_positions(declaration, positions.len()) {
             Ok(declared) => declared,
@@ -3863,7 +4188,10 @@ impl TypeEnvironment {
             }
             slots.push(FieldValue::Present(value));
         }
-        Ok(Ok(retain_composite(composite(declaration, slots.into_boxed_slice()), meter)))
+        Ok(Ok(retain_composite(
+            composite(declaration, slots.into_boxed_slice()),
+            meter,
+        )))
     }
 
     fn tuple_positions(
@@ -4270,9 +4598,17 @@ fn duplicate_name<'a, R: ReservationPolicy>(
 /// guarantees is a member of `value_type`. Its only callers are
 /// `evaluate_record`/`evaluate_tuple` below.
 #[cfg(test)]
-fn admitted(value_type: &ValueType, outcome: Outcome<Value>) -> Result<Value, Stop> {
+fn admitted(
+    types: &TypeEnvironment,
+    value_type: &ValueType,
+    outcome: Outcome<Value>,
+) -> Result<Value, Stop> {
     let value = outcome_into_stop(outcome)?;
-    if value_type.admits(&value) {
+    let mut budget = WorkBudget::new(DEFAULT_WORK_UNITS, None);
+    if types
+        .admits(value_type, &value, &mut budget)
+        .expect("fixture admission work completes")
+    {
         Ok(value)
     } else {
         Err(invariant(CheckedInvariantCause::DeferredResultNotAdmitted))
@@ -4559,20 +4895,36 @@ impl CheckedEquality {
     }
 
     /// Evaluate over the two completed operand values, left conversion first.
+    /// `types` must be the environment that checked this equality: a
+    /// composite operand is admitted by conformance under it, so another
+    /// environment (including `TypeEnvironment::default()`) refuses a
+    /// conforming child with `EqualityOperandSourceNotAdmitted`.
     /// Neither source value is changed. For the `Enum` schedule, a bare
     /// kernel `Value::Enum` carries only its `VariantId`
     /// and rank, so this resolves each side back to its full declaration/
     /// ordered/case data through the `enum_members` index captured at
     /// checking before calling [`compare_enum`],
     /// which needs none of the other schedules' declaration or unit data.
-    pub fn evaluate(&self, left: &Value, right: &Value, meter: &mut Meter) -> Outcome<bool> {
-        outcome_from_stop(self.run(left, right, meter))
+    pub fn evaluate(
+        &self,
+        types: &TypeEnvironment,
+        left: &Value,
+        right: &Value,
+        meter: &mut Meter,
+    ) -> Outcome<bool> {
+        outcome_from_stop(self.run(types, left, right, meter))
     }
 
-    fn run(&self, left: &Value, right: &Value, meter: &mut Meter) -> Result<bool, Stop> {
+    fn run(
+        &self,
+        types: &TypeEnvironment,
+        left: &Value,
+        right: &Value,
+        meter: &mut Meter,
+    ) -> Result<bool, Stop> {
         let units = UnitScope::new(&self.units);
-        let left = operand_value(&self.left, left, &units, meter)?;
-        let right = operand_value(&self.right, right, &units, meter)?;
+        let left = operand_value(types, &self.left, left, &units, meter)?;
+        let right = operand_value(types, &self.right, right, &units, meter)?;
         let operator = self.operator.comparison();
         let scheduled = match (self.schedule, &left, &right) {
             (EqualitySchedule::Text, Value::Text(l), Value::Text(r)) => {
@@ -4697,8 +5049,10 @@ fn integer_source_admits(lower: &Integer, upper: &Integer, target: &ValueType) -
         | ValueType::Float(_)
         | ValueType::Quantity(_)
         | ValueType::Text(_)
+        | ValueType::String
         | ValueType::Uuid
         | ValueType::Timestamp
+        | ValueType::String
         | ValueType::Enum(_)
         | ValueType::Option(_)
         | ValueType::Composite(_)
@@ -4731,26 +5085,376 @@ mod native_type_tests {
             Integer::one(),
         ));
         for value_type in [ValueType::Uuid, ValueType::Timestamp] {
-            assert_eq!(types.check_type(&value_type, &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"), Ok(()));
-            assert!(!types.contains_ieee(&value_type, &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
+            assert_eq!(
+                types
+                    .check_type(&value_type, &mut WorkBudget::new(DEFAULT_WORK_UNITS, None))
+                    .expect("fixture admission work completes"),
+                Ok(())
+            );
+            assert!(!types
+                .contains_ieee(&value_type, &mut WorkBudget::new(DEFAULT_WORK_UNITS, None))
+                .expect("fixture admission work completes"));
             assert!(!admits_equality_conversion(
                 &bounded_integer,
                 &value_type,
                 &UnitScope::new(types.units()),
             ));
         }
-        assert!(types.admits(&ValueType::Uuid, &uuid, &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
-        assert!(types.admits(&ValueType::Timestamp, &timestamp, &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
-        assert!(!types.admits(&ValueType::Uuid, &timestamp, &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
-        assert!(!types.admits(&ValueType::Timestamp, &uuid, &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
-        assert!(!types.admits(&ValueType::Uuid, &Value::Integer(Integer::one()), &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
-        assert!(!types.admits(&ValueType::Timestamp, &Value::Integer(Integer::one()), &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
+        assert!(types
+            .admits(
+                &ValueType::Uuid,
+                &uuid,
+                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)
+            )
+            .expect("fixture admission work completes"));
+        assert!(types
+            .admits(
+                &ValueType::Timestamp,
+                &timestamp,
+                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)
+            )
+            .expect("fixture admission work completes"));
+        assert!(!types
+            .admits(
+                &ValueType::Uuid,
+                &timestamp,
+                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)
+            )
+            .expect("fixture admission work completes"));
+        assert!(!types
+            .admits(
+                &ValueType::Timestamp,
+                &uuid,
+                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)
+            )
+            .expect("fixture admission work completes"));
+        assert!(!types
+            .admits(
+                &ValueType::Uuid,
+                &Value::Integer(Integer::one()),
+                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)
+            )
+            .expect("fixture admission work completes"));
+        assert!(!types
+            .admits(
+                &ValueType::Timestamp,
+                &Value::Integer(Integer::one()),
+                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)
+            )
+            .expect("fixture admission work completes"));
+    }
+
+    /// Native String has exact scalar-sequence equality and never inherits Text normalization.
+    #[trace("FR-112-AC-1")]
+    #[test]
+    fn native_string_admission_and_equality_preserve_scalar_identity() {
+        let types = TypeEnvironment::new([], []).expect("empty environment");
+        let composed = Value::String("é".into());
+        let decomposed = Value::String("e\u{301}".into());
+        let equal_copy = Value::String("e\u{301}".into());
+
+        assert_eq!(types.check_type_u(&ValueType::String), Ok(()));
+        assert!(!types.contains_ieee_u(&ValueType::String));
+        assert!(types.admits_u(&ValueType::String, &decomposed));
+        assert!(!types.admits_u(&ValueType::String, &composed_as_text()));
+        assert!(!types.admits_u(&ValueType::Text(text_type()), &decomposed));
+        assert!(types.admits_u(&ValueType::String, &equal_copy));
+
+        let enum_members = EnumMemberIndex::default();
+        let equality = types
+            .check_equality_u(
+                EqualityOperator::Equal,
+                EqualityOperand::typed(ValueType::String),
+                EqualityOperand::typed(ValueType::String),
+                &enum_members,
+            )
+            .expect("native String has kernel equality");
+        assert_eq!(equality.schedule(), EqualitySchedule::Plan);
+
+        let mut meter = Meter::new(quire_exact::ScalarLimits {
+            integer_bits: u64::MAX,
+            decimal_digits: u64::MAX,
+            scale_expansion: u64::MAX,
+            text_input_bytes: u64::MAX,
+            text_scalars: u64::MAX,
+            normalized_scalars: u64::MAX,
+            unit_edges: u64::MAX,
+            value_occurrences: u64::MAX,
+            work_units: u64::MAX,
+            result_units: u64::MAX,
+        });
+        assert!(matches!(
+            equality.evaluate(
+                &TypeEnvironment::default(),
+                &composed,
+                &decomposed,
+                &mut meter
+            ),
+            Outcome::Completed(false)
+        ));
+        assert!(matches!(
+            equality.evaluate(
+                &TypeEnvironment::default(),
+                &decomposed,
+                &equal_copy,
+                &mut meter
+            ),
+            Outcome::Completed(true)
+        ));
+    }
+
+    /// A String member is admitted recursively and can be constructed in its declared record.
+    #[trace("FR-112-AC-2")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies a checked composite identity without minting one in production"
+    )]
+    #[test]
+    fn native_string_member_is_admitted_and_constructible_in_a_record() {
+        let record = NodeKey::from_digest([23; 32]);
+        let types = TypeEnvironment::new(
+            [CompositeDeclaration::new(
+                record,
+                "StringRecord",
+                CompositeShape::Record(vec![FieldDeclaration::new(
+                    "label",
+                    ValueType::String,
+                    Presence::Required,
+                )]),
+            )],
+            [],
+        )
+        .expect("record with a native String member is admitted");
+
+        let value = types
+            .record_u(
+                record,
+                vec![("label", FieldValue::Present(Value::String("hello".into())))],
+            )
+            .expect("native String field value is admitted");
+
+        let Value::Composite(composite) = &value else {
+            panic!("record construction returns a composite value");
+        };
+        assert!(matches!(
+            composite.slots(),
+            [FieldValue::Present(Value::String(text))] if text.as_str() == "hello"
+        ));
+        assert!(types.admits_u(&ValueType::Composite(record), &value));
+    }
+
+    /// A composite value keeps its child identity while admitting at an ancestor boundary.
+    #[trace("TC-912", "FR-113-AC-1")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked composite identities without minting them in production"
+    )]
+    #[test]
+    fn composite_child_admits_at_parent_boundary_without_identity_widening() {
+        let parent = NodeKey::from_digest([31; 32]);
+        let intermediate = NodeKey::from_digest([32; 32]);
+        let child = NodeKey::from_digest([33; 32]);
+        let unrelated = NodeKey::from_digest([34; 32]);
+        let types = TypeEnvironment::new(
+            [
+                CompositeDeclaration::new(
+                    parent,
+                    "Parent",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                ),
+                CompositeDeclaration::new(
+                    intermediate,
+                    "Intermediate",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                )
+                .with_supertypes(vec![parent]),
+                CompositeDeclaration::new(
+                    child,
+                    "Child",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                )
+                .with_supertypes(vec![intermediate]),
+                CompositeDeclaration::new(
+                    unrelated,
+                    "Unrelated",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                ),
+            ],
+            [],
+        )
+        .expect("acyclic composite ancestry admits");
+        let value = types
+            .record_u(
+                child,
+                vec![("label", FieldValue::Present(Value::String("child".into())))],
+            )
+            .expect("child record construction succeeds");
+
+        assert!(types.composite_conforms(intermediate, parent));
+        assert!(types.composite_conforms(child, intermediate));
+        assert!(types.composite_conforms(child, parent));
+        assert!(!types.composite_conforms(parent, child));
+        assert!(types.admits_u(&ValueType::Composite(parent), &value));
+        assert!(types.admits_u(&ValueType::Composite(child), &value));
+        assert!(!types.admits_u(&ValueType::Composite(child), &record_value(&types, parent)));
+        assert!(!types.admits_u(
+            &ValueType::Composite(parent),
+            &record_value(&types, unrelated)
+        ));
+        let Value::Composite(composite) = &value else {
+            panic!("record construction returns a composite value");
+        };
+        assert_eq!(composite.declaration(), child);
+        assert!(!admits_equality_conversion(
+            &ValueType::Composite(child),
+            &ValueType::Composite(parent),
+            &UnitScope::new(types.units()),
+        ));
+    }
+
+    /// Composite ancestry rejects cycles and enforces the configured walk ceiling.
+    #[trace("TC-912", "FR-113-AC-2")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked composite identities without minting them in production"
+    )]
+    #[test]
+    fn composite_ancestry_cycles_and_walks_are_bounded() {
+        let a = NodeKey::from_digest([34; 32]);
+        let b = NodeKey::from_digest([35; 32]);
+        let declarations = || {
+            [
+                CompositeDeclaration::new(a, "A", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![b]),
+                CompositeDeclaration::new(b, "B", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![a]),
+            ]
+        };
+        let Err(EnvironmentFailure::Refused(refusal)) = TypeEnvironment::new(declarations(), [])
+        else {
+            panic!("a composite supertype cycle must be refused");
+        };
+        let DeclarationCause::CompositeGeneralizationCycle { cycle } = &refusal.cause else {
+            panic!(
+                "expected CompositeGeneralizationCycle, got {:?}",
+                refusal.cause
+            );
+        };
+        assert_eq!(cycle.len(), 3);
+        assert_eq!(cycle.first(), cycle.last());
+        assert_eq!(refusal.code(), IllTyped::CODE);
+
+        let missing = NodeKey::from_digest([36; 32]);
+        assert!(matches!(
+            TypeEnvironment::new(
+                [CompositeDeclaration::new(
+                    a,
+                    "A",
+                    CompositeShape::Tuple(vec![]),
+                )
+                .with_supertypes(vec![missing])],
+                []
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::UnknownDeclaration(key),
+                ..
+            })) if key == missing
+        ));
+
+        let types = TypeEnvironment::bounded(
+            [
+                CompositeDeclaration::new(a, "A", CompositeShape::Tuple(vec![])),
+                CompositeDeclaration::new(b, "B", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![a]),
+            ],
+            [],
+            TypeEnvironmentLimits {
+                ancestor_steps: 0,
+                ..TypeEnvironmentLimits::default()
+            },
+        );
+        assert!(matches!(
+            types,
+            Err(EnvironmentFailure::Limit(limit))
+                if limit.kind() == EnvironmentLimitKind::AncestorSteps
+        ));
+
+        let types = TypeEnvironment::bounded(
+            [
+                CompositeDeclaration::new(a, "A", CompositeShape::Tuple(vec![])),
+                CompositeDeclaration::new(b, "B", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![a]),
+            ],
+            [],
+            TypeEnvironmentLimits {
+                work_units: 1,
+                ..TypeEnvironmentLimits::default()
+            },
+        );
+        assert!(matches!(
+            types,
+            Err(EnvironmentFailure::Limit(limit))
+                if limit.kind() == EnvironmentLimitKind::WorkUnits
+        ));
+    }
+
+    fn record_value(types: &TypeEnvironment, declaration: NodeKey) -> Value {
+        types
+            .record_u(
+                declaration,
+                vec![("label", FieldValue::Present(Value::String("same".into())))],
+            )
+            .expect("record fixture matches its declared shape")
+    }
+
+    fn text_type() -> quire_exact::TextType {
+        quire_exact::TextType::new(0, 4, quire_exact::TextProfile::Nfc).expect("valid Text type")
+    }
+
+    fn composed_as_text() -> Value {
+        let payload = quire_exact::TextPayload::from_utf8("é".as_bytes()).expect("UTF-8");
+        let mut meter = Meter::new(quire_exact::ScalarLimits {
+            integer_bits: u64::MAX,
+            decimal_digits: u64::MAX,
+            scale_expansion: u64::MAX,
+            text_input_bytes: u64::MAX,
+            text_scalars: u64::MAX,
+            normalized_scalars: u64::MAX,
+            unit_edges: u64::MAX,
+            value_occurrences: u64::MAX,
+            work_units: u64::MAX,
+            result_units: u64::MAX,
+        });
+        match quire_exact::admit_text(&payload, &text_type(), &mut meter) {
+            Outcome::Completed(text) => Value::Text(text),
+            _ => panic!("valid Text admission"),
+        }
     }
 }
 
 /// The comparison value of one operand after its admitted conversion, with
-/// quantity units read from `units`.
+/// quantity units read from `units`. `types` must be the environment that
+/// checked the equality: a composite operand is admitted by conformance
+/// under it, so another environment (including `TypeEnvironment::default()`)
+/// refuses a conforming child with `EqualityOperandSourceNotAdmitted`.
 pub fn operand_value(
+    types: &TypeEnvironment,
     operand: &EqualityOperand,
     value: &Value,
     units: &UnitScope<'_>,
@@ -4765,6 +5469,9 @@ pub fn operand_value(
     // compares only the identity triple, so the kind check is sufficient.
     let admitted = match (&operand.source, value) {
         (ValueType::Reference(_), value) => matches!(value, Value::Reference(_)),
+        (ValueType::Composite(declared), Value::Composite(composite)) => {
+            types.composite_conforms(composite.declaration(), *declared)
+        }
         (source, value) => source.admits(value),
     };
     if !admitted {
@@ -4985,12 +5692,14 @@ mod checked_invariant_tests {
     fn deferred_result_names_failed_admission_and_preserves_prior_stop() {
         refusal(
             admitted(
+                &TypeEnvironment::default(),
                 &ValueType::Boolean,
                 Outcome::Completed(Value::Integer(Integer::one())),
             ),
             CheckedInvariantCause::DeferredResultNotAdmitted,
         );
         let Err(Stop::Refused(fault)) = admitted(
+            &TypeEnvironment::default(),
             &ValueType::Boolean,
             Outcome::Completed(Value::Integer(Integer::one())),
         ) else {
@@ -5008,6 +5717,7 @@ mod checked_invariant_tests {
         assert_eq!(ordinary.cause(), Some("outside-domain"));
         assert!(matches!(
             admitted(
+                &TypeEnvironment::default(),
                 &ValueType::Boolean,
                 Outcome::Undefined(quire_exact::Undefined::DivisionByZero)
             ),
@@ -5028,9 +5738,11 @@ mod checked_invariant_tests {
         let prior_stop = exhausted
             .charge(Charge::new(ChargePoint::CompositeResultRetain).results(1))
             .expect_err("zero result budget must deny retention");
-        let Err(Stop::Incomplete(actual)) =
-            admitted(&ValueType::Boolean, Outcome::Incomplete(prior_stop.clone()))
-        else {
+        let Err(Stop::Incomplete(actual)) = admitted(
+            &TypeEnvironment::default(),
+            &ValueType::Boolean,
+            Outcome::Incomplete(prior_stop.clone()),
+        ) else {
             panic!("a prior charge stop must survive admission");
         };
         assert_eq!(actual, prior_stop);
@@ -5070,7 +5782,13 @@ mod checked_invariant_tests {
         let good =
             FieldExpression::Evaluate(Box::new(|_| Outcome::Completed(Value::Boolean(true))));
         let result = environment
-            .evaluate_record(record, vec![("flag", good)], &mut meter(), &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes")
+            .evaluate_record(
+                record,
+                vec![("flag", good)],
+                &mut meter(),
+                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None),
+            )
+            .expect("fixture admission work completes")
             .unwrap();
         assert!(matches!(
             result,
@@ -5082,14 +5800,27 @@ mod checked_invariant_tests {
             Outcome::Completed(Value::Integer(Integer::one()))
         }));
         assert!(matches!(
-            environment.evaluate_record(record, vec![("flag", bad)], &mut meter(), &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"),
+            environment
+                .evaluate_record(
+                    record,
+                    vec![("flag", bad)],
+                    &mut meter(),
+                    &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)
+                )
+                .expect("fixture admission work completes"),
             Ok(Outcome::Refused(Refusal::CheckedInvariant {
                 cause: CheckedInvariantCause::DeferredResultNotAdmitted
             }))
         ));
 
         let result = environment
-            .evaluate_tuple(tuple, vec![Box::new(|_| Outcome::Completed(Value::Boolean(true)))], &mut meter(), &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes")
+            .evaluate_tuple(
+                tuple,
+                vec![Box::new(|_| Outcome::Completed(Value::Boolean(true)))],
+                &mut meter(),
+                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None),
+            )
+            .expect("fixture admission work completes")
             .unwrap();
         assert!(matches!(
             result,
@@ -5104,7 +5835,13 @@ mod checked_invariant_tests {
             )),
         };
         let result = environment
-            .evaluate_tuple(tuple, vec![Box::new(|_| Outcome::Refused(prior.clone()))], &mut meter(), &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes")
+            .evaluate_tuple(
+                tuple,
+                vec![Box::new(|_| Outcome::Refused(prior.clone()))],
+                &mut meter(),
+                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None),
+            )
+            .expect("fixture admission work completes")
             .unwrap();
         assert!(matches!(result, Outcome::Refused(actual) if actual == prior));
     }
@@ -5122,6 +5859,7 @@ mod checked_invariant_tests {
         let mut meter = meter();
         refusal(
             operand_value(
+                &TypeEnvironment::default(),
                 &EqualityOperand::typed(ValueType::Boolean),
                 &Value::Integer(Integer::one()),
                 &scope,
@@ -5131,6 +5869,7 @@ mod checked_invariant_tests {
         );
         refusal(
             operand_value(
+                &TypeEnvironment::default(),
                 &EqualityOperand::converted(ValueType::Boolean, ValueType::Integer),
                 &Value::Boolean(true),
                 &scope,
@@ -5140,6 +5879,7 @@ mod checked_invariant_tests {
         );
         refusal(
             operand_value(
+                &TypeEnvironment::default(),
                 &EqualityOperand::converted(
                     ValueType::Integer,
                     ValueType::Int(quire_exact::IntegerInterval::spanning(
@@ -5165,6 +5905,7 @@ mod checked_invariant_tests {
         );
         refusal(
             operand_value(
+                &TypeEnvironment::default(),
                 &EqualityOperand::converted(decimal_type, ValueType::Integer),
                 &Value::Decimal(Decimal::new(Integer::from(5_i64), 1)),
                 &scope,
@@ -5175,6 +5916,7 @@ mod checked_invariant_tests {
         let unresolved = quire_exact::UnitId::declared(NodeKey::from_digest([9; 32]));
         refusal(
             operand_value(
+                &TypeEnvironment::default(),
                 &EqualityOperand::converted(
                     ValueType::Quantity(unresolved),
                     ValueType::Quantity(quire_exact::UnitId::declared(NodeKey::from_digest(
@@ -5207,7 +5949,12 @@ mod checked_invariant_tests {
             EqualityOperand::typed(ValueType::Boolean),
         );
         assert!(matches!(
-            mismatch.evaluate(&Value::Boolean(true), &Value::Boolean(true), &mut meter),
+            mismatch.evaluate(
+                &TypeEnvironment::default(),
+                &Value::Boolean(true),
+                &Value::Boolean(true),
+                &mut meter
+            ),
             Outcome::Refused(Refusal::CheckedInvariant {
                 cause: CheckedInvariantCause::EqualityScheduleMismatch
             })
@@ -5221,7 +5968,12 @@ mod checked_invariant_tests {
         );
         let quantity = Value::Quantity(Quantity::new(Rational::from_integer(Integer::one()), unit));
         assert!(matches!(
-            unresolved_unit.evaluate(&quantity, &quantity, &mut meter),
+            unresolved_unit.evaluate(
+                &TypeEnvironment::default(),
+                &quantity,
+                &quantity,
+                &mut meter
+            ),
             Outcome::Refused(Refusal::CheckedInvariant {
                 cause: CheckedInvariantCause::EqualityUnitUnresolved
             })
@@ -5236,7 +5988,7 @@ mod checked_invariant_tests {
         );
         let member = Value::Enum(EnumMember::new(variant, 0));
         assert!(matches!(
-            unresolved_variant.evaluate(&member, &member, &mut meter),
+            unresolved_variant.evaluate(&TypeEnvironment::default(), &member, &member, &mut meter),
             Outcome::Refused(Refusal::CheckedInvariant {
                 cause: CheckedInvariantCause::EqualityEnumVariantUnresolved
             })
@@ -5269,6 +6021,7 @@ mod checked_invariant_tests {
         let mut meter = meter();
         assert!(matches!(
             equality.evaluate(
+                &TypeEnvironment::default(),
                 &Value::Enum(EnumMember::new(left.variant(), 0)),
                 &Value::Enum(EnumMember::new(right.variant(), 0)),
                 &mut meter,
@@ -5305,7 +6058,7 @@ mod checked_invariant_tests {
             occurrence: core::num::NonZeroU64::new(1).unwrap(),
         });
         assert!(matches!(
-            equality.evaluate(&value, &value, &mut meter),
+            equality.evaluate(&TypeEnvironment::default(), &value, &value, &mut meter),
             Outcome::Incomplete(record) if record.charge_point == ChargePoint::EnumIdentityRead
         ));
     }
@@ -5359,6 +6112,7 @@ mod checked_invariant_tests {
         let target = UnitId::declared(NodeKey::from_digest([4; 32]));
         refusal(
             operand_value(
+                &TypeEnvironment::default(),
                 &EqualityOperand::converted(
                     ValueType::Quantity(source),
                     ValueType::Quantity(target),
@@ -5425,6 +6179,7 @@ mod checked_invariant_tests {
         });
         assert!(matches!(
             operand_value(
+                &TypeEnvironment::default(),
                 &EqualityOperand::converted(
                     ValueType::Quantity(source),
                     ValueType::Quantity(target),
@@ -5562,5 +6317,669 @@ mod ancestor_steps_tests {
     #[test]
     fn the_default_ceiling_is_sixteen_million_edges() {
         assert_eq!(TypeEnvironmentLimits::default().ancestor_steps, 16_777_216);
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the fixtures supply checked declaration identities without minting them in production"
+)]
+mod nested_conformance_tests {
+    use super::*;
+    use ix_trace_rs::trace;
+    use quire_exact::{
+        form, from_admitted, CollectionKind, CollectionType, ObjectId, ObjectReference,
+        OptionValue, ScalarLimits, UniverseId,
+    };
+
+    /// The chain `P <- M <- C` (so `C` is a grandchild of `P`), the
+    /// unrelated `U` (each a record with one `label` field), a record and a
+    /// tuple holding `P` members, and a parent/child object-type pair.
+    struct Fixture {
+        types: TypeEnvironment,
+        p: NodeKey,
+        m: NodeKey,
+        c: NodeKey,
+        u: NodeKey,
+        holder_record: NodeKey,
+        holder_tuple: NodeKey,
+        parent_object: EffectiveId,
+        child_object: EffectiveId,
+        stranger_object: EffectiveId,
+    }
+
+    fn fixture() -> Fixture {
+        let [p, m, c, u, holder_record, holder_tuple] =
+            [41, 42, 43, 44, 51, 52].map(|byte| NodeKey::from_digest([byte; 32]));
+        let [parent_object, child_object, stranger_object] =
+            [71, 72, 73].map(|byte| EffectiveId::from_digest([byte; 32]));
+        let record = |key, name: &str, supertypes: Vec<NodeKey>| {
+            CompositeDeclaration::new(
+                key,
+                name,
+                CompositeShape::Record(vec![FieldDeclaration::new(
+                    "label",
+                    ValueType::String,
+                    Presence::Required,
+                )]),
+            )
+            .with_supertypes(supertypes)
+        };
+        let parent = ValueType::Composite(p);
+        let object = |key, name: &str, supertypes: Vec<EffectiveId>| {
+            ObjectTypeDeclaration::new(key, name, vec![]).with_supertypes(supertypes)
+        };
+        let types = TypeEnvironment::new(
+            [
+                record(p, "P", vec![]),
+                record(m, "M", vec![p]),
+                record(c, "C", vec![m]),
+                record(u, "U", vec![]),
+                CompositeDeclaration::new(
+                    holder_record,
+                    "HolderRecord",
+                    CompositeShape::Record(vec![
+                        FieldDeclaration::new("member", parent.clone(), Presence::Required),
+                        FieldDeclaration::new(
+                            "maybe",
+                            ValueType::option(parent.clone()),
+                            Presence::Optional,
+                        ),
+                    ]),
+                ),
+                CompositeDeclaration::new(
+                    holder_tuple,
+                    "HolderTuple",
+                    CompositeShape::Tuple(vec![parent]),
+                ),
+            ],
+            [
+                object(parent_object, "ParentObject", vec![]),
+                object(child_object, "ChildObject", vec![parent_object]),
+                object(stranger_object, "StrangerObject", vec![]),
+            ],
+        )
+        .expect("acyclic ancestry admits");
+        Fixture {
+            types,
+            p,
+            m,
+            c,
+            u,
+            holder_record,
+            holder_tuple,
+            parent_object,
+            child_object,
+            stranger_object,
+        }
+    }
+
+    fn big_meter() -> Meter {
+        Meter::new(ScalarLimits {
+            integer_bits: 1024,
+            decimal_digits: 1024,
+            scale_expansion: 1024,
+            text_input_bytes: 1024,
+            text_scalars: 1024,
+            normalized_scalars: 1024,
+            unit_edges: 1024,
+            value_occurrences: 1024,
+            work_units: 1024,
+            result_units: 1024,
+        })
+    }
+
+    impl Fixture {
+        fn value(&self, key: NodeKey, label: &str) -> Value {
+            self.types
+                .record_u(
+                    key,
+                    vec![("label", FieldValue::Present(Value::String(label.into())))],
+                )
+                .expect("record fixture matches its declared shape")
+        }
+    }
+
+    /// An `Option<payload_type>` built by the trusted constructor.
+    fn option(payload_type: ValueType, payload: Option<Value>) -> Value {
+        OptionValue::from_admitted(payload_type, payload)
+    }
+
+    fn collection_type(kind: CollectionKind, element: ValueType) -> CollectionType {
+        CollectionType::new(kind, element, None)
+    }
+
+    /// A collection of `element` built by the trusted constructor.
+    fn collection(kind: CollectionKind, element: ValueType, elements: Vec<Value>) -> Value {
+        from_admitted(collection_type(kind, element), elements)
+    }
+
+    fn collection_kinds() -> [CollectionKind; 4] {
+        [
+            CollectionKind::Sequence,
+            CollectionKind::Set,
+            CollectionKind::Bag,
+            CollectionKind::OrderedSet,
+        ]
+    }
+
+    fn key_of(value: &Value) -> NodeKey {
+        let Value::Composite(composite) = value else {
+            panic!("expected a composite value");
+        };
+        composite.declaration()
+    }
+
+    /// A container of `P` holding a conforming descendant is admitted and
+    /// keeps the descendant's key.
+    #[trace("TC-913", "FR-113-AC-3")]
+    #[test]
+    fn container_of_parent_admits_conforming_descendants() {
+        let fx = fixture();
+        let parent = ValueType::Composite(fx.p);
+        let child = fx.value(fx.c, "child");
+        let intermediate = fx.value(fx.m, "intermediate");
+
+        let present = option(parent.clone(), Some(child.clone()));
+        assert!(fx
+            .types
+            .admits_u(&ValueType::option(parent.clone()), &present));
+
+        for kind in collection_kinds() {
+            let value = collection(
+                kind,
+                parent.clone(),
+                vec![intermediate.clone(), child.clone()],
+            );
+            let declared = ValueType::collection(collection_type(kind, parent.clone()));
+            assert!(fx.types.admits_u(&declared, &value), "{kind:?} of P");
+        }
+        // The top-level `C` at `P` and `M` already passes.
+        assert!(fx.types.admits_u(&parent, &child));
+        assert!(fx.types.admits_u(&ValueType::Composite(fx.m), &child));
+    }
+
+    /// A nonconforming element or payload, a reversed slot and a
+    /// retyped container are all refused.
+    #[trace("TC-913", "FR-113-AC-3")]
+    #[test]
+    fn container_of_parent_refuses_nonconforming_contents_and_covariance() {
+        let fx = fixture();
+        let parent = ValueType::Composite(fx.p);
+        let child_type = ValueType::Composite(fx.c);
+        let intermediate_type = ValueType::Composite(fx.m);
+        let unrelated = fx.value(fx.u, "unrelated");
+        let child = fx.value(fx.c, "child");
+        let plain = fx.value(fx.p, "parent");
+
+        // `U` inside `Option<P>` and every collection kind of `P`.
+        let option_of_unrelated = option(parent.clone(), Some(unrelated.clone()));
+        assert!(!fx
+            .types
+            .admits_u(&ValueType::option(parent.clone()), &option_of_unrelated));
+        for kind in collection_kinds() {
+            let value = collection(kind, parent.clone(), vec![unrelated.clone()]);
+            let declared = ValueType::collection(collection_type(kind, parent.clone()));
+            assert!(
+                !fx.types.admits_u(&declared, &value),
+                "{kind:?} of P holding U"
+            );
+        }
+
+        // A `P` inside a container recorded and declared at `C` or `M`.
+        for slot in [&child_type, &intermediate_type] {
+            let held = option(slot.clone(), Some(plain.clone()));
+            assert!(!fx.types.admits_u(&ValueType::option(slot.clone()), &held));
+            for kind in collection_kinds() {
+                let value = collection(kind, slot.clone(), vec![plain.clone()]);
+                let declared = ValueType::collection(collection_type(kind, slot.clone()));
+                assert!(
+                    !fx.types.admits_u(&declared, &value),
+                    "{kind:?} of {slot:?}"
+                );
+            }
+        }
+
+        // No covariance: `Option<C>` and `Sequence<C>` values at `P` slots.
+        let option_of_child = option(child_type.clone(), Some(child.clone()));
+        assert!(!fx
+            .types
+            .admits_u(&ValueType::option(parent.clone()), &option_of_child));
+        let sequence_of_child = collection(
+            CollectionKind::Sequence,
+            child_type.clone(),
+            vec![child.clone()],
+        );
+        let sequence_of_parent =
+            ValueType::collection(collection_type(CollectionKind::Sequence, parent.clone()));
+        assert!(!fx.types.admits_u(&sequence_of_parent, &sequence_of_child));
+        // A collection kind never converts to another.
+        let set_of_child_in_parent =
+            collection(CollectionKind::Set, parent.clone(), vec![child.clone()]);
+        assert!(!fx
+            .types
+            .admits_u(&sequence_of_parent, &set_of_child_in_parent));
+    }
+
+    /// Nesting goes as deep as the value does, and one `U` among conforming
+    /// elements refuses the whole value.
+    #[trace("TC-913", "FR-113-AC-4")]
+    #[test]
+    fn nested_option_sequence_option_admits_by_conformance() {
+        let fx = fixture();
+        let parent = ValueType::Composite(fx.p);
+        let inner_option = ValueType::option(parent.clone());
+        let sequence = collection_type(CollectionKind::Sequence, inner_option.clone());
+        let declared = ValueType::option(ValueType::collection(sequence.clone()));
+        let build = |elements: Vec<Value>| {
+            let items = elements
+                .into_iter()
+                .map(|element| option(parent.clone(), Some(element)))
+                .collect();
+            option(
+                ValueType::collection(sequence.clone()),
+                Some(from_admitted(sequence.clone(), items)),
+            )
+        };
+
+        let conforming = build(vec![fx.value(fx.c, "c"), fx.value(fx.p, "p")]);
+        assert!(fx.types.admits_u(&declared, &conforming));
+        let mixed = build(vec![
+            fx.value(fx.c, "c"),
+            fx.value(fx.u, "u"),
+            fx.value(fx.m, "m"),
+        ]);
+        assert!(!fx.types.admits_u(&declared, &mixed));
+    }
+
+    /// A member that completes to a conforming child is kept; a member that
+    /// completes to an unrelated composite stops with the checked invariant.
+    #[trace("TC-913", "FR-113-AC-4")]
+    #[test]
+    fn evaluate_record_and_tuple_admit_members_by_conformance() {
+        let fx = fixture();
+        let (environment, record, tuple) = (&fx.types, fx.holder_record, fx.holder_tuple);
+        let child = fx.value(fx.c, "child");
+        let unrelated = fx.value(fx.u, "unrelated");
+
+        let supplied = child.clone();
+        let result = environment
+            .evaluate_record_u(
+                record,
+                vec![(
+                    "member",
+                    FieldExpression::Evaluate(Box::new(move |_| Outcome::Completed(supplied))),
+                )],
+                &mut big_meter(),
+            )
+            .expect("record construction refusals are decided first");
+        let Outcome::Completed(Value::Composite(evaluated)) = result else {
+            panic!("a conforming child member must complete the record");
+        };
+        let [FieldValue::Present(member), ..] = evaluated.slots() else {
+            panic!("the member slot is present");
+        };
+        assert_eq!(key_of(member), fx.c);
+
+        let supplied = unrelated.clone();
+        assert!(matches!(
+            environment.evaluate_record_u(
+                record,
+                vec![(
+                    "member",
+                    FieldExpression::Evaluate(Box::new(move |_| Outcome::Completed(supplied))),
+                )],
+                &mut big_meter(),
+            ),
+            Ok(Outcome::Refused(Refusal::CheckedInvariant {
+                cause: CheckedInvariantCause::DeferredResultNotAdmitted
+            }))
+        ));
+
+        let supplied = child.clone();
+        let result = environment
+            .evaluate_tuple_u(
+                tuple,
+                vec![Box::new(move |_| Outcome::Completed(supplied))],
+                &mut big_meter(),
+            )
+            .expect("tuple arity matches");
+        let Outcome::Completed(Value::Composite(evaluated)) = result else {
+            panic!("a conforming child position must complete the tuple");
+        };
+        let [FieldValue::Present(position)] = evaluated.slots() else {
+            panic!("the position is present");
+        };
+        assert_eq!(key_of(position), fx.c);
+
+        let supplied = unrelated;
+        assert!(matches!(
+            environment.evaluate_tuple_u(
+                tuple,
+                vec![Box::new(move |_| Outcome::Completed(supplied))],
+                &mut big_meter(),
+            ),
+            Ok(Outcome::Refused(Refusal::CheckedInvariant {
+                cause: CheckedInvariantCause::DeferredResultNotAdmitted
+            }))
+        ));
+    }
+
+    /// Construction holding a `U` where a `P` is declared refuses with
+    /// `TypeMismatch` naming the field or position, at the top level and
+    /// inside an `Option`.
+    #[trace("TC-913", "FR-113-AC-4")]
+    #[test]
+    fn construction_refuses_nonconforming_member_naming_the_component() {
+        let fx = fixture();
+        let (environment, record, tuple) = (&fx.types, fx.holder_record, fx.holder_tuple);
+        let parent = ValueType::Composite(fx.p);
+        let unrelated = fx.value(fx.u, "unrelated");
+        let child = fx.value(fx.c, "child");
+
+        let refusal = environment
+            .record_u(
+                record,
+                vec![("member", FieldValue::Present(unrelated.clone()))],
+            )
+            .expect_err("a U at a P field is refused");
+        assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
+        assert_eq!(refusal.component, Component::Field("member".into()));
+
+        let nested = option(parent.clone(), Some(unrelated.clone()));
+        let refusal = environment
+            .record_u(
+                record,
+                vec![
+                    ("member", FieldValue::Present(child.clone())),
+                    ("maybe", FieldValue::Present(nested.clone())),
+                ],
+            )
+            .expect_err("a U inside an Option<P> field is refused");
+        assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
+        assert_eq!(refusal.component, Component::Field("maybe".into()));
+
+        let kept = option(parent, Some(child.clone()));
+        environment
+            .record_u(
+                record,
+                vec![
+                    ("member", FieldValue::Present(child)),
+                    ("maybe", FieldValue::Present(kept)),
+                ],
+            )
+            .expect("conforming members construct");
+
+        let refusal = environment
+            .tuple_u(tuple, vec![unrelated])
+            .expect_err("a U at a P position is refused");
+        assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
+        assert_eq!(refusal.component, Component::Position(0));
+    }
+
+    fn operand_result(fx: &Fixture, source: ValueType, value: &Value) -> Result<Value, Stop> {
+        let units = UnitTable::default();
+        operand_value(
+            &fx.types,
+            &EqualityOperand::typed(source),
+            value,
+            &UnitScope::new(&units),
+            &mut big_meter(),
+        )
+    }
+
+    /// A composite equality operand is checked by conformance, directly and
+    /// through an `Option` payload or collection element, and keeps its key.
+    #[trace("TC-913", "FR-113-AC-5")]
+    #[test]
+    fn operand_value_checks_composite_operands_by_conformance() {
+        let fx = fixture();
+        let parent = ValueType::Composite(fx.p);
+
+        for key in [fx.c, fx.m] {
+            let value = fx.value(key, "held");
+            let admitted =
+                operand_result(&fx, parent.clone(), &value).expect("conforming operand admits");
+            assert_eq!(key_of(&admitted), key);
+        }
+
+        let child = fx.value(fx.c, "child");
+        let wrapped = option(parent.clone(), Some(child.clone()));
+        let admitted = operand_result(&fx, ValueType::option(parent.clone()), &wrapped)
+            .expect("Option<P> holding C admits");
+        assert!(matches!(admitted, Value::Option(_)));
+        let sequence = collection(
+            CollectionKind::Sequence,
+            parent.clone(),
+            vec![child.clone()],
+        );
+        let sequence_type =
+            ValueType::collection(collection_type(CollectionKind::Sequence, parent.clone()));
+        operand_result(&fx, sequence_type.clone(), &sequence)
+            .expect("Sequence<P> holding C admits");
+
+        let expected = CheckedInvariantCause::EqualityOperandSourceNotAdmitted;
+        let cases = [
+            (parent.clone(), fx.value(fx.u, "u")),
+            (ValueType::Composite(fx.c), fx.value(fx.p, "p")),
+            (
+                ValueType::option(parent.clone()),
+                option(parent.clone(), Some(fx.value(fx.u, "u"))),
+            ),
+            (
+                sequence_type,
+                collection(CollectionKind::Sequence, parent, vec![fx.value(fx.u, "u")]),
+            ),
+        ];
+        for (source, value) in cases {
+            assert!(
+                matches!(
+                    operand_result(&fx, source.clone(), &value),
+                    Err(Stop::Refused(Refusal::CheckedInvariant { cause })) if cause == expected
+                ),
+                "{source:?}"
+            );
+        }
+    }
+
+    /// A `Reference<T>` operand is still checked by kind only.
+    #[trace("TC-913", "FR-113-AC-5")]
+    #[test]
+    fn operand_value_checks_reference_operand_by_kind_only() {
+        let fx = fixture();
+        let declared = EffectiveId::from_digest([61; 32]);
+        let other = EffectiveId::from_digest([62; 32]);
+        let reference = Value::Reference(ObjectReference::new(
+            UniverseId::from_digest([63; 32]),
+            other,
+            ObjectId::new("object").expect("non-empty identity"),
+        ));
+        let admitted = operand_result(&fx, ValueType::Reference(declared), &reference)
+            .expect("a reference operand is admitted by kind");
+        assert!(matches!(admitted, Value::Reference(_)));
+        assert!(matches!(
+            operand_result(&fx, ValueType::Reference(declared), &Value::Boolean(true)),
+            Err(Stop::Refused(Refusal::CheckedInvariant {
+                cause: CheckedInvariantCause::EqualityOperandSourceNotAdmitted
+            }))
+        ));
+    }
+
+    /// A `Reference<T>` inside an `Option` or collection is admitted by
+    /// conformance of its object type, not by the recorded type alone.
+    #[trace("TC-913", "FR-113-AC-7")]
+    #[test]
+    fn reference_inside_container_is_admitted_by_object_type_conformance() {
+        let fx = fixture();
+        let reference = |object_type| {
+            Value::Reference(ObjectReference::new(
+                UniverseId::from_digest([74; 32]),
+                object_type,
+                ObjectId::new("object").expect("non-empty identity"),
+            ))
+        };
+        let declared_parent = ValueType::Reference(fx.parent_object);
+        let declared_child = ValueType::Reference(fx.child_object);
+        let option_at = |recorded: &ValueType, held| option(recorded.clone(), Some(held));
+        let option_type = ValueType::option(declared_parent.clone());
+        // A conforming object type, and the identical one, are admitted.
+        for object_type in [fx.child_object, fx.parent_object] {
+            let held = option_at(&declared_parent, reference(object_type));
+            assert!(fx.types.admits_u(&option_type, &held), "{object_type:?}");
+        }
+        // An unrelated object type and a supertype at a child slot are refused,
+        // although the recorded payload type alone would admit them.
+        let stranger = option_at(&declared_parent, reference(fx.stranger_object));
+        assert!(!fx.types.admits_u(&option_type, &stranger));
+        let reversed = option_at(&declared_child, reference(fx.parent_object));
+        assert!(!fx
+            .types
+            .admits_u(&ValueType::option(declared_child.clone()), &reversed));
+        // Likewise for a collection element.
+        let sequence_type = collection_type(CollectionKind::Sequence, declared_parent.clone());
+        let declared = ValueType::collection(sequence_type);
+        let conforming = collection(
+            CollectionKind::Sequence,
+            declared_parent.clone(),
+            vec![reference(fx.child_object)],
+        );
+        assert!(fx.types.admits_u(&declared, &conforming));
+        let unrelated = collection(
+            CollectionKind::Sequence,
+            declared_parent,
+            vec![reference(fx.child_object), reference(fx.stranger_object)],
+        );
+        assert!(!fx.types.admits_u(&declared, &unrelated));
+    }
+
+    /// `Set<P>` and `Bag<P>` holding a `C` and a `P` of equal shared fields
+    /// have two elements and are admitted. This vector rests on the
+    /// quire-exact collection and equality changes of FR-376 to FR-378.
+    #[trace("TC-913", "FR-113-AC-6")]
+    #[test]
+    fn set_and_bag_of_parent_keep_equal_field_child_and_parent_distinct() {
+        let fx = fixture();
+        let parent = ValueType::Composite(fx.p);
+        for kind in [CollectionKind::Set, CollectionKind::Bag] {
+            let collection_type = collection_type(kind, parent.clone());
+            let Outcome::Completed(formed) = form(
+                &collection_type,
+                vec![fx.value(fx.c, "same"), fx.value(fx.p, "same")],
+                &mut big_meter(),
+            ) else {
+                panic!("{kind:?} formation completes");
+            };
+            let Value::Collection(held) = &formed else {
+                panic!("collection value");
+            };
+            assert_eq!(held.elements().len(), 2, "{kind:?} keeps both");
+            assert!(fx
+                .types
+                .admits_u(&ValueType::collection(collection_type), &formed));
+        }
+    }
+}
+
+/// Unbounded-budget forms of the caller-budgeted APIs, for fixtures that do not
+/// exercise a limit.
+#[cfg(test)]
+trait Unlimited {
+    fn admits_u(&self, ty: &ValueType, value: &Value) -> bool;
+    fn check_type_u(&self, ty: &ValueType) -> Result<(), IllTyped>;
+    fn contains_ieee_u(&self, ty: &ValueType) -> bool;
+    fn record_u(
+        &self,
+        declaration: NodeKey,
+        fields: Vec<(&str, FieldValue)>,
+    ) -> Result<Value, ConstructionRefusal>;
+    fn tuple_u(
+        &self,
+        declaration: NodeKey,
+        positions: Vec<Value>,
+    ) -> Result<Value, ConstructionRefusal>;
+    fn check_equality_u(
+        &self,
+        operator: EqualityOperator,
+        left: EqualityOperand,
+        right: EqualityOperand,
+        enum_members: &EnumMemberIndex,
+    ) -> Result<CheckedEquality, IllTyped>;
+    fn evaluate_record_u(
+        &self,
+        declaration: NodeKey,
+        fields: Vec<(&str, FieldExpression<'_>)>,
+        meter: &mut Meter,
+    ) -> Result<Outcome<Value>, ConstructionRefusal>;
+    fn evaluate_tuple_u(
+        &self,
+        declaration: NodeKey,
+        positions: Vec<Deferred<'_>>,
+        meter: &mut Meter,
+    ) -> Result<Outcome<Value>, ConstructionRefusal>;
+}
+
+#[cfg(test)]
+fn unlimited() -> WorkBudget<'static> {
+    WorkBudget::new(DEFAULT_WORK_UNITS, None)
+}
+
+#[cfg(test)]
+impl Unlimited for TypeEnvironment {
+    fn admits_u(&self, ty: &ValueType, value: &Value) -> bool {
+        self.admits(ty, value, &mut unlimited())
+            .expect("unlimited work")
+    }
+    fn check_type_u(&self, ty: &ValueType) -> Result<(), IllTyped> {
+        self.check_type(ty, &mut unlimited())
+            .expect("unlimited work")
+    }
+    fn contains_ieee_u(&self, ty: &ValueType) -> bool {
+        self.contains_ieee(ty, &mut unlimited())
+            .expect("unlimited work")
+    }
+    fn record_u(
+        &self,
+        declaration: NodeKey,
+        fields: Vec<(&str, FieldValue)>,
+    ) -> Result<Value, ConstructionRefusal> {
+        self.record(declaration, fields, &mut unlimited())
+            .expect("unlimited work")
+    }
+    fn tuple_u(
+        &self,
+        declaration: NodeKey,
+        positions: Vec<Value>,
+    ) -> Result<Value, ConstructionRefusal> {
+        self.tuple(declaration, positions, &mut unlimited())
+            .expect("unlimited work")
+    }
+    fn check_equality_u(
+        &self,
+        operator: EqualityOperator,
+        left: EqualityOperand,
+        right: EqualityOperand,
+        enum_members: &EnumMemberIndex,
+    ) -> Result<CheckedEquality, IllTyped> {
+        self.check_equality(operator, left, right, enum_members, &mut unlimited())
+            .expect("unlimited work")
+    }
+    fn evaluate_record_u(
+        &self,
+        declaration: NodeKey,
+        fields: Vec<(&str, FieldExpression<'_>)>,
+        meter: &mut Meter,
+    ) -> Result<Outcome<Value>, ConstructionRefusal> {
+        self.evaluate_record(declaration, fields, meter, &mut unlimited())
+            .expect("unlimited work")
+    }
+    fn evaluate_tuple_u(
+        &self,
+        declaration: NodeKey,
+        positions: Vec<Deferred<'_>>,
+        meter: &mut Meter,
+    ) -> Result<Outcome<Value>, ConstructionRefusal> {
+        self.evaluate_tuple(declaration, positions, meter, &mut unlimited())
+            .expect("unlimited work")
     }
 }

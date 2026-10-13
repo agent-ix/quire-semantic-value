@@ -38,7 +38,7 @@ result and charge behavior.
    `EqualityQuantityConversionRejected { cause }`,
    `EqualityQuantityNonExactPlacement`, `EqualityConversionShapeMismatch`,
    and `EqualityOperandTargetNotAdmitted` payloads from FR-369's table.
-3. Exercise `CheckedEquality::evaluate` with a missing captured enum variant,
+3. Exercise `CheckedEquality::evaluate` (given the checking `TypeEnvironment`) with a missing captured enum variant,
    an unresolved quantity unit, a value shape outside its selected text,
    enum or quantity schedule, and an `IllTyped { cause }` from a selected
    comparator. Assert `EqualityEnumVariantUnresolved`,

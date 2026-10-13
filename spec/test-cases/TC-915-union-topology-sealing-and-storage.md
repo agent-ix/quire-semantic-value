@@ -1,12 +1,12 @@
 ---
-id: TC-911
+id: TC-915
 title: "Union topology precedes atomic verified sealing"
 type: TC
 relationships:
-  - target: ix://agent-ix/quire-semantic-value/FR-112
+  - target: ix://agent-ix/quire-semantic-value/FR-115
     type: verifies
 ---
-# TC-911: Union topology precedes atomic verified sealing
+# TC-915: Union topology precedes atomic verified sealing
 
 ## Description
 

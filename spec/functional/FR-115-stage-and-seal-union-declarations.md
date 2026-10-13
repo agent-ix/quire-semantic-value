@@ -1,5 +1,5 @@
 ---
-id: FR-112
+id: FR-115
 title: "Resolve union topology before verified identity sealing"
 type: FR
 relationships:
@@ -10,7 +10,7 @@ relationships:
   - target: ix://agent-ix/quire-specification/FR-441
     type: depends_on
 ---
-# FR-112: Resolve union topology before verified identity sealing
+# FR-115: Resolve union topology before verified identity sealing
 
 ## Description
 
@@ -60,10 +60,10 @@ attached to its producer-verified final key and member bindings.
 
 | ID | Criteria | Verification |
 | --- | --- | --- |
-| FR-112-AC-1 | Resolved identifiers and ordered position types are readable before binding, including named Option-escaping recursion and all-member IEEE inspection; unsealed runtime member construction and admission refuse. | Test |
-| FR-112-AC-2 | Exact complete verified sealing retains the original handle and topology and exposes inverse final-key joins. Wrong count/order/name/declaration, duplicate member keys, resealing and key collisions preserve their typed cause and leave the environment unchanged. | Test |
-| FR-112-AC-3 | Actual Union registry, traversal and each sealing destination reservation can deny with FR-108's exact native request and classification. No partial binding or join is exposed; identical input succeeds after removing denial. Byte-request and capacity controls retain distinct carriers. | Test |
-| FR-112-AC-4 | One caller budget and borrowed cancellation handle span topology, sealing and Union member/type walks. Existing 5,000-member, 1,000-Option and 10,000-value fixtures and exact N/N-1 controls remain in the source. Released non-Union limits and both Record/Tuple prior-stop regressions remain unchanged. | Test |
+| FR-115-AC-1 | Resolved identifiers and ordered position types are readable before binding, including named Option-escaping recursion and all-member IEEE inspection; unsealed runtime member construction and admission refuse. | Test |
+| FR-115-AC-2 | Exact complete verified sealing retains the original handle and topology and exposes inverse final-key joins. Wrong count/order/name/declaration, duplicate member keys, resealing and key collisions preserve their typed cause and leave the environment unchanged. | Test |
+| FR-115-AC-3 | Actual Union registry, traversal and each sealing destination reservation can deny with FR-108's exact native request and classification. No partial binding or join is exposed; identical input succeeds after removing denial. Byte-request and capacity controls retain distinct carriers. | Test |
+| FR-115-AC-4 | One caller budget and borrowed cancellation handle span topology, sealing and Union member/type walks. Existing 5,000-member, 1,000-Option and 10,000-value fixtures and exact N/N-1 controls remain in the source. Released non-Union limits and both Record/Tuple prior-stop regressions remain unchanged. | Test |
 
 ## Dependencies
 

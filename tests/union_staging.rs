@@ -61,8 +61,8 @@ fn integer(n: i64) -> Value {
     Value::Integer(Integer::from(n))
 }
 
-/// Trace: FR-321-AC-4, FR-112-AC-4
-#[trace("FR-321-AC-4", "TC-911", "FR-112-AC-4")]
+/// Trace: FR-321-AC-4, FR-115-AC-4
+#[trace("FR-321-AC-4", "TC-915", "FR-115-AC-4")]
 #[test]
 fn topology_sealing_and_member_search_share_a_cumulative_budget() {
     let declaration = || {
@@ -90,7 +90,12 @@ fn topology_sealing_and_member_search_share_a_cumulative_budget() {
     let mut work = WorkBudget::new(30, None);
     let mut env = TypeEnvironment::bounded_with_budget([declaration()], [], 0, &mut work).unwrap();
     assert_eq!(work.spent(), 26);
-    env.seal_union_verified(key(1), key(40), vec![binding(key(40), 10, "End"), binding(key(40), 11, "Next")], &mut work)
+    env.seal_union_verified(
+        key(1),
+        key(40),
+        vec![binding(key(40), 10, "End"), binding(key(40), 11, "Next")],
+        &mut work,
+    )
     .unwrap();
     assert_eq!(work.spent(), 28);
     assert_eq!(
@@ -145,9 +150,7 @@ fn transitive_ieee_and_nested_type_walks_preserve_named_stops() {
         ValueType::Composite(key(1)),
         None,
     ));
-    assert!(env
-        .check_type(&set, &mut WorkBudget::new(7, None))
-        .is_err());
+    assert!(env.check_type(&set, &mut WorkBudget::new(7, None)).is_err());
     assert_eq!(
         env.check_type(&set, &mut WorkBudget::new(8, None)),
         Ok(Ok(()))
@@ -157,7 +160,15 @@ fn transitive_ieee_and_nested_type_walks_preserve_named_stops() {
         env.runtime_type(&internal, &mut WorkBudget::new(3, None)),
         Ok(None)
     );
-    env.seal_union_verified(key(1), key(40), vec![binding(key(40), 10, "End"), binding(key(40), 11, "Next")], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None))
+    env.seal_union_verified(
+        key(1),
+        key(40),
+        vec![binding(key(40), 10, "End"), binding(key(40), 11, "Next")],
+        &mut quire_semantic_value::declaration::WorkBudget::new(
+            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+            None,
+        ),
+    )
     .unwrap();
     let final_type = ValueType::option(ValueType::option(ValueType::Composite(key(40))));
     let limit = env
@@ -174,20 +185,27 @@ fn transitive_ieee_and_nested_type_walks_preserve_named_stops() {
     );
     assert_eq!(
         env.same_type(&internal, &final_type, &mut WorkBudget::new(2, None))
-        .unwrap_err()
-        .actual(),
+            .unwrap_err()
+            .actual(),
         3
     );
     let cancelled = Cancel::new();
     cancelled.cancel(quire_exact::CancelCause::Requested);
     assert!(env
-        .contains_ieee(&ValueType::Composite(key(1)), &mut WorkBudget::new(100, Some(&cancelled)))
+        .contains_ieee(
+            &ValueType::Composite(key(1)),
+            &mut WorkBudget::new(100, Some(&cancelled))
+        )
         .is_err());
     assert!(env
         .runtime_type(&internal, &mut WorkBudget::new(100, Some(&cancelled)))
         .is_err());
     assert!(env
-        .same_type(&internal, &final_type, &mut WorkBudget::new(100, Some(&cancelled)))
+        .same_type(
+            &internal,
+            &final_type,
+            &mut WorkBudget::new(100, Some(&cancelled))
+        )
         .is_err());
     assert!(env
         .union_member_named(key(1), "End", &mut WorkBudget::new(100, Some(&cancelled)))
@@ -224,8 +242,16 @@ fn closure_name_matching_admission_and_reference_walk_use_one_budget() {
         )],
     )
     .unwrap();
-    env.seal_union_verified(key(1), key(40), vec![binding(key(40), 10, "Some")], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None))
-        .unwrap();
+    env.seal_union_verified(
+        key(1),
+        key(40),
+        vec![binding(key(40), 10, "Some")],
+        &mut quire_semantic_value::declaration::WorkBudget::new(
+            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+            None,
+        ),
+    )
+    .unwrap();
     let reference = |name| {
         ObjectReference::new(
             UniverseId::from_digest([9; 32]),
@@ -240,16 +266,24 @@ fn closure_name_matching_admission_and_reference_walk_use_one_budget() {
             vec![(
                 "holder",
                 FieldValue::Present(
-                    env.union(key(1), variant(10), vec![Value::Reference(target)], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes")
-                        .unwrap(),
+                    env.union(
+                        key(1),
+                        variant(10),
+                        vec![Value::Reference(target)],
+                        &mut quire_semantic_value::declaration::WorkBudget::new(
+                            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                            None,
+                        ),
+                    )
+                    .expect("fixture admission work completes")
+                    .unwrap(),
                 ),
             )],
         )]
     };
     // Object 1; field matching 2; slot 1; admission 5; closure 5 =14.
     let mut short = WorkBudget::new(13, None);
-    let limit =
-        ObjectClosure::new(&env, objects(owner.clone()), &[], &mut short).unwrap_err();
+    let limit = ObjectClosure::new(&env, objects(owner.clone()), &[], &mut short).unwrap_err();
     assert_eq!(limit.configured_bound(), 13);
     assert_eq!(limit.actual(), 14);
     let mut exact = WorkBudget::new(14, None);
@@ -259,7 +293,12 @@ fn closure_name_matching_admission_and_reference_walk_use_one_budget() {
     assert!(closure.contains(&owner));
     assert_eq!(exact.spent(), 14);
     let missing = reference("missing");
-    let refusal = ObjectClosure::new(&env, objects(missing.clone()), &[], &mut WorkBudget::new(14, None))
+    let refusal = ObjectClosure::new(
+        &env,
+        objects(missing.clone()),
+        &[],
+        &mut WorkBudget::new(14, None),
+    )
     .unwrap()
     .unwrap_err();
     assert_eq!(*refusal.object, owner);
@@ -269,7 +308,12 @@ fn closure_name_matching_admission_and_reference_walk_use_one_budget() {
     );
     let cancel = Cancel::new();
     cancel.cancel(quire_exact::CancelCause::Requested);
-    assert!(ObjectClosure::new(&env, objects(owner.clone()), &[], &mut WorkBudget::new(100, Some(&cancel)))
+    assert!(ObjectClosure::new(
+        &env,
+        objects(owner.clone()),
+        &[],
+        &mut WorkBudget::new(100, Some(&cancel))
+    )
     .is_err());
 }
 
@@ -293,23 +337,55 @@ fn meter() -> Meter {
 #[test]
 fn bounded_construction_keeps_work_stops_separate_from_prior_runtime_stop() {
     let mut env = TypeEnvironment::new([shape()], []).unwrap();
-    env.seal_union_verified(key(1), key(40), bindings(key(40)), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None))
-        .unwrap();
+    env.seal_union_verified(
+        key(1),
+        key(40),
+        bindings(key(40)),
+        &mut quire_semantic_value::declaration::WorkBudget::new(
+            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+            None,
+        ),
+    )
+    .unwrap();
     // Member lookup1 + retained positions2 + two type/value admissions2 each.
     let limit = env
-        .union(key(1), variant(11), vec![integer(2), integer(3)], &mut WorkBudget::new(6, None))
+        .union(
+            key(1),
+            variant(11),
+            vec![integer(2), integer(3)],
+            &mut WorkBudget::new(6, None),
+        )
         .unwrap_err();
     assert_eq!(limit.configured_bound(), 6);
     assert_eq!(limit.actual(), 7);
     let mut work = WorkBudget::new(7, None);
     let value = env
-        .union(key(40), variant(11), vec![integer(2), integer(3)], &mut work)
+        .union(
+            key(40),
+            variant(11),
+            vec![integer(2), integer(3)],
+            &mut work,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(work.spent(), 7);
-    assert!(env.admits(&ValueType::Composite(key(1)), &value, &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
+    assert!(env
+        .admits(
+            &ValueType::Composite(key(1)),
+            &value,
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"));
     let wrong = env
-        .union(key(1), variant(11), vec![integer(2)], &mut WorkBudget::new(1, None))
+        .union(
+            key(1),
+            variant(11),
+            vec![integer(2)],
+            &mut WorkBudget::new(1, None),
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(
@@ -323,7 +399,10 @@ fn bounded_construction_keeps_work_stops_separate_from_prior_runtime_stop() {
     let cancel = Cancel::new();
     let mut work = WorkBudget::new(3, Some(&cancel));
     let result = env
-        .evaluate_union(key(1), variant(11), vec![
+        .evaluate_union(
+            key(1),
+            variant(11),
+            vec![
                 Box::new(|_| {
                     calls.set(calls.get() + 1);
                     cancel.cancel(quire_exact::CancelCause::Requested);
@@ -333,7 +412,10 @@ fn bounded_construction_keeps_work_stops_separate_from_prior_runtime_stop() {
                     calls.set(calls.get() + 1);
                     Outcome::Completed(integer(3))
                 }),
-            ], &mut meter(), &mut work)
+            ],
+            &mut meter(),
+            &mut work,
+        )
         .unwrap()
         .unwrap();
     assert!(matches!(
@@ -350,8 +432,16 @@ fn bounded_construction_keeps_work_stops_separate_from_prior_runtime_stop() {
 #[test]
 fn bounded_equality_uses_shared_type_ieee_and_final_join_walks() {
     let mut env = TypeEnvironment::new([shape()], []).unwrap();
-    env.seal_union_verified(key(1), key(40), bindings(key(40)), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None))
-        .unwrap();
+    env.seal_union_verified(
+        key(1),
+        key(40),
+        bindings(key(40)),
+        &mut quire_semantic_value::declaration::WorkBudget::new(
+            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+            None,
+        ),
+    )
+    .unwrap();
     let operands = || {
         (
             EqualityOperand::typed(ValueType::Composite(key(1))),
@@ -362,25 +452,65 @@ fn bounded_equality_uses_shared_type_ieee_and_final_join_walks() {
     // and one same-type joined leaf =19, independent of runtime value events.
     let (left, right) = operands();
     let limit = env
-        .check_equality(EqualityOperator::Equal, left, right, &EnumMemberIndex::default(), &mut WorkBudget::new(18, None))
+        .check_equality(
+            EqualityOperator::Equal,
+            left,
+            right,
+            &EnumMemberIndex::default(),
+            &mut WorkBudget::new(18, None),
+        )
         .unwrap_err();
     assert_eq!(limit.configured_bound(), 18);
     assert_eq!(limit.actual(), 19);
     let (left, right) = operands();
     let mut work = WorkBudget::new(19, None);
     let equality = env
-        .check_equality(EqualityOperator::Equal, left, right, &EnumMemberIndex::default(), &mut work)
+        .check_equality(
+            EqualityOperator::Equal,
+            left,
+            right,
+            &EnumMemberIndex::default(),
+            &mut work,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(work.spent(), 19);
-    let a = env.union(key(1), variant(10), vec![], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes").unwrap();
-    let b = env.union(key(40), variant(10), vec![], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes").unwrap();
+    let a = env
+        .union(
+            key(1),
+            variant(10),
+            vec![],
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None,
+            ),
+        )
+        .expect("fixture admission work completes")
+        .unwrap();
+    let b = env
+        .union(
+            key(40),
+            variant(10),
+            vec![],
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None,
+            ),
+        )
+        .expect("fixture admission work completes")
+        .unwrap();
     assert!(matches!(
-        equality.evaluate(&a, &b, &mut meter()),
+        equality.evaluate(&env, &a, &b, &mut meter()),
         Outcome::Completed(true)
     ));
     let refusal = env
-        .check_equality(EqualityOperator::Equal, EqualityOperand::typed(ValueType::Composite(key(99))), EqualityOperand::typed(ValueType::Composite(key(1))), &EnumMemberIndex::default(), &mut WorkBudget::new(19, None))
+        .check_equality(
+            EqualityOperator::Equal,
+            EqualityOperand::typed(ValueType::Composite(key(99))),
+            EqualityOperand::typed(ValueType::Composite(key(1))),
+            &EnumMemberIndex::default(),
+            &mut WorkBudget::new(19, None),
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.cause, IllTypedCause::TypeMismatch);
@@ -388,7 +518,13 @@ fn bounded_equality_uses_shared_type_ieee_and_final_join_walks() {
     cancel.cancel(quire_exact::CancelCause::Requested);
     let (left, right) = operands();
     assert!(env
-        .check_equality(EqualityOperator::Equal, left, right, &EnumMemberIndex::default(), &mut WorkBudget::new(19, Some(&cancel)))
+        .check_equality(
+            EqualityOperator::Equal,
+            left,
+            right,
+            &EnumMemberIndex::default(),
+            &mut WorkBudget::new(19, Some(&cancel))
+        )
         .is_err());
 }
 
@@ -408,7 +544,12 @@ fn zero_member_seal_polls_cancellation_without_attaching_a_final_key() {
     let original = env.clone();
     let cancel = Cancel::new();
     cancel.cancel(quire_exact::CancelCause::Requested);
-    let Err(EnvironmentFailure::Limit(limit)) = env.seal_union_verified(key(1), key(40), vec![], &mut WorkBudget::new(0, Some(&cancel))) else {
+    let Err(EnvironmentFailure::Limit(limit)) = env.seal_union_verified(
+        key(1),
+        key(40),
+        vec![],
+        &mut WorkBudget::new(0, Some(&cancel)),
+    ) else {
         panic!("zero-member seal must poll cancellation");
     };
     assert_eq!(limit.configured_bound(), 0);
@@ -417,31 +558,84 @@ fn zero_member_seal_polls_cancellation_without_attaching_a_final_key() {
     assert_eq!(env.union_key(key(1)), None);
 }
 
-/// Trace: FR-321-AC-1, FR-112-AC-1, FR-112-AC-2
-#[trace("FR-321-AC-1", "TC-911", "FR-112-AC-1", "FR-112-AC-2")]
+/// Trace: FR-321-AC-1, FR-115-AC-1, FR-115-AC-2
+#[trace("FR-321-AC-1", "TC-915", "FR-115-AC-1", "FR-115-AC-2")]
 #[test]
 fn resolved_topology_is_visible_and_runtime_union_is_denied_until_sealed() {
     let mut env = TypeEnvironment::new([shape()], []).unwrap();
-    let (position, rect) = env.union_member_named(key(1), "Rect", &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes").unwrap();
+    let (position, rect) = env
+        .union_member_named(
+            key(1),
+            "Rect",
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None,
+            ),
+        )
+        .expect("fixture admission work completes")
+        .unwrap();
     assert_eq!(position, 1);
     assert_eq!(rect.identifier().as_str(), "Rect");
     assert_eq!(rect.positions(), &[ValueType::Integer, ValueType::Integer]);
     assert!(rect.member().is_none());
     assert_eq!(env.union_key(key(1)), None);
-    assert_eq!(env.runtime_type(&ValueType::Composite(key(1)), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"), None);
+    assert_eq!(
+        env.runtime_type(
+            &ValueType::Composite(key(1)),
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"),
+        None
+    );
     assert!(env.union_member(key(1), variant(10)).is_none());
     assert_eq!(
-        env.check_equality(EqualityOperator::Equal, EqualityOperand::typed(ValueType::Composite(key(1))), EqualityOperand::typed(ValueType::Composite(key(1))), &EnumMemberIndex::default(), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes")
+        env.check_equality(
+            EqualityOperator::Equal,
+            EqualityOperand::typed(ValueType::Composite(key(1))),
+            EqualityOperand::typed(ValueType::Composite(key(1))),
+            &EnumMemberIndex::default(),
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes")
         .unwrap_err()
         .cause,
         IllTypedCause::TypeMismatch
     );
-    assert!(env.union(key(1), variant(10), vec![], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes").is_err());
+    assert!(env
+        .union(
+            key(1),
+            variant(10),
+            vec![],
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes")
+        .is_err());
     let supplied = UnionValue::from_admitted(binding(key(40), 10, "Empty"), vec![]);
-    assert!(!env.admits(&ValueType::Composite(key(1)), &supplied, &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
+    assert!(!env
+        .admits(
+            &ValueType::Composite(key(1)),
+            &supplied,
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"));
     let calls = std::cell::Cell::new(0);
     assert!(env
-        .evaluate_union(key(1), variant(11), vec![
+        .evaluate_union(
+            key(1),
+            variant(11),
+            vec![
                 Box::new(|_| {
                     calls.set(calls.get() + 1);
                     Outcome::Completed(integer(2))
@@ -450,11 +644,26 @@ fn resolved_topology_is_visible_and_runtime_union_is_denied_until_sealed() {
                     calls.set(calls.get() + 1);
                     Outcome::Completed(integer(3))
                 }),
-            ], &mut meter(), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes")
+            ],
+            &mut meter(),
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes")
         .is_err());
     assert_eq!(calls.get(), 0);
-    env.seal_union_verified(key(1), key(40), bindings(key(40)), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None))
-        .unwrap();
+    env.seal_union_verified(
+        key(1),
+        key(40),
+        bindings(key(40)),
+        &mut quire_semantic_value::declaration::WorkBudget::new(
+            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+            None,
+        ),
+    )
+    .unwrap();
     assert_eq!(env.union_key(key(1)), Some(key(40)));
     assert_eq!(env.union_handle(key(40)), Some(key(1)));
     assert_eq!(env.composite(key(40)).unwrap().key(), key(1));
@@ -462,10 +671,37 @@ fn resolved_topology_is_visible_and_runtime_union_is_denied_until_sealed() {
     assert_eq!(position, 1);
     assert_eq!(rect.member().unwrap().declaration(), key(40));
     assert_eq!(rect.member().unwrap().variant(), variant(11));
-    assert!(env.admits(&ValueType::Composite(key(1)), &supplied, &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
-    assert!(env.admits(&ValueType::Composite(key(40)), &supplied, &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
+    assert!(env
+        .admits(
+            &ValueType::Composite(key(1)),
+            &supplied,
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"));
+    assert!(env
+        .admits(
+            &ValueType::Composite(key(40)),
+            &supplied,
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"));
     let value = env
-        .union(key(1), variant(11), vec![integer(2), integer(3)], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes")
+        .union(
+            key(1),
+            variant(11),
+            vec![integer(2), integer(3)],
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None,
+            ),
+        )
+        .expect("fixture admission work completes")
         .unwrap();
     let Value::Union(value) = value else {
         panic!("sealed union carrier required");
@@ -473,11 +709,20 @@ fn resolved_topology_is_visible_and_runtime_union_is_denied_until_sealed() {
     assert_eq!(value.declaration(), key(40));
     assert_eq!(value.payload().len(), 2);
     let wrong_handle_value = UnionValue::from_admitted(binding(key(1), 10, "Empty"), vec![]);
-    assert!(!env.admits(&ValueType::Composite(key(1)), &wrong_handle_value, &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
+    assert!(!env
+        .admits(
+            &ValueType::Composite(key(1)),
+            &wrong_handle_value,
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"));
 }
 
-/// Trace: FR-321-AC-1, FR-112-AC-2
-#[trace("FR-321-AC-1", "TC-911", "FR-112-AC-2")]
+/// Trace: FR-321-AC-1, FR-115-AC-2
+#[trace("FR-321-AC-1", "TC-915", "FR-115-AC-2")]
 #[test]
 fn invalid_seals_leave_every_descriptor_and_join_unchanged() {
     let original = TypeEnvironment::new([shape()], []).unwrap();
@@ -500,9 +745,15 @@ fn invalid_seals_leave_every_descriptor_and_join_unchanged() {
         ),
     ] {
         let mut env = original.clone();
-        let Err(EnvironmentFailure::Refused(actual)) =
-            env.seal_union_verified(key(1), key(40), members, &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None))
-        else {
+        let Err(EnvironmentFailure::Refused(actual)) = env.seal_union_verified(
+            key(1),
+            key(40),
+            members,
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None,
+            ),
+        ) else {
             panic!("invalid seal must refuse");
         };
         assert_eq!(actual.declaration, "Shape");
@@ -510,12 +761,26 @@ fn invalid_seals_leave_every_descriptor_and_join_unchanged() {
         assert_eq!(env, original);
     }
     let mut env = original;
-    env.seal_union_verified(key(1), key(40), bindings(key(40)), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None))
-        .unwrap();
+    env.seal_union_verified(
+        key(1),
+        key(40),
+        bindings(key(40)),
+        &mut quire_semantic_value::declaration::WorkBudget::new(
+            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+            None,
+        ),
+    )
+    .unwrap();
     let sealed = env.clone();
-    let Err(EnvironmentFailure::Refused(actual)) =
-        env.seal_union_verified(key(1), key(41), bindings(key(41)), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None))
-    else {
+    let Err(EnvironmentFailure::Refused(actual)) = env.seal_union_verified(
+        key(1),
+        key(41),
+        bindings(key(41)),
+        &mut quire_semantic_value::declaration::WorkBudget::new(
+            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+            None,
+        ),
+    ) else {
         panic!("resealing must refuse");
     };
     assert_eq!(actual.cause, DeclarationCause::DuplicateKey);
@@ -540,27 +805,73 @@ fn final_key_collisions_cannot_alias_records_or_another_union() {
     )
     .unwrap();
     let original = env.clone();
-    let Err(EnvironmentFailure::Refused(actual)) =
-        env.seal_union_verified(key(1), key(40), bindings(key(40)), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None))
-    else {
+    let Err(EnvironmentFailure::Refused(actual)) = env.seal_union_verified(
+        key(1),
+        key(40),
+        bindings(key(40)),
+        &mut quire_semantic_value::declaration::WorkBudget::new(
+            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+            None,
+        ),
+    ) else {
         panic!("record key collision must refuse");
     };
     assert_eq!(actual.cause, DeclarationCause::DuplicateKey);
     assert_eq!(env, original);
-    env.seal_union_verified(key(1), key(41), bindings(key(41)), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None))
-        .unwrap();
+    env.seal_union_verified(
+        key(1),
+        key(41),
+        bindings(key(41)),
+        &mut quire_semantic_value::declaration::WorkBudget::new(
+            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+            None,
+        ),
+    )
+    .unwrap();
     let sealed = env.clone();
-    let Err(EnvironmentFailure::Refused(actual)) =
-        env.seal_union_verified(key(2), key(41), vec![binding(key(41), 20, "Empty")], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None))
-    else {
+    let Err(EnvironmentFailure::Refused(actual)) = env.seal_union_verified(
+        key(2),
+        key(41),
+        vec![binding(key(41), 20, "Empty")],
+        &mut quire_semantic_value::declaration::WorkBudget::new(
+            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+            None,
+        ),
+    ) else {
         panic!("another union cannot acquire the same final key");
     };
     assert_eq!(actual.cause, DeclarationCause::DuplicateKey);
     assert_eq!(env, sealed);
-    let record = env.record(key(40), vec![], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes").unwrap();
-    assert!(env.admits(&ValueType::Composite(key(40)), &record, &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
+    let record = env
+        .record(
+            key(40),
+            vec![],
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None,
+            ),
+        )
+        .expect("fixture admission work completes")
+        .unwrap();
+    assert!(env
+        .admits(
+            &ValueType::Composite(key(40)),
+            &record,
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"));
     assert_eq!(
-        env.runtime_type(&ValueType::Composite(key(40)), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"),
+        env.runtime_type(
+            &ValueType::Composite(key(40)),
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"),
         Some(ValueType::Composite(key(40)))
     );
 }
@@ -588,14 +899,31 @@ fn ieee_and_named_escape_checks_run_before_any_binding_exists() {
     )
     .unwrap();
     assert_eq!(env.union_key(key(1)), None);
-    assert!(env.contains_ieee(&ValueType::Composite(key(1)), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
+    assert!(env
+        .contains_ieee(
+            &ValueType::Composite(key(1)),
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"));
     let set = ValueType::collection(CollectionType::new(
         CollectionKind::Set,
         ValueType::Composite(key(1)),
         None,
     ));
     assert_eq!(
-        env.check_type(&set, &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes").unwrap_err().cause,
+        env.check_type(
+            &set,
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes")
+        .unwrap_err()
+        .cause,
         IllTypedCause::OperatorIneligible
     );
     let sequence = ValueType::collection(CollectionType::new(
@@ -603,7 +931,17 @@ fn ieee_and_named_escape_checks_run_before_any_binding_exists() {
         ValueType::Composite(key(1)),
         None,
     ));
-    assert_eq!(env.check_type(&sequence, &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"), Ok(()));
+    assert_eq!(
+        env.check_type(
+            &sequence,
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"),
+        Ok(())
+    );
     let Err(EnvironmentFailure::Refused(actual)) = TypeEnvironment::new(
         [CompositeDeclaration::new(
             key(1),
@@ -630,9 +968,12 @@ fn ieee_and_named_escape_checks_run_before_any_binding_exists() {
 fn seal_work_limits_are_exact_and_do_not_attach_a_prefix() {
     let original = TypeEnvironment::new([shape()], []).unwrap();
     let mut env = original.clone();
-    let Err(EnvironmentFailure::Limit(limit)) =
-        env.seal_union_verified(key(1), key(40), bindings(key(40)), &mut WorkBudget::new(1, Some(&Cancel::new())))
-    else {
+    let Err(EnvironmentFailure::Limit(limit)) = env.seal_union_verified(
+        key(1),
+        key(40),
+        bindings(key(40)),
+        &mut WorkBudget::new(1, Some(&Cancel::new())),
+    ) else {
         panic!("N minus one must deny sealing");
     };
     assert_eq!(limit.kind(), EnvironmentLimitKind::WorkUnits);
@@ -641,15 +982,23 @@ fn seal_work_limits_are_exact_and_do_not_attach_a_prefix() {
     assert_eq!(env, original);
     let cancelled = Cancel::new();
     cancelled.cancel(quire_exact::CancelCause::Requested);
-    let Err(EnvironmentFailure::Limit(_)) =
-        env.seal_union_verified(key(1), key(40), bindings(key(40)), &mut WorkBudget::new(2, Some(&cancelled)))
-    else {
+    let Err(EnvironmentFailure::Limit(_)) = env.seal_union_verified(
+        key(1),
+        key(40),
+        bindings(key(40)),
+        &mut WorkBudget::new(2, Some(&cancelled)),
+    ) else {
         panic!("cancellation must leave the registry unresolved");
     };
     assert_eq!(env, original);
     assert_eq!(cancelled.cause(), Some(quire_exact::CancelCause::Requested));
-    env.seal_union_verified(key(1), key(40), bindings(key(40)), &mut WorkBudget::new(2, Some(&Cancel::new())))
-        .unwrap();
+    env.seal_union_verified(
+        key(1),
+        key(40),
+        bindings(key(40)),
+        &mut WorkBudget::new(2, Some(&Cancel::new())),
+    )
+    .unwrap();
     assert_eq!(env.union_key(key(1)), Some(key(40)));
     assert_eq!(env.union_member(key(1), variant(11)).unwrap().0, 1);
 }
@@ -673,32 +1022,132 @@ fn recursive_handle_final_key_joins_admit_payloads_and_checked_equality() {
     };
     let mut env =
         TypeEnvironment::new([declaration(1, "A", 2), declaration(2, "B", 1)], []).unwrap();
-    env.seal_union_verified(key(1), key(40), vec![binding(key(40), 10, "End"), binding(key(40), 11, "Next")], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None))
+    env.seal_union_verified(
+        key(1),
+        key(40),
+        vec![binding(key(40), 10, "End"), binding(key(40), 11, "Next")],
+        &mut quire_semantic_value::declaration::WorkBudget::new(
+            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+            None,
+        ),
+    )
     .unwrap();
     assert_eq!(
-        env.runtime_type(&ValueType::option(ValueType::Composite(key(2))), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"),
+        env.runtime_type(
+            &ValueType::option(ValueType::Composite(key(2))),
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"),
         None
     );
-    env.seal_union_verified(key(2), key(41), vec![binding(key(41), 20, "End"), binding(key(41), 21, "Next")], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None))
+    env.seal_union_verified(
+        key(2),
+        key(41),
+        vec![binding(key(41), 20, "End"), binding(key(41), 21, "Next")],
+        &mut quire_semantic_value::declaration::WorkBudget::new(
+            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+            None,
+        ),
+    )
     .unwrap();
-    let end = env.union(key(2), variant(20), vec![], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes").unwrap();
+    let end = env
+        .union(
+            key(2),
+            variant(20),
+            vec![],
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None,
+            ),
+        )
+        .expect("fixture admission work completes")
+        .unwrap();
     let child = OptionValue::present(ValueType::Composite(key(41)), end).unwrap();
-    let value = env.union(key(1), variant(11), vec![child], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes").unwrap();
-    assert!(env.admits(&ValueType::Composite(key(1)), &value, &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
-    assert!(env.admits(&ValueType::Composite(key(40)), &value, &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
+    let value = env
+        .union(
+            key(1),
+            variant(11),
+            vec![child],
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None,
+            ),
+        )
+        .expect("fixture admission work completes")
+        .unwrap();
+    assert!(env
+        .admits(
+            &ValueType::Composite(key(1)),
+            &value,
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"));
+    assert!(env
+        .admits(
+            &ValueType::Composite(key(40)),
+            &value,
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"));
     assert_eq!(
-        env.runtime_type(&ValueType::option(ValueType::Composite(key(2))), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"),
+        env.runtime_type(
+            &ValueType::option(ValueType::Composite(key(2))),
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"),
         Some(ValueType::option(ValueType::Composite(key(41))))
     );
     let equality = env
-        .check_equality(EqualityOperator::Equal, EqualityOperand::typed(ValueType::Composite(key(1))), EqualityOperand::typed(ValueType::Composite(key(40))), &EnumMemberIndex::default(), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes")
+        .check_equality(
+            EqualityOperator::Equal,
+            EqualityOperand::typed(ValueType::Composite(key(1))),
+            EqualityOperand::typed(ValueType::Composite(key(40))),
+            &EnumMemberIndex::default(),
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None,
+            ),
+        )
+        .expect("fixture admission work completes")
         .unwrap();
-    let independent_end = env.union(key(41), variant(20), vec![], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes").unwrap();
+    let independent_end = env
+        .union(
+            key(41),
+            variant(20),
+            vec![],
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None,
+            ),
+        )
+        .expect("fixture admission work completes")
+        .unwrap();
     let independent = env
-        .union(key(40), variant(11), vec![OptionValue::present(ValueType::Composite(key(41)), independent_end).unwrap()], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes")
+        .union(
+            key(40),
+            variant(11),
+            vec![OptionValue::present(ValueType::Composite(key(41)), independent_end).unwrap()],
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None,
+            ),
+        )
+        .expect("fixture admission work completes")
         .unwrap();
     assert!(matches!(
-        equality.evaluate(&value, &independent, &mut meter()),
+        equality.evaluate(&env, &value, &independent, &mut meter()),
         Outcome::Completed(true)
     ));
     let expected_collection = ValueType::collection(CollectionType::new(
@@ -712,17 +1161,42 @@ fn recursive_handle_final_key_joins_admit_payloads_and_checked_equality() {
         None,
     );
     assert_eq!(
-        env.runtime_type(&expected_collection, &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"),
+        env.runtime_type(
+            &expected_collection,
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"),
         Some(ValueType::collection(actual_collection.clone()))
     );
     let contained = OptionValue::present(ValueType::Composite(key(40)), value.clone()).unwrap();
     let collection = quire_exact::from_admitted(actual_collection, vec![contained]);
-    assert!(env.admits(&expected_collection, &collection, &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
+    assert!(env
+        .admits(
+            &expected_collection,
+            &collection,
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"));
     let wrong = UnionValue::from_admitted(
         binding(key(1), 11, "Next"),
         vec![OptionValue::none(ValueType::Composite(key(2)))],
     );
-    assert!(!env.admits(&ValueType::Composite(key(1)), &wrong, &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"));
+    assert!(!env
+        .admits(
+            &ValueType::Composite(key(1)),
+            &wrong,
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes"));
 }
 
 /// Trace: FR-321-AC-4
@@ -746,7 +1220,15 @@ fn ten_thousand_supplied_links_follow_sealed_keys_with_internal_position_types()
                 [],
             )
             .unwrap();
-            env.seal_union_verified(key(1), key(40), vec![binding(key(40), 10, "End"), binding(key(40), 11, "Next")], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None))
+            env.seal_union_verified(
+                key(1),
+                key(40),
+                vec![binding(key(40), 10, "End"), binding(key(40), 11, "Next")],
+                &mut quire_semantic_value::declaration::WorkBudget::new(
+                    quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                    None,
+                ),
+            )
             .unwrap();
             let end = env
                 .union_member(key(1), variant(10))
@@ -777,17 +1259,47 @@ fn ten_thousand_supplied_links_follow_sealed_keys_with_internal_position_types()
             assert_eq!(left.occ(), Integer::from(20_001_u64));
             // Work includes type validation, payload scheduling and option
             // type comparison, not just kernel occurrence count.
-            assert_eq!(env.admits(&handle_type, &left, &mut quire_semantic_value::declaration::WorkBudget::new(50_002, None)), Ok(true));
-            assert_eq!(env.admits(&final_type, &left, &mut quire_semantic_value::declaration::WorkBudget::new(50_002, None)), Ok(true));
-            let limit = env.admits(&handle_type, &left, &mut quire_semantic_value::declaration::WorkBudget::new(50_001, None)).unwrap_err();
+            assert_eq!(
+                env.admits(
+                    &handle_type,
+                    &left,
+                    &mut quire_semantic_value::declaration::WorkBudget::new(50_002, None)
+                ),
+                Ok(true)
+            );
+            assert_eq!(
+                env.admits(
+                    &final_type,
+                    &left,
+                    &mut quire_semantic_value::declaration::WorkBudget::new(50_002, None)
+                ),
+                Ok(true)
+            );
+            let limit = env
+                .admits(
+                    &handle_type,
+                    &left,
+                    &mut quire_semantic_value::declaration::WorkBudget::new(50_001, None),
+                )
+                .unwrap_err();
             assert_eq!(limit.kind(), EnvironmentLimitKind::WorkUnits);
             assert_eq!(limit.configured_bound(), 50_001);
             assert_eq!(limit.actual(), 50_002);
             let equality = env
-                .check_equality(EqualityOperator::Equal, EqualityOperand::typed(handle_type), EqualityOperand::typed(final_type), &EnumMemberIndex::default(), &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes")
+                .check_equality(
+                    EqualityOperator::Equal,
+                    EqualityOperand::typed(handle_type),
+                    EqualityOperand::typed(final_type),
+                    &EnumMemberIndex::default(),
+                    &mut quire_semantic_value::declaration::WorkBudget::new(
+                        quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                        None,
+                    ),
+                )
+                .expect("fixture admission work completes")
                 .unwrap();
             assert!(matches!(
-                equality.evaluate(&left, &right, &mut meter()),
+                equality.evaluate(&env, &left, &right, &mut meter()),
                 Outcome::Completed(true)
             ));
             assert_eq!(
@@ -829,8 +1341,16 @@ fn sealed_reference_positions_validate_conformance_and_closure() {
         )],
     )
     .unwrap();
-    env.seal_union_verified(key(1), key(40), vec![binding(key(40), 10, "Some")], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None))
-        .unwrap();
+    env.seal_union_verified(
+        key(1),
+        key(40),
+        vec![binding(key(40), 10, "Some")],
+        &mut quire_semantic_value::declaration::WorkBudget::new(
+            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+            None,
+        ),
+    )
+    .unwrap();
     let reference = |name| {
         ObjectReference::new(
             UniverseId::from_digest([9; 32]),
@@ -841,12 +1361,32 @@ fn sealed_reference_positions_validate_conformance_and_closure() {
     let owner = reference("owner");
     let target = reference("target");
     let owner_value = env
-        .union(key(1), variant(10), vec![Value::Reference(target.clone())], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes")
+        .union(
+            key(1),
+            variant(10),
+            vec![Value::Reference(target.clone())],
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None,
+            ),
+        )
+        .expect("fixture admission work completes")
         .unwrap();
     let target_value = env
-        .union(key(40), variant(10), vec![Value::Reference(owner.clone())], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes")
+        .union(
+            key(40),
+            variant(10),
+            vec![Value::Reference(owner.clone())],
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None,
+            ),
+        )
+        .expect("fixture admission work completes")
         .unwrap();
-    let closure = ObjectClosure::new(&env, [
+    let closure = ObjectClosure::new(
+        &env,
+        [
             (
                 owner.clone(),
                 vec![("holder", FieldValue::Present(owner_value.clone()))],
@@ -855,14 +1395,30 @@ fn sealed_reference_positions_validate_conformance_and_closure() {
                 target.clone(),
                 vec![("holder", FieldValue::Present(target_value))],
             ),
-        ], &[], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture closure work completes")
+        ],
+        &[],
+        &mut quire_semantic_value::declaration::WorkBudget::new(
+            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+            None,
+        ),
+    )
+    .expect("fixture closure work completes")
     .unwrap();
     assert!(closure.contains(&owner));
     assert!(closure.contains(&target));
-    let bad = ObjectClosure::new(&env, [(
+    let bad = ObjectClosure::new(
+        &env,
+        [(
             owner.clone(),
             vec![("holder", FieldValue::Present(owner_value))],
-        )], &[], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture closure work completes")
+        )],
+        &[],
+        &mut quire_semantic_value::declaration::WorkBudget::new(
+            quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+            None,
+        ),
+    )
+    .expect("fixture closure work completes")
     .unwrap_err();
     assert_eq!(*bad.object, owner);
     assert_eq!(
@@ -870,12 +1426,21 @@ fn sealed_reference_positions_validate_conformance_and_closure() {
         ObjectClosureCause::DanglingReference(Box::new(target))
     );
     assert!(env
-        .union(key(1), variant(10), vec![Value::Boolean(true)], &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes")
+        .union(
+            key(1),
+            variant(10),
+            vec![Value::Boolean(true)],
+            &mut quire_semantic_value::declaration::WorkBudget::new(
+                quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                None
+            )
+        )
+        .expect("fixture admission work completes")
         .is_err());
 }
 
-/// Trace: FR-321-AC-4, FR-112-AC-4
-#[trace("FR-321-AC-4", "TC-911", "FR-112-AC-4")]
+/// Trace: FR-321-AC-4, FR-115-AC-4
+#[trace("FR-321-AC-4", "TC-915", "FR-115-AC-4")]
 #[test]
 fn full_size_resolved_registry_can_be_sealed_without_replacing_topology() {
     std::thread::Builder::new()
@@ -904,10 +1469,18 @@ fn full_size_resolved_registry_can_be_sealed_without_replacing_topology() {
             assert_eq!(members.len(), 5_000);
             assert!(members.iter().all(|member| member.member().is_none()));
             assert_eq!(
-                env.union_member_named(key(1), "Deep", &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes")
-                    .unwrap()
-                    .1
-                    .positions(),
+                env.union_member_named(
+                    key(1),
+                    "Deep",
+                    &mut quire_semantic_value::declaration::WorkBudget::new(
+                        quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                        None
+                    )
+                )
+                .expect("fixture admission work completes")
+                .unwrap()
+                .1
+                .positions(),
                 &[deep.clone()]
             );
             let before = env.clone();
@@ -927,26 +1500,54 @@ fn full_size_resolved_registry_can_be_sealed_without_replacing_topology() {
                     })
                     .collect()
             };
-            let Err(EnvironmentFailure::Limit(limit)) = env.seal_union_verified(key(1), key(40), bindings(), &mut WorkBudget::new(4_999, Some(&Cancel::new()))) else {
+            let Err(EnvironmentFailure::Limit(limit)) = env.seal_union_verified(
+                key(1),
+                key(40),
+                bindings(),
+                &mut WorkBudget::new(4_999, Some(&Cancel::new())),
+            ) else {
                 panic!("full seal must deny at N minus one");
             };
             assert_eq!(limit.actual(), 5_000);
             assert_eq!(env, before);
-            env.seal_union_verified(key(1), key(40), bindings(), &mut WorkBudget::new(5_000, Some(&Cancel::new())))
-                .unwrap();
+            env.seal_union_verified(
+                key(1),
+                key(40),
+                bindings(),
+                &mut WorkBudget::new(5_000, Some(&Cancel::new())),
+            )
+            .unwrap();
             assert_eq!(env.union_member(key(40), variant(5_099)).unwrap().0, 4_999);
             assert_eq!(
-                env.union_member_named(key(1), "Deep", &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes")
-                    .unwrap()
-                    .1
-                    .positions(),
+                env.union_member_named(
+                    key(1),
+                    "Deep",
+                    &mut quire_semantic_value::declaration::WorkBudget::new(
+                        quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                        None
+                    )
+                )
+                .expect("fixture admission work completes")
+                .unwrap()
+                .1
+                .positions(),
                 &[deep.clone()]
             );
             let mut expected = ValueType::Composite(key(40));
             for _ in 0..1_000 {
                 expected = ValueType::option(expected);
             }
-            assert_eq!(env.runtime_type(&deep, &mut quire_semantic_value::declaration::WorkBudget::new(quire_semantic_value::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture admission work completes"), Some(expected));
+            assert_eq!(
+                env.runtime_type(
+                    &deep,
+                    &mut quire_semantic_value::declaration::WorkBudget::new(
+                        quire_semantic_value::declaration::DEFAULT_WORK_UNITS,
+                        None
+                    )
+                )
+                .expect("fixture admission work completes"),
+                Some(expected)
+            );
             assert_eq!(env.composite(key(40)).unwrap().key(), key(1));
         })
         .unwrap()

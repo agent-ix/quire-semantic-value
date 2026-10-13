@@ -33,7 +33,7 @@ Checked:
   does not match its field. Recommendation: keep `with_work_budget`. Not a
   finding.
 - No panics, no integer conversion, no unsafe. make ci exit 0 per
-  ~/dev/worktrees/logs/qsv-489-make-ci.log (clippy -D warnings, no_std
+  <gate log> (clippy -D warnings, no_std
   clippy, tests, doc).
 
 ## Verdict

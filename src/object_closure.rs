@@ -20,8 +20,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use crate::declaration::{
-    fill_slots_walk, ConstructionRefusal, EnvironmentLimit, FieldRef, TypeEnvironment,
-    WorkBudget,
+    fill_slots_walk, ConstructionRefusal, EnvironmentLimit, FieldRef, TypeEnvironment, WorkBudget,
 };
 use quire_exact::{FieldValue, ObjectReference, UniverseId, Value};
 
@@ -70,7 +69,6 @@ impl ObjectClosure {
     /// passes the references its check 8 skipped, because they name an
     /// incomplete population nothing requires; every other caller passes
     /// `&[]`.
-
 
     /// Admit objects, attribute types and reference closure with one shared budget.
     /// The outer result preserves named work stops and caller cancellation; the
@@ -209,6 +207,7 @@ impl ObjectClosure {
                 | Value::Float(_)
                 | Value::Quantity(_)
                 | Value::Text(_)
+                | Value::String(_)
                 | Value::Uuid(_)
                 | Value::Timestamp(_)
                 | Value::Enum(_)
@@ -288,7 +287,17 @@ mod tests {
     fn a_duplicate_identity_triple_refuses() {
         let a = reference(A, "a");
         assert_eq!(
-            ObjectClosure::new(&types(), [object(&a), object(&a)], &[], &mut crate::declaration::WorkBudget::new(crate::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture closure work completes").unwrap_err(),
+            ObjectClosure::new(
+                &types(),
+                [object(&a), object(&a)],
+                &[],
+                &mut crate::declaration::WorkBudget::new(
+                    crate::declaration::DEFAULT_WORK_UNITS,
+                    None
+                )
+            )
+            .expect("fixture closure work completes")
+            .unwrap_err(),
             ObjectClosureRefusal {
                 object: Box::new(a),
                 cause: ObjectClosureCause::DuplicateObject,
@@ -303,7 +312,17 @@ mod tests {
     fn a_non_model_object_type_refuses() {
         let stray = reference(UNDECLARED, "s");
         assert_eq!(
-            ObjectClosure::new(&types(), [object(&stray)], &[], &mut crate::declaration::WorkBudget::new(crate::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture closure work completes").unwrap_err(),
+            ObjectClosure::new(
+                &types(),
+                [object(&stray)],
+                &[],
+                &mut crate::declaration::WorkBudget::new(
+                    crate::declaration::DEFAULT_WORK_UNITS,
+                    None
+                )
+            )
+            .expect("fixture closure work completes")
+            .unwrap_err(),
             ObjectClosureRefusal {
                 object: Box::new(stray),
                 cause: ObjectClosureCause::UnknownObjectType,
@@ -318,11 +337,25 @@ mod tests {
     fn find_returns_none_for_an_ambiguous_key() {
         let universe = UniverseId::from_digest([9; 32]);
         let a = reference(A, "k");
-        let single = ObjectClosure::new(&types(), [object(&a)], &[], &mut crate::declaration::WorkBudget::new(crate::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture closure work completes").unwrap();
+        let single = ObjectClosure::new(
+            &types(),
+            [object(&a)],
+            &[],
+            &mut crate::declaration::WorkBudget::new(crate::declaration::DEFAULT_WORK_UNITS, None),
+        )
+        .expect("fixture closure work completes")
+        .unwrap();
         assert_eq!(single.find(universe, "k"), Some(&a));
 
         let b = reference(B, "k");
-        let both = ObjectClosure::new(&types(), [object(&a), object(&b)], &[], &mut crate::declaration::WorkBudget::new(crate::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture closure work completes").unwrap();
+        let both = ObjectClosure::new(
+            &types(),
+            [object(&a), object(&b)],
+            &[],
+            &mut crate::declaration::WorkBudget::new(crate::declaration::DEFAULT_WORK_UNITS, None),
+        )
+        .expect("fixture closure work completes")
+        .unwrap();
         assert!(both.contains(&a) && both.contains(&b));
         assert_eq!(both.find(universe, "k"), None);
     }
@@ -352,7 +385,13 @@ mod tests {
         let uuid = Value::Uuid(expected_uuid);
         let timestamp = Value::Timestamp(expected_timestamp);
         let attributes = |u, t| vec![("u", FieldValue::Present(u)), ("t", FieldValue::Present(t))];
-        let closure = ObjectClosure::new(&types, [(owner.clone(), attributes(uuid.clone(), timestamp.clone()))], &[], &mut crate::declaration::WorkBudget::new(crate::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture closure work completes")
+        let closure = ObjectClosure::new(
+            &types,
+            [(owner.clone(), attributes(uuid.clone(), timestamp.clone()))],
+            &[],
+            &mut crate::declaration::WorkBudget::new(crate::declaration::DEFAULT_WORK_UNITS, None),
+        )
+        .expect("fixture closure work completes")
         .expect("native leaves close without referenced objects");
         assert!(matches!(
             closure.attribute(&types, &owner, &FieldRef::new(native_type, "u")),
@@ -370,8 +409,17 @@ mod tests {
             (uuid.clone(), Value::Integer(1_i64.into()), "t"),
         ] {
             assert_eq!(
-                ObjectClosure::new(&types, [(owner.clone(), attributes(u, t))], &[], &mut crate::declaration::WorkBudget::new(crate::declaration::DEFAULT_WORK_UNITS, None)).expect("fixture closure work completes")
-                    .expect_err("wrong attribute kind must refuse"),
+                ObjectClosure::new(
+                    &types,
+                    [(owner.clone(), attributes(u, t))],
+                    &[],
+                    &mut crate::declaration::WorkBudget::new(
+                        crate::declaration::DEFAULT_WORK_UNITS,
+                        None
+                    )
+                )
+                .expect("fixture closure work completes")
+                .expect_err("wrong attribute kind must refuse"),
                 ObjectClosureRefusal {
                     object: Box::new(owner.clone()),
                     cause: ObjectClosureCause::Attribute(ConstructionRefusal {

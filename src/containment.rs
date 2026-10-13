@@ -12,7 +12,10 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::declaration::{Component, ConstructionCause, ConstructionRefusal, EnvironmentLimit, TypeEnvironment, WorkBudget};
+use crate::declaration::{
+    Component, ConstructionCause, ConstructionRefusal, EnvironmentLimit, TypeEnvironment,
+    WorkBudget,
+};
 use quire_exact::{FieldValue, NodeKey, Value, VariantId};
 
 /// A graph-local node name.
@@ -144,12 +147,20 @@ impl TypeEnvironment {
             budget.charge(1)?;
             match visit {
                 Visit::Enter(id) => {
-                    if built.contains_key(&id) { continue; }
+                    if built.contains_key(&id) {
+                        continue;
+                    }
                     if on_path.contains(&id) {
-                        return Ok(Err(GraphRefusal { node: id, cause: GraphCause::ContainmentCycle }));
+                        return Ok(Err(GraphRefusal {
+                            node: id,
+                            cause: GraphCause::ContainmentCycle,
+                        }));
                     }
                     let Some(node) = graph.nodes.get(&id) else {
-                        return Ok(Err(GraphRefusal { node: id, cause: GraphCause::UnknownNode }));
+                        return Ok(Err(GraphRefusal {
+                            node: id,
+                            cause: GraphCause::UnknownNode,
+                        }));
                     };
                     on_path.insert(id);
                     visits.push(Visit::Exit(id));
@@ -161,16 +172,24 @@ impl TypeEnvironment {
                 Visit::Exit(id) => {
                     on_path.remove(&id);
                     let Some(node) = graph.nodes.get(&id) else {
-                        return Ok(Err(GraphRefusal { node: id, cause: GraphCause::UnknownNode }));
+                        return Ok(Err(GraphRefusal {
+                            node: id,
+                            cause: GraphCause::UnknownNode,
+                        }));
                     };
                     match self.construct(node, &built, budget)? {
-                        Ok(value) => { built.insert(id, value); }
+                        Ok(value) => {
+                            built.insert(id, value);
+                        }
                         Err(cause) => return Ok(Err(GraphRefusal { node: id, cause })),
                     }
                 }
             }
         }
-        Ok(built.remove(&root).ok_or(GraphRefusal { node: root, cause: GraphCause::UnknownNode }))
+        Ok(built.remove(&root).ok_or(GraphRefusal {
+            node: root,
+            cause: GraphCause::UnknownNode,
+        }))
     }
 
     fn construct<'g>(
@@ -209,7 +228,7 @@ impl TypeEnvironment {
                     Err(cause) => return Ok(Err(cause)),
                 };
                 self.record(*declaration, supplied, budget)?
-            },
+            }
             GraphNode::Tuple {
                 declaration,
                 positions,
