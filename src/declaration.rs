@@ -1728,19 +1728,55 @@ impl TypeEnvironment {
     }
 
     /// Whether `value_type` admits `value` under this environment's
-    /// conformance: a `Reference<T>` admits a reference whose object's
-    /// most-specific type conforms to `T` (QSpec FR-151, [`Self::conforms`]);
-    /// every other pair is [`ValueType::admits`].
+    /// conformance, looking inside `Option` payloads and collection
+    /// elements (FR-113 items 8 to 11).
+    ///
+    /// The walk is an explicit worklist. A composite is admitted by
+    /// [`Self::composite_conforms`] and the walk stops there: its own members
+    /// were admitted against its own declaration. A `Reference<T>` is admitted
+    /// when the reference's object type [`Self::conforms`] to `T`. Every other
+    /// leaf, and the recorded payload or element type of every `Option` and
+    /// collection, is the exact kernel [`ValueType::admits`], so admission is
+    /// never covariant over a type constructor. The answer carries no cause
+    /// and charges no work: the callers that hold the value own its
+    /// accounting.
     pub fn admits(&self, value_type: &ValueType, value: &Value) -> bool {
-        match (value_type, value) {
-            (ValueType::Reference(declared), Value::Reference(reference)) => {
-                self.conforms(reference.object_type(), *declared)
+        let mut pending = vec![(value_type, value)];
+        while let Some((declared, value)) = pending.pop() {
+            match (declared, value) {
+                (ValueType::Reference(object_type), Value::Reference(reference)) => {
+                    if !self.conforms(reference.object_type(), *object_type) {
+                        return false;
+                    }
+                }
+                (ValueType::Composite(declaration), Value::Composite(composite)) => {
+                    if !self.composite_conforms(composite.declaration(), *declaration) {
+                        return false;
+                    }
+                }
+                (ValueType::Option(payload), Value::Option(option)) => {
+                    if !declared.admits(value) {
+                        return false;
+                    }
+                    if let Some(present) = option.payload() {
+                        pending.push((&**payload, present));
+                    }
+                }
+                (ValueType::Collection(collection_type), Value::Collection(collection)) => {
+                    if !declared.admits(value) {
+                        return false;
+                    }
+                    let element = collection_type.element();
+                    pending.extend(collection.elements().iter().map(|held| (element, held)));
+                }
+                _ => {
+                    if !declared.admits(value) {
+                        return false;
+                    }
+                }
             }
-            (ValueType::Composite(declared), Value::Composite(composite)) => {
-                self.composite_conforms(composite.declaration(), *declared)
-            }
-            _ => value_type.admits(value),
         }
+        true
     }
 
     /// Check a type named outside a declaration (a parameter or result type):
@@ -2966,7 +3002,7 @@ impl TypeEnvironment {
                 None => FieldValue::Absent,
                 Some(FieldExpression::Null) => FieldValue::Null,
                 Some(FieldExpression::Evaluate(expression)) => {
-                    match admitted(field.value_type(), expression(meter)) {
+                    match admitted(self, field.value_type(), expression(meter)) {
                         Ok(value) => FieldValue::Present(value),
                         Err(stop) => return Ok(outcome_from_stop(Err(stop))),
                     }
@@ -2992,7 +3028,7 @@ impl TypeEnvironment {
         let declared = self.tuple_positions(declaration, positions.len())?;
         let mut slots = Vec::with_capacity(declared.len());
         for (value_type, expression) in declared.iter().zip(positions) {
-            match admitted(value_type, expression(meter)) {
+            match admitted(self, value_type, expression(meter)) {
                 Ok(value) => slots.push(FieldValue::Present(value)),
                 Err(stop) => return Ok(outcome_from_stop(Err(stop))),
             }
@@ -3406,9 +3442,13 @@ fn duplicate_name<'a, R: ReservationPolicy>(
 /// The completed value of a deferred expression, which a checked program
 /// guarantees is a member of `value_type`. Its only callers are
 /// `evaluate_record`/`evaluate_tuple` below.
-fn admitted(value_type: &ValueType, outcome: Outcome<Value>) -> Result<Value, Stop> {
+fn admitted(
+    types: &TypeEnvironment,
+    value_type: &ValueType,
+    outcome: Outcome<Value>,
+) -> Result<Value, Stop> {
     let value = outcome_into_stop(outcome)?;
-    if value_type.admits(&value) {
+    if types.admits(value_type, &value) {
         Ok(value)
     } else {
         Err(invariant(CheckedInvariantCause::DeferredResultNotAdmitted))
@@ -3645,14 +3685,26 @@ impl CheckedEquality {
     /// ordered/case data through the `enum_members` index captured at
     /// checking before calling [`compare_enum`],
     /// which needs none of the other schedules' declaration or unit data.
-    pub fn evaluate(&self, left: &Value, right: &Value, meter: &mut Meter) -> Outcome<bool> {
-        outcome_from_stop(self.run(left, right, meter))
+    pub fn evaluate(
+        &self,
+        types: &TypeEnvironment,
+        left: &Value,
+        right: &Value,
+        meter: &mut Meter,
+    ) -> Outcome<bool> {
+        outcome_from_stop(self.run(types, left, right, meter))
     }
 
-    fn run(&self, left: &Value, right: &Value, meter: &mut Meter) -> Result<bool, Stop> {
+    fn run(
+        &self,
+        types: &TypeEnvironment,
+        left: &Value,
+        right: &Value,
+        meter: &mut Meter,
+    ) -> Result<bool, Stop> {
         let units = UnitScope::new(&self.units);
-        let left = operand_value(&self.left, left, &units, meter)?;
-        let right = operand_value(&self.right, right, &units, meter)?;
+        let left = operand_value(types, &self.left, left, &units, meter)?;
+        let right = operand_value(types, &self.right, right, &units, meter)?;
         let operator = self.operator.comparison();
         let scheduled = match (self.schedule, &left, &right) {
             (EqualitySchedule::Text, Value::Text(l), Value::Text(r)) => {
@@ -3868,11 +3920,21 @@ mod native_type_tests {
             result_units: u64::MAX,
         });
         assert!(matches!(
-            equality.evaluate(&composed, &decomposed, &mut meter),
+            equality.evaluate(
+                &TypeEnvironment::default(),
+                &composed,
+                &decomposed,
+                &mut meter
+            ),
             Outcome::Completed(false)
         ));
         assert!(matches!(
-            equality.evaluate(&decomposed, &equal_copy, &mut meter),
+            equality.evaluate(
+                &TypeEnvironment::default(),
+                &decomposed,
+                &equal_copy,
+                &mut meter
+            ),
             Outcome::Completed(true)
         ));
     }
@@ -4125,6 +4187,7 @@ mod native_type_tests {
 /// The comparison value of one operand after its admitted conversion, with
 /// quantity units read from `units`.
 pub fn operand_value(
+    types: &TypeEnvironment,
     operand: &EqualityOperand,
     value: &Value,
     units: &UnitScope<'_>,
@@ -4139,7 +4202,7 @@ pub fn operand_value(
     // compares only the identity triple, so the kind check is sufficient.
     let admitted = match (&operand.source, value) {
         (ValueType::Reference(_), value) => matches!(value, Value::Reference(_)),
-        (source, value) => source.admits(value),
+        (source, value) => types.admits(source, value),
     };
     if !admitted {
         return Err(invariant(
@@ -4359,12 +4422,14 @@ mod checked_invariant_tests {
     fn deferred_result_names_failed_admission_and_preserves_prior_stop() {
         refusal(
             admitted(
+                &TypeEnvironment::default(),
                 &ValueType::Boolean,
                 Outcome::Completed(Value::Integer(Integer::one())),
             ),
             CheckedInvariantCause::DeferredResultNotAdmitted,
         );
         let Err(Stop::Refused(fault)) = admitted(
+            &TypeEnvironment::default(),
             &ValueType::Boolean,
             Outcome::Completed(Value::Integer(Integer::one())),
         ) else {
@@ -4382,6 +4447,7 @@ mod checked_invariant_tests {
         assert_eq!(ordinary.cause(), Some("outside-domain"));
         assert!(matches!(
             admitted(
+                &TypeEnvironment::default(),
                 &ValueType::Boolean,
                 Outcome::Undefined(quire_exact::Undefined::DivisionByZero)
             ),
@@ -4402,9 +4468,11 @@ mod checked_invariant_tests {
         let prior_stop = exhausted
             .charge(Charge::new(ChargePoint::CompositeResultRetain).results(1))
             .expect_err("zero result budget must deny retention");
-        let Err(Stop::Incomplete(actual)) =
-            admitted(&ValueType::Boolean, Outcome::Incomplete(prior_stop.clone()))
-        else {
+        let Err(Stop::Incomplete(actual)) = admitted(
+            &TypeEnvironment::default(),
+            &ValueType::Boolean,
+            Outcome::Incomplete(prior_stop.clone()),
+        ) else {
             panic!("a prior charge stop must survive admission");
         };
         assert_eq!(actual, prior_stop);
@@ -4504,6 +4572,7 @@ mod checked_invariant_tests {
         let mut meter = meter();
         refusal(
             operand_value(
+                &TypeEnvironment::default(),
                 &EqualityOperand::typed(ValueType::Boolean),
                 &Value::Integer(Integer::one()),
                 &scope,
@@ -4513,6 +4582,7 @@ mod checked_invariant_tests {
         );
         refusal(
             operand_value(
+                &TypeEnvironment::default(),
                 &EqualityOperand::converted(ValueType::Boolean, ValueType::Integer),
                 &Value::Boolean(true),
                 &scope,
@@ -4522,6 +4592,7 @@ mod checked_invariant_tests {
         );
         refusal(
             operand_value(
+                &TypeEnvironment::default(),
                 &EqualityOperand::converted(
                     ValueType::Integer,
                     ValueType::Int(quire_exact::IntegerInterval::spanning(
@@ -4547,6 +4618,7 @@ mod checked_invariant_tests {
         );
         refusal(
             operand_value(
+                &TypeEnvironment::default(),
                 &EqualityOperand::converted(decimal_type, ValueType::Integer),
                 &Value::Decimal(Decimal::new(Integer::from(5_i64), 1)),
                 &scope,
@@ -4557,6 +4629,7 @@ mod checked_invariant_tests {
         let unresolved = quire_exact::UnitId::declared(NodeKey::from_digest([9; 32]));
         refusal(
             operand_value(
+                &TypeEnvironment::default(),
                 &EqualityOperand::converted(
                     ValueType::Quantity(unresolved),
                     ValueType::Quantity(quire_exact::UnitId::declared(NodeKey::from_digest(
@@ -4589,7 +4662,12 @@ mod checked_invariant_tests {
             EqualityOperand::typed(ValueType::Boolean),
         );
         assert!(matches!(
-            mismatch.evaluate(&Value::Boolean(true), &Value::Boolean(true), &mut meter),
+            mismatch.evaluate(
+                &TypeEnvironment::default(),
+                &Value::Boolean(true),
+                &Value::Boolean(true),
+                &mut meter
+            ),
             Outcome::Refused(Refusal::CheckedInvariant {
                 cause: CheckedInvariantCause::EqualityScheduleMismatch
             })
@@ -4603,7 +4681,12 @@ mod checked_invariant_tests {
         );
         let quantity = Value::Quantity(Quantity::new(Rational::from_integer(Integer::one()), unit));
         assert!(matches!(
-            unresolved_unit.evaluate(&quantity, &quantity, &mut meter),
+            unresolved_unit.evaluate(
+                &TypeEnvironment::default(),
+                &quantity,
+                &quantity,
+                &mut meter
+            ),
             Outcome::Refused(Refusal::CheckedInvariant {
                 cause: CheckedInvariantCause::EqualityUnitUnresolved
             })
@@ -4618,7 +4701,7 @@ mod checked_invariant_tests {
         );
         let member = Value::Enum(EnumMember::new(variant, 0));
         assert!(matches!(
-            unresolved_variant.evaluate(&member, &member, &mut meter),
+            unresolved_variant.evaluate(&TypeEnvironment::default(), &member, &member, &mut meter),
             Outcome::Refused(Refusal::CheckedInvariant {
                 cause: CheckedInvariantCause::EqualityEnumVariantUnresolved
             })
@@ -4651,6 +4734,7 @@ mod checked_invariant_tests {
         let mut meter = meter();
         assert!(matches!(
             equality.evaluate(
+                &TypeEnvironment::default(),
                 &Value::Enum(EnumMember::new(left.variant(), 0)),
                 &Value::Enum(EnumMember::new(right.variant(), 0)),
                 &mut meter,
@@ -4687,7 +4771,7 @@ mod checked_invariant_tests {
             occurrence: core::num::NonZeroU64::new(1).unwrap(),
         });
         assert!(matches!(
-            equality.evaluate(&value, &value, &mut meter),
+            equality.evaluate(&TypeEnvironment::default(), &value, &value, &mut meter),
             Outcome::Incomplete(record) if record.charge_point == ChargePoint::EnumIdentityRead
         ));
     }
@@ -4741,6 +4825,7 @@ mod checked_invariant_tests {
         let target = UnitId::declared(NodeKey::from_digest([4; 32]));
         refusal(
             operand_value(
+                &TypeEnvironment::default(),
                 &EqualityOperand::converted(
                     ValueType::Quantity(source),
                     ValueType::Quantity(target),
@@ -4807,6 +4892,7 @@ mod checked_invariant_tests {
         });
         assert!(matches!(
             operand_value(
+                &TypeEnvironment::default(),
                 &EqualityOperand::converted(
                     ValueType::Quantity(source),
                     ValueType::Quantity(target),
@@ -4944,5 +5030,558 @@ mod ancestor_steps_tests {
     #[test]
     fn the_default_ceiling_is_sixteen_million_edges() {
         assert_eq!(TypeEnvironmentLimits::default().ancestor_steps, 16_777_216);
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the fixtures supply checked declaration identities without minting them in production"
+)]
+mod nested_conformance_tests {
+    use super::*;
+    use ix_trace_rs::trace;
+    use quire_exact::{
+        form, from_admitted, CollectionKind, CollectionType, ObjectId, ObjectReference,
+        OptionValue, ScalarLimits, UniverseId,
+    };
+
+    /// The chain `P <- M <- C` (so `C` is a grandchild of `P`) and the
+    /// unrelated `U`, each a record with one `label` field.
+    struct Fixture {
+        types: TypeEnvironment,
+        p: NodeKey,
+        m: NodeKey,
+        c: NodeKey,
+        u: NodeKey,
+    }
+
+    fn fixture() -> Fixture {
+        let [p, m, c, u] = [41, 42, 43, 44].map(|byte| NodeKey::from_digest([byte; 32]));
+        let record = |key, name: &str, supertypes: Vec<NodeKey>| {
+            CompositeDeclaration::new(
+                key,
+                name,
+                CompositeShape::Record(vec![FieldDeclaration::new(
+                    "label",
+                    ValueType::String,
+                    Presence::Required,
+                )]),
+            )
+            .with_supertypes(supertypes)
+        };
+        let types = TypeEnvironment::new(
+            [
+                record(p, "P", vec![]),
+                record(m, "M", vec![p]),
+                record(c, "C", vec![m]),
+                record(u, "U", vec![]),
+            ],
+            [],
+        )
+        .expect("acyclic composite ancestry admits");
+        Fixture { types, p, m, c, u }
+    }
+
+    fn big_meter() -> Meter {
+        Meter::new(ScalarLimits {
+            integer_bits: 1024,
+            decimal_digits: 1024,
+            scale_expansion: 1024,
+            text_input_bytes: 1024,
+            text_scalars: 1024,
+            normalized_scalars: 1024,
+            unit_edges: 1024,
+            value_occurrences: 1024,
+            work_units: 1024,
+            result_units: 1024,
+        })
+    }
+
+    impl Fixture {
+        fn value(&self, key: NodeKey, label: &str) -> Value {
+            self.types
+                .record(
+                    key,
+                    vec![("label", FieldValue::Present(Value::String(label.into())))],
+                )
+                .expect("record fixture matches its declared shape")
+        }
+
+        fn composite_type(&self, key: NodeKey) -> ValueType {
+            ValueType::Composite(key)
+        }
+    }
+
+    /// An `Option<payload_type>` built by the trusted constructor.
+    fn option(payload_type: ValueType, payload: Option<Value>) -> Value {
+        OptionValue::from_admitted(payload_type, payload)
+    }
+
+    fn collection_type(kind: CollectionKind, element: ValueType) -> CollectionType {
+        CollectionType::new(kind, element, None)
+    }
+
+    /// A collection of `element` built by the trusted constructor.
+    fn collection(kind: CollectionKind, element: ValueType, elements: Vec<Value>) -> Value {
+        from_admitted(collection_type(kind, element), elements)
+    }
+
+    fn collection_kinds() -> [CollectionKind; 4] {
+        [
+            CollectionKind::Sequence,
+            CollectionKind::Set,
+            CollectionKind::Bag,
+            CollectionKind::OrderedSet,
+        ]
+    }
+
+    fn key_of(value: &Value) -> NodeKey {
+        let Value::Composite(composite) = value else {
+            panic!("expected a composite value");
+        };
+        composite.declaration()
+    }
+
+    /// A container of `P` holding a conforming descendant is admitted and
+    /// keeps the descendant's key.
+    #[trace("TC-913", "FR-113-AC-3")]
+    #[test]
+    fn container_of_parent_admits_conforming_descendants() {
+        let fx = fixture();
+        let parent = fx.composite_type(fx.p);
+        let child = fx.value(fx.c, "child");
+        let intermediate = fx.value(fx.m, "intermediate");
+
+        let present = option(parent.clone(), Some(child.clone()));
+        assert!(fx
+            .types
+            .admits(&ValueType::option(parent.clone()), &present));
+        let Value::Option(inner) = &present else {
+            panic!("option fixture");
+        };
+        assert_eq!(key_of(inner.payload().expect("present")), fx.c);
+
+        for kind in collection_kinds() {
+            let value = collection(
+                kind,
+                parent.clone(),
+                vec![intermediate.clone(), child.clone()],
+            );
+            let declared = ValueType::collection(collection_type(kind, parent.clone()));
+            assert!(fx.types.admits(&declared, &value), "{kind:?} of P");
+            let Value::Collection(held) = &value else {
+                panic!("collection fixture");
+            };
+            let keys: Vec<_> = held.elements().iter().map(key_of).collect();
+            assert_eq!(keys, vec![fx.m, fx.c], "{kind:?} keeps element keys");
+        }
+        // The top-level `C` at `P` and `M` already passes.
+        assert!(fx.types.admits(&parent, &child));
+        assert!(fx.types.admits(&fx.composite_type(fx.m), &child));
+    }
+
+    /// A nonconforming element or payload, a reversed slot and a
+    /// retyped container are all refused.
+    #[trace("TC-913", "FR-113-AC-3")]
+    #[test]
+    fn container_of_parent_refuses_nonconforming_contents_and_covariance() {
+        let fx = fixture();
+        let parent = fx.composite_type(fx.p);
+        let child_type = fx.composite_type(fx.c);
+        let intermediate_type = fx.composite_type(fx.m);
+        let unrelated = fx.value(fx.u, "unrelated");
+        let child = fx.value(fx.c, "child");
+        let plain = fx.value(fx.p, "parent");
+
+        // `U` inside `Option<P>` and every collection kind of `P`.
+        let option_of_unrelated = option(parent.clone(), Some(unrelated.clone()));
+        assert!(!fx
+            .types
+            .admits(&ValueType::option(parent.clone()), &option_of_unrelated));
+        for kind in collection_kinds() {
+            let value = collection(kind, parent.clone(), vec![unrelated.clone()]);
+            let declared = ValueType::collection(collection_type(kind, parent.clone()));
+            assert!(
+                !fx.types.admits(&declared, &value),
+                "{kind:?} of P holding U"
+            );
+        }
+
+        // A `P` inside a container recorded and declared at `C` or `M`.
+        for slot in [&child_type, &intermediate_type] {
+            let held = option(slot.clone(), Some(plain.clone()));
+            assert!(!fx.types.admits(&ValueType::option(slot.clone()), &held));
+            for kind in collection_kinds() {
+                let value = collection(kind, slot.clone(), vec![plain.clone()]);
+                let declared = ValueType::collection(collection_type(kind, slot.clone()));
+                assert!(!fx.types.admits(&declared, &value), "{kind:?} of {slot:?}");
+            }
+        }
+
+        // No covariance: `Option<C>` and `Sequence<C>` values at `P` slots.
+        let option_of_child = option(child_type.clone(), Some(child.clone()));
+        assert!(!fx
+            .types
+            .admits(&ValueType::option(parent.clone()), &option_of_child));
+        let sequence_of_child = collection(
+            CollectionKind::Sequence,
+            child_type.clone(),
+            vec![child.clone()],
+        );
+        let sequence_of_parent =
+            ValueType::collection(collection_type(CollectionKind::Sequence, parent.clone()));
+        assert!(!fx.types.admits(&sequence_of_parent, &sequence_of_child));
+        // A collection kind never converts to another.
+        let set_of_child_in_parent =
+            collection(CollectionKind::Set, parent.clone(), vec![child.clone()]);
+        assert!(!fx
+            .types
+            .admits(&sequence_of_parent, &set_of_child_in_parent));
+    }
+
+    /// Nesting goes as deep as the value does, and one `U` among conforming
+    /// elements refuses the whole value.
+    #[trace("TC-913", "FR-113-AC-4")]
+    #[test]
+    fn nested_option_sequence_option_admits_by_conformance() {
+        let fx = fixture();
+        let parent = fx.composite_type(fx.p);
+        let inner_option = ValueType::option(parent.clone());
+        let sequence = collection_type(CollectionKind::Sequence, inner_option.clone());
+        let declared = ValueType::option(ValueType::collection(sequence.clone()));
+        let build = |elements: Vec<Value>| {
+            let items = elements
+                .into_iter()
+                .map(|element| option(parent.clone(), Some(element)))
+                .collect();
+            option(
+                ValueType::collection(sequence.clone()),
+                Some(from_admitted(sequence.clone(), items)),
+            )
+        };
+
+        let conforming = build(vec![fx.value(fx.c, "c"), fx.value(fx.p, "p")]);
+        assert!(fx.types.admits(&declared, &conforming));
+        let mixed = build(vec![
+            fx.value(fx.c, "c"),
+            fx.value(fx.u, "u"),
+            fx.value(fx.m, "m"),
+        ]);
+        assert!(!fx.types.admits(&declared, &mixed));
+    }
+
+    fn evaluation_environment(fx: &Fixture) -> (TypeEnvironment, NodeKey, NodeKey) {
+        let holder_record = NodeKey::from_digest([51; 32]);
+        let holder_tuple = NodeKey::from_digest([52; 32]);
+        let parent = ValueType::Composite(fx.p);
+        let environment = TypeEnvironment::new(
+            [
+                CompositeDeclaration::new(
+                    fx.p,
+                    "P",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                ),
+                CompositeDeclaration::new(
+                    fx.m,
+                    "M",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                )
+                .with_supertypes(vec![fx.p]),
+                CompositeDeclaration::new(
+                    fx.c,
+                    "C",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                )
+                .with_supertypes(vec![fx.m]),
+                CompositeDeclaration::new(
+                    fx.u,
+                    "U",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                ),
+                CompositeDeclaration::new(
+                    holder_record,
+                    "HolderRecord",
+                    CompositeShape::Record(vec![
+                        FieldDeclaration::new("member", parent.clone(), Presence::Required),
+                        FieldDeclaration::new(
+                            "maybe",
+                            ValueType::option(parent.clone()),
+                            Presence::Optional,
+                        ),
+                    ]),
+                ),
+                CompositeDeclaration::new(
+                    holder_tuple,
+                    "HolderTuple",
+                    CompositeShape::Tuple(vec![parent]),
+                ),
+            ],
+            [],
+        )
+        .expect("acyclic composite ancestry admits");
+        (environment, holder_record, holder_tuple)
+    }
+
+    /// A member that completes to a conforming child is kept; a member that
+    /// completes to an unrelated composite stops with the checked invariant.
+    #[trace("TC-913", "FR-113-AC-4")]
+    #[test]
+    fn evaluate_record_and_tuple_admit_members_by_conformance() {
+        let fx = fixture();
+        let (environment, record, tuple) = evaluation_environment(&fx);
+        let child = fx.value(fx.c, "child");
+        let unrelated = fx.value(fx.u, "unrelated");
+
+        let supplied = child.clone();
+        let result = environment
+            .evaluate_record(
+                record,
+                vec![(
+                    "member",
+                    FieldExpression::Evaluate(Box::new(move |_| Outcome::Completed(supplied))),
+                )],
+                &mut big_meter(),
+            )
+            .expect("record construction refusals are decided first");
+        let Outcome::Completed(Value::Composite(evaluated)) = result else {
+            panic!("a conforming child member must complete the record");
+        };
+        let [FieldValue::Present(member), ..] = evaluated.slots() else {
+            panic!("the member slot is present");
+        };
+        assert_eq!(key_of(member), fx.c);
+
+        let supplied = unrelated.clone();
+        assert!(matches!(
+            environment.evaluate_record(
+                record,
+                vec![(
+                    "member",
+                    FieldExpression::Evaluate(Box::new(move |_| Outcome::Completed(supplied))),
+                )],
+                &mut big_meter(),
+            ),
+            Ok(Outcome::Refused(Refusal::CheckedInvariant {
+                cause: CheckedInvariantCause::DeferredResultNotAdmitted
+            }))
+        ));
+
+        let supplied = child.clone();
+        let result = environment
+            .evaluate_tuple(
+                tuple,
+                vec![Box::new(move |_| Outcome::Completed(supplied))],
+                &mut big_meter(),
+            )
+            .expect("tuple arity matches");
+        let Outcome::Completed(Value::Composite(evaluated)) = result else {
+            panic!("a conforming child position must complete the tuple");
+        };
+        let [FieldValue::Present(position)] = evaluated.slots() else {
+            panic!("the position is present");
+        };
+        assert_eq!(key_of(position), fx.c);
+
+        let supplied = unrelated;
+        assert!(matches!(
+            environment.evaluate_tuple(
+                tuple,
+                vec![Box::new(move |_| Outcome::Completed(supplied))],
+                &mut big_meter(),
+            ),
+            Ok(Outcome::Refused(Refusal::CheckedInvariant {
+                cause: CheckedInvariantCause::DeferredResultNotAdmitted
+            }))
+        ));
+    }
+
+    /// Construction holding a `U` where a `P` is declared refuses with
+    /// `TypeMismatch` naming the field or position, at the top level and
+    /// inside an `Option`.
+    #[trace("TC-913", "FR-113-AC-4")]
+    #[test]
+    fn construction_refuses_nonconforming_member_naming_the_component() {
+        let fx = fixture();
+        let (environment, record, tuple) = evaluation_environment(&fx);
+        let parent = ValueType::Composite(fx.p);
+        let unrelated = fx.value(fx.u, "unrelated");
+        let child = fx.value(fx.c, "child");
+
+        let refusal = environment
+            .record(
+                record,
+                vec![("member", FieldValue::Present(unrelated.clone()))],
+            )
+            .expect_err("a U at a P field is refused");
+        assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
+        assert_eq!(refusal.component, Component::Field("member".into()));
+
+        let nested = option(parent.clone(), Some(unrelated.clone()));
+        let refusal = environment
+            .record(
+                record,
+                vec![
+                    ("member", FieldValue::Present(child.clone())),
+                    ("maybe", FieldValue::Present(nested.clone())),
+                ],
+            )
+            .expect_err("a U inside an Option<P> field is refused");
+        assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
+        assert_eq!(refusal.component, Component::Field("maybe".into()));
+
+        let kept = option(parent, Some(child.clone()));
+        environment
+            .record(
+                record,
+                vec![
+                    ("member", FieldValue::Present(child)),
+                    ("maybe", FieldValue::Present(kept)),
+                ],
+            )
+            .expect("conforming members construct");
+
+        let refusal = environment
+            .tuple(tuple, vec![unrelated])
+            .expect_err("a U at a P position is refused");
+        assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
+        assert_eq!(refusal.component, Component::Position(0));
+    }
+
+    fn units_scope() -> UnitTable {
+        UnitTable::default()
+    }
+
+    fn operand_result(fx: &Fixture, source: ValueType, value: &Value) -> Result<Value, Stop> {
+        let units = units_scope();
+        operand_value(
+            &fx.types,
+            &EqualityOperand::typed(source),
+            value,
+            &UnitScope::new(&units),
+            &mut big_meter(),
+        )
+    }
+
+    /// A composite equality operand is checked by conformance, directly and
+    /// through an `Option` payload or collection element, and keeps its key.
+    #[trace("TC-913", "FR-113-AC-5")]
+    #[test]
+    fn operand_value_checks_composite_operands_by_conformance() {
+        let fx = fixture();
+        let parent = fx.composite_type(fx.p);
+
+        for key in [fx.c, fx.m] {
+            let value = fx.value(key, "held");
+            let admitted =
+                operand_result(&fx, parent.clone(), &value).expect("conforming operand admits");
+            assert_eq!(key_of(&admitted), key);
+        }
+
+        let child = fx.value(fx.c, "child");
+        let wrapped = option(parent.clone(), Some(child.clone()));
+        let admitted = operand_result(&fx, ValueType::option(parent.clone()), &wrapped)
+            .expect("Option<P> holding C admits");
+        assert!(matches!(admitted, Value::Option(_)));
+        let sequence = collection(
+            CollectionKind::Sequence,
+            parent.clone(),
+            vec![child.clone()],
+        );
+        let sequence_type =
+            ValueType::collection(collection_type(CollectionKind::Sequence, parent.clone()));
+        operand_result(&fx, sequence_type.clone(), &sequence)
+            .expect("Sequence<P> holding C admits");
+
+        let expected = CheckedInvariantCause::EqualityOperandSourceNotAdmitted;
+        let cases = [
+            (parent.clone(), fx.value(fx.u, "u")),
+            (fx.composite_type(fx.c), fx.value(fx.p, "p")),
+            (
+                ValueType::option(parent.clone()),
+                option(parent.clone(), Some(fx.value(fx.u, "u"))),
+            ),
+            (
+                sequence_type,
+                collection(CollectionKind::Sequence, parent, vec![fx.value(fx.u, "u")]),
+            ),
+        ];
+        for (source, value) in cases {
+            assert!(
+                matches!(
+                    operand_result(&fx, source.clone(), &value),
+                    Err(Stop::Refused(Refusal::CheckedInvariant { cause })) if cause == expected
+                ),
+                "{source:?}"
+            );
+        }
+    }
+
+    /// A `Reference<T>` operand is still checked by kind only.
+    #[trace("TC-913", "FR-113-AC-5")]
+    #[test]
+    fn operand_value_checks_reference_operand_by_kind_only() {
+        let fx = fixture();
+        let declared = EffectiveId::from_digest([61; 32]);
+        let other = EffectiveId::from_digest([62; 32]);
+        let reference = Value::Reference(ObjectReference::new(
+            UniverseId::from_digest([63; 32]),
+            other,
+            ObjectId::new("object").expect("non-empty identity"),
+        ));
+        let admitted = operand_result(&fx, ValueType::Reference(declared), &reference)
+            .expect("a reference operand is admitted by kind");
+        assert!(matches!(admitted, Value::Reference(_)));
+        assert!(matches!(
+            operand_result(&fx, ValueType::Reference(declared), &Value::Boolean(true)),
+            Err(Stop::Refused(Refusal::CheckedInvariant {
+                cause: CheckedInvariantCause::EqualityOperandSourceNotAdmitted
+            }))
+        ));
+    }
+
+    /// `Set<P>` and `Bag<P>` holding a `C` and a `P` of equal shared fields
+    /// have two elements and are admitted. This vector depends on the
+    /// quire-exact collection and equality changes of FR-376 to FR-378 and
+    /// cannot pass before they land.
+    #[trace("TC-913", "FR-113-AC-6")]
+    #[ignore = "depends on quire-exact FR-376..FR-378 (composite equality across declarations)"]
+    #[test]
+    fn set_and_bag_of_parent_keep_equal_field_child_and_parent_distinct() {
+        let fx = fixture();
+        let parent = fx.composite_type(fx.p);
+        for kind in [CollectionKind::Set, CollectionKind::Bag] {
+            let collection_type = collection_type(kind, parent.clone());
+            let Outcome::Completed(formed) = form(
+                &collection_type,
+                vec![fx.value(fx.c, "same"), fx.value(fx.p, "same")],
+                &mut big_meter(),
+            ) else {
+                panic!("{kind:?} formation completes");
+            };
+            let Value::Collection(held) = &formed else {
+                panic!("collection value");
+            };
+            assert_eq!(held.elements().len(), 2, "{kind:?} keeps both");
+            assert!(fx
+                .types
+                .admits(&ValueType::collection(collection_type), &formed));
+        }
     }
 }
