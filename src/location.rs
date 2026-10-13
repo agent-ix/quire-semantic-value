@@ -71,6 +71,27 @@ pub enum Origin {
         /// The attempt's index among the protocol's own `attempts`.
         attempt: usize,
     },
+    /// One `requires` or `ensures` clause a domain package authors on a
+    /// model operation (QSL FR-103). It is not a unit state clause, so it
+    /// is not counted by [`Origin::StateClause`]'s index.
+    ModelOperationClause {
+        /// The operation's identifying text.
+        operation: String,
+        /// Whether the clause is a `requires` or an `ensures`.
+        kind: OperationClauseKind,
+        /// The zero-based position in the operation's list of that kind.
+        position: usize,
+    },
+}
+
+/// Which list of a model operation a clause belongs to. `Requires` orders
+/// before `Ensures`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum OperationClauseKind {
+    /// A precondition clause.
+    Requires,
+    /// A postcondition clause.
+    Ensures,
 }
 
 /// A located expression: its declaration and the child-index path from that
@@ -295,12 +316,57 @@ impl fmt::Debug for Location {
 mod tests {
     use super::*;
     use alloc::vec;
+    use ix_trace_rs::trace;
 
     fn body() -> Origin {
         Origin::Body {
             function: String::from("f"),
             index: 2,
         }
+    }
+
+    /// FR-114-AC-1: a model operation clause is told apart by operation, kind,
+    /// position and path, orders by them, and never equals a state clause.
+    #[trace("TC-914", "FR-114-AC-1")]
+    #[test]
+    fn a_model_operation_clause_origin_is_its_own() {
+        let clause = |operation: &str, kind, position| Origin::ModelOperationClause {
+            operation: String::from(operation),
+            kind,
+            position,
+        };
+        let place_req_0 = clause("place", OperationClauseKind::Requires, 0);
+        let place_req_1 = clause("place", OperationClauseKind::Requires, 1);
+        let place_ens_0 = clause("place", OperationClauseKind::Ensures, 0);
+        let cancel_req_0 = clause("cancel", OperationClauseKind::Requires, 0);
+        let roots = [&place_req_0, &place_req_1, &place_ens_0, &cancel_req_0]
+            .map(|origin| Location::root(origin.clone()));
+        for (i, left) in roots.iter().enumerate() {
+            for (j, right) in roots.iter().enumerate() {
+                assert_eq!(left == right, i == j);
+            }
+        }
+        assert_eq!(
+            Location::root(place_req_0.clone()),
+            Location::root(clause("place", OperationClauseKind::Requires, 0))
+        );
+        assert_ne!(
+            Location::at(place_req_0.clone(), &[0]),
+            Location::root(place_req_0.clone())
+        );
+        let mut ordered = vec![
+            roots[2].clone(),
+            roots[1].clone(),
+            roots[3].clone(),
+            roots[0].clone(),
+        ];
+        ordered.sort();
+        assert_eq!(ordered, [3, 0, 1, 2].map(|index| roots[index].clone()));
+        let state = Origin::StateClause {
+            clause: String::from("place"),
+            index: 0,
+        };
+        assert_ne!(place_req_0, state);
     }
 
     /// A child keeps its origin and extends the path by one index, leaving
