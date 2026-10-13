@@ -1769,6 +1769,9 @@ impl TypeEnvironment {
                     let element = collection_type.element();
                     pending.extend(collection.elements().iter().map(|held| (element, held)));
                 }
+                // QSV declares only record and tuple composites, so a union
+                // value has no declaration to be admitted against.
+                (ValueType::Composite(_), Value::Union(_)) => return false,
                 _ => {
                     if !declared.admits(value) {
                         return false;
@@ -3981,6 +3984,70 @@ mod native_type_tests {
             [FieldValue::Present(Value::String(text))] if text.as_str() == "hello"
         ));
         assert!(types.admits(&ValueType::Composite(record), &value));
+    }
+
+    /// A union value is never admitted at a record or tuple slot, even when it
+    /// carries that record's key: only a union declaration's member check may
+    /// admit one.
+    #[trace("TC-913", "FR-113-AC-4")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked composite identities without minting them in production"
+    )]
+    #[test]
+    fn union_value_is_refused_at_record_and_tuple_slots() {
+        let record = NodeKey::from_digest([31; 32]);
+        let tuple = NodeKey::from_digest([32; 32]);
+        let types = TypeEnvironment::new(
+            [
+                CompositeDeclaration::new(
+                    record,
+                    "Plain",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                ),
+                CompositeDeclaration::new(
+                    tuple,
+                    "Pair",
+                    CompositeShape::Tuple(vec![ValueType::Integer]),
+                ),
+            ],
+            [],
+        )
+        .expect("record and tuple admit");
+        let union_at = |key| {
+            quire_exact::UnionValue::from_admitted(
+                quire_exact::UnionMember::from_admitted(
+                    key,
+                    NodeKey::from_digest([33; 32]),
+                    quire_exact::Identifier::new("m").expect("identifier"),
+                ),
+                vec![Value::Integer(Integer::one())],
+            )
+        };
+        for key in [record, tuple] {
+            let value = union_at(key);
+            assert!(!types.admits(&ValueType::Composite(key), &value));
+            assert!(!types.admits(
+                &ValueType::option(ValueType::Composite(key)),
+                &quire_exact::OptionValue::present(ValueType::Composite(key), value.clone())
+                    .expect("option payload type matches")
+            ));
+        }
+        let refusal = types
+            .record(
+                record,
+                vec![("label", FieldValue::Present(union_at(record)))],
+            )
+            .expect_err("a union is not a String");
+        assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
+        let refusal = types
+            .tuple(tuple, vec![union_at(tuple)])
+            .expect_err("a union is not an Integer");
+        assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
     }
 
     /// A composite value keeps its child identity while admitting at an ancestor boundary.

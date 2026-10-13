@@ -357,7 +357,7 @@ mod tests {
     /// A union value's payload is traversed like a composite's slots: a
     /// reference inside it must name a closed object, and a nested union is
     /// walked too.
-    #[trace("TC-904", "FR-106-AC-10")]
+    #[trace("TC-904", "FR-106-AC-11")]
     #[test]
     fn union_payload_references_are_closed_over() {
         use quire_exact::{Identifier, UnionMember, UnionValue};
@@ -400,5 +400,49 @@ mod tests {
             closure.check_closed(&owner, &slots(dangling), &tolerating),
             Ok(())
         );
+    }
+
+    /// A dangling reference is refused through every carrier: an `Option`
+    /// payload, a composite slot and a collection element.
+    #[trace("TC-904", "FR-106-AC-11")]
+    #[test]
+    fn dangling_references_are_refused_through_option_collection_and_composite() {
+        use quire_exact::{
+            from_admitted, from_admitted_slots, CollectionKind, CollectionType, OptionValue,
+        };
+        let types = types();
+        let closure = ObjectClosure::new(&types, [object(&reference(A, "present"))], &[])
+            .expect("one object closes");
+        let missing = reference(B, "missing");
+        let owner = reference(A, "owner");
+        let held = Value::Reference(missing.clone());
+        let ref_type = ValueType::Reference(object_type(B));
+        let option = OptionValue::present(ref_type.clone(), held.clone()).expect("option");
+        let collection = from_admitted(
+            CollectionType::new(CollectionKind::Sequence, ref_type, None),
+            vec![held.clone()],
+        );
+        let composite = from_admitted_slots(
+            node_key(5),
+            vec![FieldValue::Present(held)].into_boxed_slice(),
+        );
+        for carrier in [option, collection, composite] {
+            assert_eq!(
+                closure.check_closed(
+                    &owner,
+                    &[FieldValue::Present(carrier.clone())],
+                    &BTreeSet::new()
+                ),
+                Err(ObjectClosureRefusal {
+                    object: Box::new(owner.clone()),
+                    cause: ObjectClosureCause::DanglingReference(Box::new(missing.clone())),
+                })
+            );
+            let tolerated: BTreeSet<&ObjectReference> = [&missing].into_iter().collect();
+            assert_eq!(
+                closure.check_closed(&owner, &[FieldValue::Present(carrier)], &tolerated),
+                Ok(())
+            );
+        }
     }
 }
