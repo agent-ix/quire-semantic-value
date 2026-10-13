@@ -3986,10 +3986,9 @@ mod native_type_tests {
         assert!(types.admits(&ValueType::Composite(record), &value));
     }
 
-    /// A union value is never admitted at a record or tuple slot, even when it
-    /// carries that record's key: only a union declaration's member check may
-    /// admit one.
-    #[trace("TC-913", "FR-113-AC-4")]
+    /// A union value is never admitted at a record or tuple composite type,
+    /// even when it carries that record's or tuple's key.
+    #[trace("TC-913", "FR-113-AC-8")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the fixture supplies checked composite identities without minting them in production"
@@ -3998,6 +3997,8 @@ mod native_type_tests {
     fn union_value_is_refused_at_record_and_tuple_slots() {
         let record = NodeKey::from_digest([31; 32]);
         let tuple = NodeKey::from_digest([32; 32]);
+        let holder = NodeKey::from_digest([34; 32]);
+        let pair = NodeKey::from_digest([35; 32]);
         let types = TypeEnvironment::new(
             [
                 CompositeDeclaration::new(
@@ -4013,6 +4014,20 @@ mod native_type_tests {
                     tuple,
                     "Pair",
                     CompositeShape::Tuple(vec![ValueType::Integer]),
+                ),
+                CompositeDeclaration::new(
+                    holder,
+                    "Holder",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "member",
+                        ValueType::Composite(record),
+                        Presence::Required,
+                    )]),
+                ),
+                CompositeDeclaration::new(
+                    pair,
+                    "Holds",
+                    CompositeShape::Tuple(vec![ValueType::Composite(tuple)]),
                 ),
             ],
             [],
@@ -4039,15 +4054,17 @@ mod native_type_tests {
         }
         let refusal = types
             .record(
-                record,
-                vec![("label", FieldValue::Present(union_at(record)))],
+                holder,
+                vec![("member", FieldValue::Present(union_at(record)))],
             )
-            .expect_err("a union is not a String");
+            .expect_err("a union is not a Plain record");
         assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
+        assert_eq!(refusal.component, Component::Field("member".into()));
         let refusal = types
-            .tuple(tuple, vec![union_at(tuple)])
-            .expect_err("a union is not an Integer");
+            .tuple(pair, vec![union_at(tuple)])
+            .expect_err("a union is not a Pair tuple");
         assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
+        assert_eq!(refusal.component, Component::Position(0));
     }
 
     /// A composite value keeps its child identity while admitting at an ancestor boundary.

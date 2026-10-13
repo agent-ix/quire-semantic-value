@@ -49,3 +49,17 @@ FR-113 item 8 owns union payload *admission*. It does not own closure.
 - Semantic review: not run as a separate pass. This reviewer subagent could not take an opt-in. The test oracle was judged by hand in SR-9023.
 
 Plan completion: not assessed
+
+## New findings (disposition pass 1)
+
+Reviewed at agent-ix/quire-semantic-value@7616456f7379e25a9a14e515b7dfe2df47dc88b2.
+
+| ID | Severity | Summary | Refs |
+| --- | --- | --- | --- |
+| FND-002 | low | The fix added behavior item 3 and FR-106-AC-11, but the FR-106 statement and title still name only duplicate identity triples, non-model object types and ambiguous `find`. The `## Description` SHALL sentence does not cover the dangling-reference rule that AC-11 verifies, so a reader of the requirement statement alone misses it. Extend the Description sentence, and the title if the repo keeps titles in step, to include refusal of dangling references. | spec/functional/FR-106-object-closure-admission.md:3-11 |
+
+## Dispositions
+
+| FND | outcome | sha/reason |
+| --- | --- | --- |
+| FND-001 | fixed 7616456 | FR-106 behavior item 3, FR-106-AC-11, and TC-904 rows 5 to 8 were added. `dangling_references_are_refused_through_option_collection_and_composite` covers the Option, collection and composite carriers, both refused and tolerated. `quire matrix` binds both AC-11 tests. FR-106-AC-11 appears on no other remote branch, including #12's `task/qsl-500-sv-union`. |

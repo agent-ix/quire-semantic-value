@@ -1,14 +1,14 @@
 ---
 id: FR-106
-title: "The object closure refuses a duplicate identity triple and a non-model object type"
+title: "The object closure refuses a duplicate identity triple, a non-model object type and a dangling reference"
 type: FR
 relationships: []
 ---
-# FR-106: The object closure refuses a duplicate identity triple and a non-model object type
+# FR-106: The object closure refuses a duplicate identity triple, a non-model object type and a dangling reference
 
 ## Description
 
-`quire-semantic-value` SHALL provide an `ObjectClosure` that admits objects over the kernel `ObjectReference`, checked against a `TypeEnvironment`. It SHALL refuse a second object with an admitted identity triple, refuse an object whose type is not a model object type of the environment, and refuse an ambiguous `find`. Admitting a snapshot and an invocation, which builds the closure, keeps the id `FR-106` in `agent-ix/quire-spec-language`.
+`quire-semantic-value` SHALL provide an `ObjectClosure` that admits objects over the kernel `ObjectReference`, checked against a `TypeEnvironment`. It SHALL refuse a second object with an admitted identity triple, refuse an object whose type is not a model object type of the environment, refuse an ambiguous `find`, and refuse a present reference, at any depth through Option payloads, composite slots, collection elements and union payloads, that names no closure object and is not a tolerated target. Admitting a snapshot and an invocation, which builds the closure, keeps the id `FR-106` in `agent-ix/quire-spec-language`.
 
 ## Use case
 
