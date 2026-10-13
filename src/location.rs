@@ -325,9 +325,9 @@ mod tests {
         }
     }
 
-    /// FR-114-AC-1: a model operation clause is told apart by operation, kind,
+    /// FR-114-AC-1 to AC-3: a model operation clause is told apart by operation, kind,
     /// position and path, orders by them, and never equals a state clause.
-    #[trace("TC-914", "FR-114-AC-1")]
+    #[trace("TC-914", "FR-114-AC-1", "FR-114-AC-2", "FR-114-AC-3")]
     #[test]
     fn a_model_operation_clause_origin_is_its_own() {
         let clause = |operation: &str, kind, position| Origin::ModelOperationClause {
@@ -363,10 +363,10 @@ mod tests {
         ordered.sort();
         assert_eq!(ordered, [3, 0, 1, 2].map(|index| roots[index].clone()));
         let state = Origin::StateClause {
-            clause: String::from("place"),
-            index: 0,
+            clause: String::from("Q"),
+            index: 2,
         };
-        assert_ne!(place_req_0, state);
+        assert_ne!(clause("Q", OperationClauseKind::Requires, 2), state);
     }
 
     /// A child keeps its origin and extends the path by one index, leaving

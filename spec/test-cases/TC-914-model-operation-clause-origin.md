@@ -14,7 +14,7 @@ Verify that locations in a model operation's `requires` and `ensures` clauses
 are told apart by operation, kind, position and path, and never equal a
 location in a state clause.
 
-Scope: FR-114-AC-1.
+Scope: FR-114-AC-1, FR-114-AC-2, FR-114-AC-3.
 
 ## Test Procedure
 

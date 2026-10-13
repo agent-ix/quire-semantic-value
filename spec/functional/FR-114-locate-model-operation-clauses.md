@@ -10,9 +10,9 @@ relationships: []
 
 `quire-semantic-value` SHALL give `Origin` a variant for one `requires` or
 `ensures` clause of a model operation. It names the operation, the clause kind
-and the clause's position in the operation's list of that kind. A checking
-refusal, an evaluation outcome or a loss record located in such a clause
-carries that origin and no other.
+and the clause's position in the operation's list of that kind, so a location
+in such a clause is told apart from a location in any other clause, including
+a unit state clause.
 
 ## Use case
 
@@ -24,7 +24,9 @@ origin of a unit state clause, whose index counts a different list.
 ## Behavior
 
 1. `Origin::ModelOperationClause { operation, kind, position }` holds the
-   operation's identifying text, an `OperationClauseKind` (`Requires` or
+   operation's identifying text, which is opaque to this crate and SHALL
+   identify one operation within the package (a bare name that two models
+   share does not), an `OperationClauseKind` (`Requires` or
    `Ensures`) and the zero-based position in that kind's list.
 2. Two locations in the same clause, with equal paths, are equal. Locations
    that differ in operation, kind or position are unequal, and order by
@@ -36,7 +38,9 @@ origin of a unit state clause, whose index counts a different list.
 
 | ID | Criteria | Verification |
 | --- | --- | --- |
-| FR-114-AC-1 | Locations built on `ModelOperationClause` origins compare equal exactly when operation, kind, position and path are equal; they order by operation, then kind with `Requires` before `Ensures`, then position, then path; and a `ModelOperationClause` origin never equals a `StateClause` origin whose name or index matches its operation or position. | Test (TC-914) |
+| FR-114-AC-1 | Locations built on `ModelOperationClause` origins compare equal exactly when operation, kind, position and path are equal. | Test |
+| FR-114-AC-2 | Locations built on `ModelOperationClause` origins order by operation, then kind with `Requires` before `Ensures`, then position, then path. | Test |
+| FR-114-AC-3 | A `ModelOperationClause` origin never equals a `StateClause` origin whose name or index matches its operation or position. | Test |
 
 ## Status
 
