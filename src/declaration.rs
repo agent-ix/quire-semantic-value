@@ -80,7 +80,7 @@ use quire_exact::NodeKey;
 use quire_exact::{compare_text, evaluate_decimal};
 
 use crate::supplied_membership::{
-    InvalidMembershipCause, MembershipEvent, MembershipLocus, MembershipPart, MembershipPathArena,
+    InvalidMembershipCause, MembershipLocus, MembershipPart, MembershipPathArena,
     SuppliedAdmissionError,
 };
 
@@ -6538,6 +6538,7 @@ mod ancestor_steps_tests {
 )]
 mod nested_conformance_tests {
     use super::*;
+    use crate::supplied_membership::MembershipEvent;
     use ix_trace_rs::trace;
     use quire_exact::{
         form, from_admitted, CollectionKind, CollectionType, ObjectId, ObjectReference,
