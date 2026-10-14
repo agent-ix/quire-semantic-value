@@ -5,6 +5,8 @@
 //! records only events it explicitly requests; it does not inspect values or
 //! debit the evaluator's meter.
 
+#[cfg(test)]
+use alloc::collections::TryReserveError;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -100,6 +102,16 @@ struct PathNode {
 pub struct MembershipPathArena {
     id: usize,
     nodes: Vec<PathNode>,
+    #[cfg(test)]
+    growth_probe: Option<PathArenaGrowthProbe>,
+}
+
+/// Test-only record of actual successful path-vector capacity transitions.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct PathArenaGrowthProbe {
+    pub(crate) transitions: Vec<(usize, usize)>,
+    pub(crate) truncated: bool,
 }
 
 /// The native unit requested when creating a supplied-membership path arena.
@@ -153,6 +165,8 @@ impl MembershipPathArena {
         Ok(Self {
             id,
             nodes: Vec::new(),
+            #[cfg(test)]
+            growth_probe: None,
         })
     }
 
@@ -165,7 +179,36 @@ impl MembershipPathArena {
         Self {
             id: SCOPED_ARENA_ID,
             nodes: Vec::new(),
+            #[cfg(test)]
+            growth_probe: None,
         }
+    }
+
+    /// Preallocate test observation outside the measured traversal.
+    #[cfg(test)]
+    pub(crate) fn probe_growth(&mut self, max_transitions: usize) -> Result<(), TryReserveError> {
+        let mut transitions = Vec::new();
+        transitions.try_reserve_exact(max_transitions)?;
+        self.growth_probe = Some(PathArenaGrowthProbe {
+            transitions,
+            truncated: false,
+        });
+        Ok(())
+    }
+
+    /// Test-only path node count and observed capacity transitions.
+    #[cfg(test)]
+    pub(crate) fn growth_observation(&self) -> (usize, &PathArenaGrowthProbe) {
+        (
+            self.nodes.len(),
+            self.growth_probe.as_ref().expect("growth probe enabled"),
+        )
+    }
+
+    /// Native node size for the test-only relocation bound.
+    #[cfg(test)]
+    pub(crate) const fn path_node_size() -> usize {
+        core::mem::size_of::<PathNode>()
     }
 
     /// Name one supplied argument without allocating path storage.
@@ -221,9 +264,21 @@ impl MembershipPathArena {
             if !permit(request) {
                 return Err(SuppliedAdmissionError::Allocation { request, locus });
             }
+            #[cfg(test)]
+            let previous_capacity = self.nodes.capacity();
             self.nodes
                 .try_reserve_exact(1)
                 .map_err(|_| SuppliedAdmissionError::Allocation { request, locus })?;
+            #[cfg(test)]
+            if let Some(probe) = &mut self.growth_probe {
+                if probe.transitions.len() < probe.transitions.capacity() {
+                    probe
+                        .transitions
+                        .push((previous_capacity, self.nodes.capacity()));
+                } else {
+                    probe.truncated = true;
+                }
+            }
         }
         let token = PathToken {
             arena: self.id,

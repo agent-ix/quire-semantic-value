@@ -81,7 +81,7 @@ use quire_exact::{compare_text, evaluate_decimal};
 
 use crate::supplied_membership::{
     InvalidMembershipCause, MembershipLocus, MembershipPart, MembershipPathArena,
-    SuppliedAdmissionError,
+    SuppliedAdmissionError, SuppliedMembershipBudget,
 };
 
 mod membership;
@@ -2137,6 +2137,57 @@ impl TypeEnvironment {
         value: &Value,
     ) -> Result<bool, EnvironmentFailure> {
         Ok(self.admits_checked(value_type, value)?)
+    }
+
+    /// Check one supplied value with the caller's cumulative admission budget
+    /// and original cancellation handle. Reuse `budget` and `arena` for later
+    /// arguments in the same invocation, rooting each at its argument index.
+    /// Successful membership is distinct from an invalid value or a stop.
+    pub fn admit_supplied<Cause: From<InvalidMembershipCause>>(
+        &self,
+        expected: &ValueType,
+        value: &Value,
+        arena: &mut MembershipPathArena,
+        at: MembershipLocus,
+        budget: &mut SuppliedMembershipBudget,
+        cancel: &quire_exact::Cancel,
+    ) -> Result<(), SuppliedAdmissionError<Cause>> {
+        self.admit_supplied_with(
+            expected,
+            value,
+            arena,
+            at,
+            budget,
+            cancel,
+            &GlobalReservations,
+        )
+    }
+
+    fn admit_supplied_with<Cause: From<InvalidMembershipCause>>(
+        &self,
+        expected: &ValueType,
+        value: &Value,
+        arena: &mut MembershipPathArena,
+        at: MembershipLocus,
+        budget: &mut SuppliedMembershipBudget,
+        cancel: &quire_exact::Cancel,
+        reservation: &impl ReservationPolicy,
+    ) -> Result<(), SuppliedAdmissionError<Cause>> {
+        self.admits_walk_observed(
+            expected,
+            value,
+            arena,
+            at,
+            &mut |boundary| match boundary {
+                membership::MembershipBoundary::Event(event, locus) => {
+                    budget.charge(event, locus, cancel)
+                }
+                membership::MembershipBoundary::AfterHelper(event, locus) => {
+                    budget.check_cancel(event, locus, cancel)
+                }
+            },
+            reservation,
+        )
     }
 
     /// [`Self::admits`] for the evaluator callers, whose kernel `Stop` has no

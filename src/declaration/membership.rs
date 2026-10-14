@@ -21,8 +21,15 @@ use crate::supplied_membership::{
     PathAppendError, PathStep, PathToken, SuppliedAdmissionError,
 };
 
+/// A logical event request or a response boundary after its indivisible
+/// helper. Only the former spends a work unit.
+pub(super) enum MembershipBoundary {
+    Event(MembershipEvent, MembershipLocus),
+    AfterHelper(MembershipEvent, MembershipLocus),
+}
+
 type Callback<'f, Cause> =
-    dyn FnMut(MembershipEvent, MembershipLocus) -> Result<(), SuppliedAdmissionError<Cause>> + 'f;
+    dyn FnMut(MembershipBoundary) -> Result<(), SuppliedAdmissionError<Cause>> + 'f;
 
 /// A pending occurrence: its expected type, the value, and its rooted path.
 type Pending<'a> = (&'a ValueType, &'a Value, PathToken);
@@ -43,13 +50,18 @@ impl<'a, R: ReservationPolicy> Frontier<'_, 'a, R> {
         additional: usize,
         parent: PathToken,
         first: PathStep,
+        on_boundary: &mut Callback<'_, Cause>,
     ) -> Result<(), SuppliedAdmissionError<Cause>> {
         let locus = MembershipLocus {
             path: parent,
             part: MembershipPart::Child(first),
         };
         reserve_elements(&mut self.pending, additional, self.reservation)
-            .map_err(|failure| storage(failure, locus))
+            .map_err(|failure| storage(failure, locus))?;
+        on_boundary(MembershipBoundary::AfterHelper(
+            MembershipEvent::ChildScheduling,
+            locus,
+        ))
     }
 
     /// Emit the scheduling event for one actual child, then retain its path
@@ -59,13 +71,16 @@ impl<'a, R: ReservationPolicy> Frontier<'_, 'a, R> {
         parent: PathToken,
         step: PathStep,
         child: (&'a ValueType, &'a Value),
-        on_event: &mut Callback<'_, Cause>,
+        on_boundary: &mut Callback<'_, Cause>,
     ) -> Result<(), SuppliedAdmissionError<Cause>> {
         let at = MembershipLocus {
             path: parent,
             part: MembershipPart::Child(step),
         };
-        on_event(MembershipEvent::ChildScheduling, at)?;
+        on_boundary(MembershipBoundary::Event(
+            MembershipEvent::ChildScheduling,
+            at,
+        ))?;
         let reservation = self.reservation;
         let path = self
             .arena
@@ -74,6 +89,10 @@ impl<'a, R: ReservationPolicy> Frontier<'_, 'a, R> {
                 PathAppendError::ForeignParent => invalid(InvalidMembershipCause::ForeignPath, at),
                 PathAppendError::Admission(stop) => stop,
             })?;
+        on_boundary(MembershipBoundary::AfterHelper(
+            MembershipEvent::ChildScheduling,
+            at,
+        ))?;
         self.pending.push((child.0, child.1, path));
         Ok(())
     }
@@ -112,8 +131,13 @@ fn same_type_walk<Cause: From<InvalidMembershipCause>>(
     right: &ValueType,
     path: PathToken,
     first_ordinal: u64,
-    on_event: &mut Callback<'_, Cause>,
+    on_boundary: &mut Callback<'_, Cause>,
 ) -> Result<(), SuppliedAdmissionError<Cause>> {
+    enum TypeStep<'a> {
+        Continue(&'a ValueType, &'a ValueType),
+        Equal,
+        Mismatch,
+    }
     let (mut left, mut right) = (left, right);
     let mut ordinal = first_ordinal;
     loop {
@@ -121,17 +145,30 @@ fn same_type_walk<Cause: From<InvalidMembershipCause>>(
             path,
             part: MembershipPart::TypeLink(ordinal),
         };
-        on_event(MembershipEvent::TypeLinkComparison, at)?;
-        (left, right) = match (left, right) {
-            (ValueType::Option(a), ValueType::Option(b)) => (&**a, &**b),
+        on_boundary(MembershipBoundary::Event(
+            MembershipEvent::TypeLinkComparison,
+            at,
+        ))?;
+        let step = match (left, right) {
+            (ValueType::Option(a), ValueType::Option(b)) => TypeStep::Continue(a, b),
             (ValueType::Collection(a), ValueType::Collection(b)) => {
                 if a.kind() != b.kind() || a.bound() != b.bound() {
-                    return Err(invalid(InvalidMembershipCause::Type, at));
+                    TypeStep::Mismatch
+                } else {
+                    TypeStep::Continue(a.element(), b.element())
                 }
-                (a.element(), b.element())
             }
-            (left, right) if left == right => return Ok(()),
-            _ => return Err(invalid(InvalidMembershipCause::Type, at)),
+            (left, right) if left == right => TypeStep::Equal,
+            _ => TypeStep::Mismatch,
+        };
+        on_boundary(MembershipBoundary::AfterHelper(
+            MembershipEvent::TypeLinkComparison,
+            at,
+        ))?;
+        (left, right) = match step {
+            TypeStep::Continue(left, right) => (left, right),
+            TypeStep::Equal => return Ok(()),
+            TypeStep::Mismatch => return Err(invalid(InvalidMembershipCause::Type, at)),
         };
         ordinal = ordinal.saturating_add(1);
     }
@@ -154,6 +191,30 @@ impl TypeEnvironment {
         ) -> Result<(), SuppliedAdmissionError<Cause>>,
         reservation: &impl ReservationPolicy,
     ) -> Result<(), SuppliedAdmissionError<Cause>> {
+        self.admits_walk_observed(
+            expected,
+            value,
+            arena,
+            at,
+            &mut |boundary| match boundary {
+                MembershipBoundary::Event(event, locus) => on_event(event, locus),
+                MembershipBoundary::AfterHelper(..) => Ok(()),
+            },
+            reservation,
+        )
+    }
+
+    /// Internal walk retaining both event requests and post-helper response
+    /// boundaries for the caller-owned cancellation handle.
+    pub(super) fn admits_walk_observed<'a, Cause: From<InvalidMembershipCause>>(
+        &self,
+        expected: &'a ValueType,
+        value: &'a Value,
+        arena: &mut MembershipPathArena,
+        at: MembershipLocus,
+        on_boundary: &mut impl FnMut(MembershipBoundary) -> Result<(), SuppliedAdmissionError<Cause>>,
+        reservation: &impl ReservationPolicy,
+    ) -> Result<(), SuppliedAdmissionError<Cause>> {
         if arena.resolve(at).is_none() {
             return Err(invalid(InvalidMembershipCause::ForeignPath, at));
         }
@@ -168,8 +229,8 @@ impl TypeEnvironment {
                 path,
                 part: MembershipPart::Value,
             };
-            on_event(MembershipEvent::ValueVisit, here)?;
-            self.admit_occurrence(expected, value, path, &mut frontier, on_event)?;
+            on_boundary(MembershipBoundary::Event(MembershipEvent::ValueVisit, here))?;
+            self.admit_occurrence(expected, value, path, &mut frontier, on_boundary)?;
         }
         Ok(())
     }
@@ -180,7 +241,7 @@ impl TypeEnvironment {
         value: &'a Value,
         path: PathToken,
         frontier: &mut Frontier<'_, 'a, impl ReservationPolicy>,
-        on_event: &mut Callback<'_, Cause>,
+        on_boundary: &mut Callback<'_, Cause>,
     ) -> Result<(), SuppliedAdmissionError<Cause>> {
         let here = MembershipLocus {
             path,
@@ -192,14 +253,30 @@ impl TypeEnvironment {
         };
         match (expected, value) {
             (ValueType::Reference(declared), Value::Reference(reference)) => {
-                on_event(MembershipEvent::DescriptorQuery, query)?;
-                if !self.conforms(reference.object_type(), *declared) {
+                on_boundary(MembershipBoundary::Event(
+                    MembershipEvent::DescriptorQuery,
+                    query,
+                ))?;
+                let conforms = self.conforms(reference.object_type(), *declared);
+                on_boundary(MembershipBoundary::AfterHelper(
+                    MembershipEvent::DescriptorQuery,
+                    query,
+                ))?;
+                if !conforms {
                     return Err(invalid(InvalidMembershipCause::ReferenceConformance, query));
                 }
             }
             (ValueType::Composite(declared), Value::Composite(composite)) => {
-                on_event(MembershipEvent::DescriptorQuery, query)?;
-                if !self.composite_conforms(composite.declaration(), *declared) {
+                on_boundary(MembershipBoundary::Event(
+                    MembershipEvent::DescriptorQuery,
+                    query,
+                ))?;
+                let conforms = self.composite_conforms(composite.declaration(), *declared);
+                on_boundary(MembershipBoundary::AfterHelper(
+                    MembershipEvent::DescriptorQuery,
+                    query,
+                ))?;
+                if !conforms {
                     return Err(invalid(InvalidMembershipCause::CompositeConformance, query));
                 }
             }
@@ -207,14 +284,14 @@ impl TypeEnvironment {
                 return Err(invalid(InvalidMembershipCause::UnsupportedUnion, here));
             }
             (ValueType::Option(payload), Value::Option(option)) => {
-                same_type_walk(option.payload_type(), payload, path, 0, on_event)?;
+                same_type_walk(option.payload_type(), payload, path, 0, on_boundary)?;
                 if let Some(present) = option.payload() {
-                    frontier.reserve(1, path, PathStep::OptionPayload)?;
+                    frontier.reserve(1, path, PathStep::OptionPayload, on_boundary)?;
                     frontier.schedule(
                         path,
                         PathStep::OptionPayload,
                         (payload, present),
-                        on_event,
+                        on_boundary,
                     )?;
                 }
             }
@@ -224,26 +301,45 @@ impl TypeEnvironment {
                     path,
                     part: MembershipPart::TypeLink(0),
                 };
-                on_event(MembershipEvent::TypeLinkComparison, pair)?;
-                if actual.kind() != declared.kind() || actual.bound() != declared.bound() {
+                on_boundary(MembershipBoundary::Event(
+                    MembershipEvent::TypeLinkComparison,
+                    pair,
+                ))?;
+                let matching =
+                    actual.kind() == declared.kind() && actual.bound() == declared.bound();
+                on_boundary(MembershipBoundary::AfterHelper(
+                    MembershipEvent::TypeLinkComparison,
+                    pair,
+                ))?;
+                if !matching {
                     return Err(invalid(InvalidMembershipCause::Type, pair));
                 }
-                same_type_walk(actual.element(), declared.element(), path, 1, on_event)?;
+                same_type_walk(actual.element(), declared.element(), path, 1, on_boundary)?;
                 let elements = collection.elements();
                 if let Some(last) = elements.len().checked_sub(1) {
-                    frontier.reserve(elements.len(), path, PathStep::CollectionElement(last))?;
+                    frontier.reserve(
+                        elements.len(),
+                        path,
+                        PathStep::CollectionElement(last),
+                        on_boundary,
+                    )?;
                 }
                 for (index, element) in elements.iter().enumerate().rev() {
                     frontier.schedule(
                         path,
                         PathStep::CollectionElement(index),
                         (declared.element(), element),
-                        on_event,
+                        on_boundary,
                     )?;
                 }
             }
             _ => {
-                if !expected.admits(value) {
+                let admitted = expected.admits(value);
+                on_boundary(MembershipBoundary::AfterHelper(
+                    MembershipEvent::ValueVisit,
+                    here,
+                ))?;
+                if !admitted {
                     return Err(invalid(leaf_cause(expected, value), here));
                 }
             }
@@ -268,11 +364,13 @@ fn storage<Cause>(
 mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
-    use core::cell::Cell;
+    use core::cell::{Cell, RefCell};
+    use std::time::Instant;
 
     use ix_trace_rs::trace;
     use quire_exact::{
-        from_admitted, CancelCause, CollectionKind, CollectionType, Integer, OptionValue,
+        from_admitted, Cancel, CancelCause, CollectionKind, CollectionType, EffectiveId, Integer,
+        ObjectId, ObjectReference, OptionValue, UniverseId,
     };
 
     use super::*;
@@ -280,6 +378,7 @@ mod tests {
         CompositeDeclaration, GlobalReservations, ObjectTypeDeclaration, StorageRequest,
         StorageUnit,
     };
+    use crate::supplied_membership::SuppliedMembershipBudget;
 
     type Stop = SuppliedAdmissionError<InvalidMembershipCause>;
 
@@ -719,5 +818,456 @@ mod tests {
             })
         );
         assert_eq!(fired, 0);
+    }
+
+    /// A supported option/collection/reference fixture has an outer visit,
+    /// two nested retained-type links, and a terminal descriptor query.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked type identities without minting them in production"
+    )]
+    fn nested_reference() -> (TypeEnvironment, ValueType, Value) {
+        let object_type = EffectiveId::from_digest([1; 32]);
+        let universe = UniverseId::from_digest([2; 32]);
+        let reference_type = ValueType::Reference(object_type);
+        let collection = sequence_of(reference_type.clone());
+        let expected = ValueType::option(ValueType::collection(collection.clone()));
+        let reference = Value::Reference(ObjectReference::new(
+            universe,
+            object_type,
+            ObjectId::new("item").expect("nonempty fixture id"),
+        ));
+        let value = OptionValue::from_admitted(
+            ValueType::collection(collection.clone()),
+            Some(from_admitted(collection, vec![reference])),
+        );
+        let environment = TypeEnvironment::new(
+            Vec::<CompositeDeclaration>::new(),
+            [ObjectTypeDeclaration::new(object_type, "Item", vec![])],
+        )
+        .expect("fixture declaration admits");
+        (environment, expected, value)
+    }
+
+    /// The source-enumerated fixture has ten events: outer visit; two payload
+    /// type links; payload scheduling and visit; two element type links;
+    /// element scheduling and visit; descriptor query.
+    /// Trace: FR-109-AC-1
+    #[trace("TC-908", "FR-109-AC-1")]
+    #[test]
+    fn supplied_api_denies_zero_and_one_less_at_the_real_event() {
+        let (environment, expected, value) = nested_reference();
+        let cancel = Cancel::new();
+        for ceiling in [0, 9, 10] {
+            let mut arena = MembershipPathArena::new().expect("arena");
+            let at = MembershipLocus {
+                path: arena.root(0),
+                part: Occurrence,
+            };
+            let mut budget = SuppliedMembershipBudget::new(ceiling);
+            let result = environment.admit_supplied::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut budget,
+                &cancel,
+            );
+            if ceiling == 10 {
+                assert_eq!(result, Ok(()));
+                assert_eq!(budget.spent(), 10);
+            } else {
+                let Err(Stop::Limit {
+                    ceiling: reported,
+                    spent,
+                    requested,
+                    event,
+                    locus,
+                }) = result
+                else {
+                    panic!("expected the real denied event, got {result:?}");
+                };
+                assert_eq!((reported, spent, requested), (ceiling, ceiling, 1));
+                let resolved = arena.resolve(locus).expect("denied path resolves");
+                if ceiling == 0 {
+                    assert_eq!((event, resolved.part()), (ValueVisit, Occurrence));
+                    assert_eq!(resolved.steps_from_leaf().count(), 0);
+                } else {
+                    assert_eq!(
+                        (event, resolved.part()),
+                        (
+                            MembershipEvent::DescriptorQuery,
+                            MembershipPart::Descriptor(0)
+                        )
+                    );
+                    assert_eq!(
+                        resolved.steps_from_leaf().collect::<Vec<_>>(),
+                        vec![CollectionElement(0), OptionPayload]
+                    );
+                }
+                assert_eq!(budget.spent(), ceiling);
+            }
+        }
+    }
+
+    /// Two arguments reuse successful work, including the nested type walk;
+    /// the second argument's final descriptor query is denied at total ten.
+    /// Trace: FR-109-AC-2
+    #[trace("TC-908", "FR-109-AC-2")]
+    #[test]
+    fn supplied_api_preserves_spend_across_arguments() {
+        let (environment, expected, value) = nested_reference();
+        let cancel = Cancel::new();
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let mut budget = SuppliedMembershipBudget::new(10);
+        let first = MembershipLocus {
+            path: arena.root(0),
+            part: Occurrence,
+        };
+        let second = MembershipLocus {
+            path: arena.root(1),
+            part: Occurrence,
+        };
+        assert_eq!(
+            environment.admit_supplied::<InvalidMembershipCause>(
+                &ValueType::Boolean,
+                &Value::Boolean(true),
+                &mut arena,
+                first,
+                &mut budget,
+                &cancel
+            ),
+            Ok(())
+        );
+        assert_eq!(budget.spent(), 1);
+        let Err(Stop::Limit {
+            ceiling,
+            spent,
+            requested,
+            event,
+            locus,
+        }) = environment.admit_supplied::<InvalidMembershipCause>(
+            &expected,
+            &value,
+            &mut arena,
+            second,
+            &mut budget,
+            &cancel,
+        )
+        else {
+            panic!("second argument should reach its final event");
+        };
+        assert_eq!(
+            (ceiling, spent, requested, event),
+            (10, 10, 1, MembershipEvent::DescriptorQuery)
+        );
+        let resolved = arena.resolve(locus).expect("second path resolves");
+        assert_eq!(resolved.argument(), 1);
+        assert_eq!(resolved.part(), MembershipPart::Descriptor(0));
+        assert_eq!(
+            resolved.steps_from_leaf().collect::<Vec<_>>(),
+            vec![CollectionElement(0), OptionPayload]
+        );
+        assert_eq!(budget.spent(), 10);
+    }
+
+    /// Invalid membership is a typed refusal after the real root visit,
+    /// rather than a successful answer or a fabricated budget stop.
+    /// Trace: FR-109-AC-4
+    #[trace("TC-908", "FR-109-AC-4")]
+    #[test]
+    fn supplied_api_keeps_invalid_membership_distinct_from_a_stop() {
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(0),
+            part: Occurrence,
+        };
+        let mut budget = SuppliedMembershipBudget::new(1);
+        let result = environment().admit_supplied::<InvalidMembershipCause>(
+            &ValueType::Boolean,
+            &integer(1),
+            &mut arena,
+            at,
+            &mut budget,
+            &Cancel::new(),
+        );
+        assert_eq!(
+            result,
+            Err(Stop::Invalid {
+                cause: InvalidMembershipCause::Kind,
+                locus: at,
+            })
+        );
+        assert_eq!(budget.spent(), 1);
+    }
+
+    struct CancelAtReservation<'a> {
+        cancel: &'a Cancel,
+    }
+
+    impl ReservationPolicy for CancelAtReservation<'_> {
+        fn permit(&self, _request: StorageRequest) -> bool {
+            self.cancel.cancel(CancelCause::Requested);
+            true
+        }
+    }
+
+    /// Cancellation on the caller's handle during storage reservation is
+    /// observed before the next child event; no replacement handle is used.
+    /// Trace: FR-109-AC-3
+    #[trace("TC-908", "FR-109-AC-3")]
+    #[test]
+    fn supplied_api_polls_original_handle_after_a_helper_boundary() {
+        let (environment, expected, value) = nested_reference();
+        let cancel = Cancel::new();
+        let mut arena = MembershipPathArena::new().expect("arena");
+        arena.probe_growth(1).expect("test observation reserves");
+        let at = MembershipLocus {
+            path: arena.root(0),
+            part: Occurrence,
+        };
+        let mut budget = SuppliedMembershipBudget::new(10);
+        let result = environment.admit_supplied_with::<InvalidMembershipCause>(
+            &expected,
+            &value,
+            &mut arena,
+            at,
+            &mut budget,
+            &cancel,
+            &CancelAtReservation { cancel: &cancel },
+        );
+        assert_eq!(
+            result,
+            Err(Stop::Cancelled {
+                cause: CancelCause::Requested,
+                spent: 3,
+                event: ChildScheduling,
+                locus: MembershipLocus {
+                    path: at.path,
+                    part: Child(OptionPayload)
+                },
+            })
+        );
+        assert_eq!(budget.spent(), 3);
+        assert_eq!(cancel.tripped(), Some(CancelCause::Requested));
+        assert_eq!(arena.growth_observation().0, 0, "no child was scheduled");
+    }
+
+    /// The real pending-vector reservation is denied before any child event;
+    /// restoring the reservation yields the same membership result.
+    /// Trace: FR-109-AC-5
+    #[trace("TC-908", "FR-109-AC-5")]
+    #[test]
+    fn supplied_api_reports_real_worklist_denial_and_recovers_on_retry() {
+        let (environment, expected, value) = nested_reference();
+        let cancel = Cancel::new();
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(0),
+            part: Occurrence,
+        };
+        let mut budget = SuppliedMembershipBudget::new(10);
+        let policy = DenyAll {
+            seen: Cell::new(None),
+        };
+        let result = environment.admit_supplied_with::<InvalidMembershipCause>(
+            &expected,
+            &value,
+            &mut arena,
+            at,
+            &mut budget,
+            &cancel,
+            &policy,
+        );
+        let request = StorageRequest::new(1, StorageUnit::AdditionalElements);
+        assert_eq!(
+            result,
+            Err(Stop::Allocation {
+                request,
+                locus: MembershipLocus {
+                    path: at.path,
+                    part: Child(OptionPayload)
+                },
+            })
+        );
+        assert_eq!(policy.seen.get(), Some(request));
+        assert_eq!(budget.spent(), 3);
+        let mut retry_arena = MembershipPathArena::new().expect("arena");
+        let retry_at = MembershipLocus {
+            path: retry_arena.root(0),
+            part: Occurrence,
+        };
+        let mut retry_budget = SuppliedMembershipBudget::new(10);
+        assert_eq!(
+            environment.admit_supplied::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut retry_arena,
+                retry_at,
+                &mut retry_budget,
+                &cancel,
+            ),
+            Ok(())
+        );
+        assert_eq!(retry_budget.spent(), 10);
+    }
+
+    struct RecordReservations {
+        requests: RefCell<Vec<StorageRequest>>,
+        deny_call: Option<usize>,
+    }
+
+    impl RecordReservations {
+        fn new(max_requests: usize, deny_call: Option<usize>) -> Self {
+            let mut requests = Vec::new();
+            requests
+                .try_reserve_exact(max_requests)
+                .expect("test observation reserves");
+            Self {
+                requests: RefCell::new(requests),
+                deny_call,
+            }
+        }
+    }
+
+    impl ReservationPolicy for RecordReservations {
+        fn permit(&self, request: StorageRequest) -> bool {
+            let mut requests = self.requests.borrow_mut();
+            let call = requests.len();
+            requests.push(request);
+            self.deny_call != Some(call)
+        }
+    }
+
+    /// An isolated resource probe, outside the default unit-test lane. The
+    /// 10k oracle is 1 outer visit + 2 type links + 10k child schedules +
+    /// 10k element visits = 20,003, independent of the budget counter.
+    /// Trace: FR-109-AC-1, FR-109-AC-5
+    #[trace("TC-908", "FR-109-AC-1", "FR-109-AC-5")]
+    #[test]
+    #[ignore = "resource probe: run alone in the IR-714 performance lane"]
+    fn supplied_path_arena_growth_probe_10k() {
+        for count in [1_000_usize, 5_000, 10_000] {
+            let sequence = sequence_of(ValueType::Integer);
+            let value = from_admitted(sequence.clone(), (0..count as i64).map(integer).collect());
+            let expected = ValueType::collection(sequence);
+            let mut arena = MembershipPathArena::new().expect("arena");
+            arena
+                .probe_growth(count)
+                .expect("test observation reserves");
+            let at = MembershipLocus {
+                path: arena.root(7),
+                part: Occurrence,
+            };
+            let cancel = Cancel::new();
+            let mut budget = SuppliedMembershipBudget::new(2 * count as u64 + 3);
+            let policy = RecordReservations::new(count + 1, None);
+            let env = environment();
+            let started = Instant::now();
+            let result = env.admit_supplied_with::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut budget,
+                &cancel,
+                &policy,
+            );
+            let elapsed = started.elapsed();
+            assert_eq!(result, Ok(()));
+            assert_eq!(budget.spent(), 2 * count as u64 + 3);
+            let (nodes, probe) = arena.growth_observation();
+            assert_eq!(nodes, count);
+            assert!(!probe.truncated);
+            let requests = policy.requests.borrow();
+            assert_eq!(
+                requests.first().copied(),
+                Some(StorageRequest::new(count, StorageUnit::AdditionalElements))
+            );
+            assert_eq!(requests.len(), probe.transitions.len() + 1);
+            let copied_bound: u128 = probe
+                .transitions
+                .iter()
+                .map(|(before, _)| {
+                    (*before as u128) * (MembershipPathArena::path_node_size() as u128)
+                })
+                .sum();
+            std::println!(
+                "path_arena count={count} events={} nodes={nodes} path_reservations={} first_growth={:?} last_growth={:?} copied_bound_bytes={copied_bound} elapsed={elapsed:?}",
+                budget.spent(),
+                requests.len() - 1,
+                probe.transitions.first(),
+                probe.transitions.last(),
+            );
+            assert!(
+                copied_bound <= (2 * count as u128 * MembershipPathArena::path_node_size() as u128),
+                "path arena copying exceeds a linear bound"
+            );
+            if count == 10_000 {
+                assert!(
+                    requests.len() >= 3,
+                    "probe needs a later actual path-growth boundary"
+                );
+                let denied_request = requests[2];
+                drop(requests);
+                let mut denied_arena = MembershipPathArena::new().expect("arena");
+                denied_arena
+                    .probe_growth(count)
+                    .expect("test observation reserves");
+                let denied_at = MembershipLocus {
+                    path: denied_arena.root(7),
+                    part: Occurrence,
+                };
+                let mut denied_budget = SuppliedMembershipBudget::new(2 * count as u64 + 3);
+                let denied_policy = RecordReservations::new(count + 1, Some(2));
+                let denied = environment().admit_supplied_with::<InvalidMembershipCause>(
+                    &expected,
+                    &value,
+                    &mut denied_arena,
+                    denied_at,
+                    &mut denied_budget,
+                    &cancel,
+                    &denied_policy,
+                );
+                let Err(Stop::Allocation { request, locus }) = denied else {
+                    panic!("expected a path-growth denial, got {denied:?}");
+                };
+                assert_eq!(request, denied_request);
+                assert_eq!(
+                    denied_policy.requests.borrow().get(2).copied(),
+                    Some(request)
+                );
+                let (retained, _) = denied_arena.growth_observation();
+                assert_eq!(locus.part, Child(CollectionElement(count - 1 - retained)));
+                let resolved = denied_arena
+                    .resolve(locus)
+                    .expect("denied parent path resolves");
+                assert_eq!(resolved.argument(), 7);
+                assert_eq!(
+                    resolved.part(),
+                    Child(CollectionElement(count - 1 - retained))
+                );
+                assert_eq!(resolved.steps_from_leaf().count(), 0);
+                assert_eq!(denied_budget.spent(), 3 + retained as u64 + 1);
+                let mut retry_arena = MembershipPathArena::new().expect("arena");
+                let retry_at = MembershipLocus {
+                    path: retry_arena.root(7),
+                    part: Occurrence,
+                };
+                let mut retry_budget = SuppliedMembershipBudget::new(20_003);
+                assert_eq!(
+                    environment().admit_supplied::<InvalidMembershipCause>(
+                        &expected,
+                        &value,
+                        &mut retry_arena,
+                        retry_at,
+                        &mut retry_budget,
+                        &cancel,
+                    ),
+                    Ok(())
+                );
+                assert_eq!(retry_budget.spent(), 20_003);
+            }
+        }
     }
 }
