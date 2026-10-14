@@ -1194,11 +1194,14 @@ mod tests {
                     (*before as u128) * (MembershipPathArena::path_node_size() as u128)
                 })
                 .sum();
+            let path_requests = &requests[1..];
+            let request_sample = &path_requests[..path_requests.len().min(16)];
+            let transition_sample = &probe.transitions[..probe.transitions.len().min(16)];
             std::println!(
-                "path_arena count={count} events={} nodes={nodes} path_reservations={} first_growth={:?} last_growth={:?} copied_bound_bytes={copied_bound} elapsed={elapsed:?}",
+                "path_arena count={count} events={} nodes={nodes} path_reservations={} first_requests={request_sample:?} last_request={:?} first_transitions={transition_sample:?} last_transition={:?} copied_bound_bytes={copied_bound} elapsed={elapsed:?}",
                 budget.spent(),
-                requests.len() - 1,
-                probe.transitions.first(),
+                path_requests.len(),
+                path_requests.last(),
                 probe.transitions.last(),
             );
             assert!(
