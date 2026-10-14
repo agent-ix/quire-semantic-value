@@ -2237,12 +2237,13 @@ impl TypeEnvironment {
             Err(SuppliedAdmissionError::Allocation { request, .. }) => {
                 Err(StorageFailure::Allocation(request))
             }
-            // The no-op callback neither stops nor enforces helper
-            // qualification, so these supplied-only stops cannot occur here;
-            // they still map to an error, never to an answer.
             Err(SuppliedAdmissionError::Capacity { request, .. }) => {
                 Err(StorageFailure::Capacity(request))
             }
+            // `admits_walk` invokes the callback only for event requests;
+            // this call passes `|_, _| Ok(())`, and its wrapper ignores every
+            // qualification boundary. It cannot construct any of these three
+            // supplied-only stops. This arm only exhausts the shared type.
             Err(
                 SuppliedAdmissionError::Limit { .. }
                 | SuppliedAdmissionError::Cancelled { .. }
