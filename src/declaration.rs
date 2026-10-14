@@ -2185,6 +2185,10 @@ impl TypeEnvironment {
                 membership::MembershipBoundary::AfterHelper(event, locus) => {
                     budget.check_cancel(event, locus, cancel)
                 }
+                membership::MembershipBoundary::RequiresQualification(family, event, locus) => {
+                    budget.check_cancel(event, locus, cancel)?;
+                    Err(SuppliedAdmissionError::UnsupportedHelper { family, locus })
+                }
             },
             reservation,
         )
@@ -2233,14 +2237,16 @@ impl TypeEnvironment {
             Err(SuppliedAdmissionError::Allocation { request, .. }) => {
                 Err(StorageFailure::Allocation(request))
             }
-            // The no-op callback never stops the walk, so a limit or a
-            // cancellation cannot occur here; they are still mapped to an
-            // error, never to an answer.
+            // The no-op callback neither stops nor enforces helper
+            // qualification, so these supplied-only stops cannot occur here;
+            // they still map to an error, never to an answer.
             Err(SuppliedAdmissionError::Capacity { request, .. }) => {
                 Err(StorageFailure::Capacity(request))
             }
             Err(
-                SuppliedAdmissionError::Limit { .. } | SuppliedAdmissionError::Cancelled { .. },
+                SuppliedAdmissionError::Limit { .. }
+                | SuppliedAdmissionError::Cancelled { .. }
+                | SuppliedAdmissionError::UnsupportedHelper { .. },
             ) => Err(StorageFailure::Capacity(StorageRequest::new(
                 0,
                 StorageUnit::AdditionalElements,

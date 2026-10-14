@@ -369,6 +369,16 @@ pub enum InvalidMembershipCause {
     ForeignPath,
 }
 
+/// A helper family whose supplied-admission cost and storage bounds are not
+/// yet qualified by its owning contract.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum UnsupportedHelperFamily {
+    /// Decimal-domain membership can allocate while comparing coefficients.
+    DecimalDomain,
+    /// Union payload and descriptor admission awaits its owning public shape.
+    UnionPayloadDescriptor,
+}
+
 /// A typed stop from the supplied-admission phase.
 ///
 /// `Cause` is the owning supported family's invalid-membership cause. A
@@ -381,6 +391,13 @@ pub enum SuppliedAdmissionError<Cause = InvalidMembershipCause> {
         /// The failed membership rule.
         cause: Cause,
         /// Where the rule failed.
+        locus: MembershipLocus,
+    },
+    /// A required helper has no qualified supplied-admission contract yet.
+    UnsupportedHelper {
+        /// The owning helper family that remains an implementation dependency.
+        family: UnsupportedHelperFamily,
+        /// The boundary before that helper would run.
         locus: MembershipLocus,
     },
     /// The next one-unit event would exceed the caller's ceiling.

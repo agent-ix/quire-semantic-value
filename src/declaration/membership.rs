@@ -18,7 +18,7 @@ use quire_exact::{Value, ValueType};
 use super::{reserve_elements, ReservationPolicy, StorageFailure, TypeEnvironment};
 use crate::supplied_membership::{
     InvalidMembershipCause, MembershipEvent, MembershipLocus, MembershipPart, MembershipPathArena,
-    PathAppendError, PathStep, PathToken, SuppliedAdmissionError,
+    PathAppendError, PathStep, PathToken, SuppliedAdmissionError, UnsupportedHelperFamily,
 };
 
 /// A logical event request or a response boundary after its indivisible
@@ -28,6 +28,8 @@ pub(super) enum MembershipBoundary {
     Event(MembershipEvent, MembershipLocus),
     /// Poll cancellation after an indivisible helper without another charge.
     AfterHelper(MembershipEvent, MembershipLocus),
+    /// Refuse an unqualified helper in supplied admission before calling it.
+    RequiresQualification(UnsupportedHelperFamily, MembershipEvent, MembershipLocus),
 }
 
 type Callback<'f, Cause> =
@@ -151,6 +153,16 @@ fn same_type_walk<Cause: From<InvalidMembershipCause>>(
             MembershipEvent::TypeLinkComparison,
             at,
         ))?;
+        if matches!(
+            (left, right),
+            (ValueType::Decimal(_), ValueType::Decimal(_))
+        ) {
+            on_boundary(MembershipBoundary::RequiresQualification(
+                UnsupportedHelperFamily::DecimalDomain,
+                MembershipEvent::TypeLinkComparison,
+                at,
+            ))?;
+        }
         let step = match (left, right) {
             (ValueType::Option(a), ValueType::Option(b)) => TypeStep::Continue(a, b),
             (ValueType::Collection(a), ValueType::Collection(b)) => {
@@ -200,7 +212,8 @@ impl TypeEnvironment {
             at,
             &mut |boundary| match boundary {
                 MembershipBoundary::Event(event, locus) => on_event(event, locus),
-                MembershipBoundary::AfterHelper(..) => Ok(()),
+                MembershipBoundary::AfterHelper(..)
+                | MembershipBoundary::RequiresQualification(..) => Ok(()),
             },
             reservation,
         )
@@ -283,6 +296,11 @@ impl TypeEnvironment {
                 }
             }
             (ValueType::Composite(_), Value::Union(_)) => {
+                on_boundary(MembershipBoundary::RequiresQualification(
+                    UnsupportedHelperFamily::UnionPayloadDescriptor,
+                    MembershipEvent::ValueVisit,
+                    here,
+                ))?;
                 return Err(invalid(InvalidMembershipCause::UnsupportedUnion, here));
             }
             (ValueType::Option(payload), Value::Option(option)) => {
@@ -336,6 +354,16 @@ impl TypeEnvironment {
                 }
             }
             _ => {
+                if matches!(
+                    (expected, value),
+                    (ValueType::Decimal(_), Value::Decimal(_))
+                ) {
+                    on_boundary(MembershipBoundary::RequiresQualification(
+                        UnsupportedHelperFamily::DecimalDomain,
+                        MembershipEvent::ValueVisit,
+                        here,
+                    ))?;
+                }
                 let admitted = expected.admits(value);
                 on_boundary(MembershipBoundary::AfterHelper(
                     MembershipEvent::ValueVisit,
@@ -371,8 +399,9 @@ mod tests {
 
     use ix_trace_rs::trace;
     use quire_exact::{
-        from_admitted, Cancel, CancelCause, CollectionKind, CollectionType, EffectiveId, Integer,
-        ObjectId, ObjectReference, OptionValue, UniverseId,
+        from_admitted, Cancel, CancelCause, CollectionKind, CollectionType, Decimal, DecimalType,
+        EffectiveId, Identifier, Integer, NodeKey, ObjectId, ObjectReference, OptionValue,
+        RoundingMode, UnionMember, UnionValue, UniverseId,
     };
 
     use super::*;
@@ -380,7 +409,7 @@ mod tests {
         CompositeDeclaration, GlobalReservations, ObjectTypeDeclaration, StorageRequest,
         StorageUnit,
     };
-    use crate::supplied_membership::SuppliedMembershipBudget;
+    use crate::supplied_membership::{SuppliedMembershipBudget, UnsupportedHelperFamily};
 
     type Stop = SuppliedAdmissionError<InvalidMembershipCause>;
 
@@ -997,6 +1026,116 @@ mod tests {
             result,
             Err(Stop::Invalid {
                 cause: InvalidMembershipCause::Kind,
+                locus: at,
+            })
+        );
+        assert_eq!(budget.spent(), 1);
+    }
+
+    /// The supplied API stops before the bool-only Decimal domain helper,
+    /// both at a direct value and at a retained nested type comparison.
+    /// Trace: FR-109-AC-7
+    #[trace("TC-908", "FR-109-AC-7")]
+    #[test]
+    fn supplied_api_reports_unqualified_decimal_before_the_helper() {
+        let decimal_type = ValueType::Decimal(
+            DecimalType::new(
+                Integer::zero(),
+                Integer::from(100_i64),
+                2,
+                2,
+                RoundingMode::Exact,
+            )
+            .expect("bounded decimal fixture"),
+        );
+        let decimal = Value::Decimal(Decimal::new(Integer::one(), 0));
+        let cancel = Cancel::new();
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(0),
+            part: Occurrence,
+        };
+        let mut budget = SuppliedMembershipBudget::new(4);
+        assert_eq!(
+            environment().admit_supplied::<InvalidMembershipCause>(
+                &decimal_type,
+                &decimal,
+                &mut arena,
+                at,
+                &mut budget,
+                &cancel,
+            ),
+            Err(Stop::UnsupportedHelper {
+                family: UnsupportedHelperFamily::DecimalDomain,
+                locus: at,
+            })
+        );
+        assert_eq!(budget.spent(), 1);
+
+        let mut nested_arena = MembershipPathArena::new().expect("arena");
+        let nested_at = MembershipLocus {
+            path: nested_arena.root(1),
+            part: Occurrence,
+        };
+        let mut nested_budget = SuppliedMembershipBudget::new(4);
+        let nested_value = OptionValue::from_admitted(decimal_type.clone(), None);
+        assert_eq!(
+            environment().admit_supplied::<InvalidMembershipCause>(
+                &ValueType::option(decimal_type),
+                &nested_value,
+                &mut nested_arena,
+                nested_at,
+                &mut nested_budget,
+                &cancel,
+            ),
+            Err(Stop::UnsupportedHelper {
+                family: UnsupportedHelperFamily::DecimalDomain,
+                locus: MembershipLocus {
+                    path: nested_at.path,
+                    part: MembershipPart::TypeLink(0)
+                },
+            })
+        );
+        assert_eq!(nested_budget.spent(), 2);
+    }
+
+    /// Union descriptor/payload admission remains a typed dependency, not an
+    /// invalid composite, until the owning public union contract is available.
+    /// Trace: FR-109-AC-7
+    #[trace("TC-908", "FR-109-AC-7")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked composite identities without minting them in production"
+    )]
+    #[test]
+    fn supplied_api_reports_unqualified_union_before_payload_admission() {
+        let declaration = NodeKey::from_digest([10; 32]);
+        let member = NodeKey::from_digest([11; 32]);
+        let value = UnionValue::from_admitted(
+            UnionMember::from_admitted(
+                declaration,
+                member,
+                Identifier::new("m").expect("identifier"),
+            ),
+            vec![integer(1)],
+        );
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(0),
+            part: Occurrence,
+        };
+        let mut budget = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied::<InvalidMembershipCause>(
+                &ValueType::Composite(declaration),
+                &value,
+                &mut arena,
+                at,
+                &mut budget,
+                &Cancel::new(),
+            ),
+            Err(Stop::UnsupportedHelper {
+                family: UnsupportedHelperFamily::UnionPayloadDescriptor,
                 locus: at,
             })
         );
