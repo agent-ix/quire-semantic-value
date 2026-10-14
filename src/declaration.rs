@@ -2139,6 +2139,23 @@ impl TypeEnvironment {
         Ok(self.admits_checked(value_type, value)?)
     }
 
+    /// [`Self::admits`] for the evaluator callers, whose kernel `Stop` has no
+    /// storage-failure channel (a typed one needs a storage variant in
+    /// `quire-exact`'s `Stop` or `CheckedInvariantCause`). A failed worklist
+    /// reservation is a real allocator failure here, and it aborts as the
+    /// infallible worklist growth did before the seam. It is never reported as
+    /// a value that is not admitted.
+    fn admits_or_abort(&self, value_type: &ValueType, value: &Value) -> bool {
+        match self.admits_checked(value_type, value) {
+            Ok(admitted) => admitted,
+            Err(StorageFailure::Allocation(request) | StorageFailure::Capacity(request)) => {
+                let layout =
+                    Layout::array::<usize>(request.amount()).unwrap_or(Layout::new::<usize>());
+                alloc::alloc::handle_alloc_error(layout)
+            }
+        }
+    }
+
     /// [`Self::admits`] reporting only the storage classifications its
     /// reservations can produce, for callers that map them to their own
     /// refusal.
@@ -2147,12 +2164,7 @@ impl TypeEnvironment {
         value_type: &ValueType,
         value: &Value,
     ) -> Result<bool, StorageFailure> {
-        let mut arena = MembershipPathArena::new().map_err(|capacity| {
-            StorageFailure::Capacity(StorageRequest::new(
-                capacity.requested,
-                StorageUnit::AdditionalElements,
-            ))
-        })?;
+        let mut arena = MembershipPathArena::scoped();
         let at = MembershipLocus {
             path: arena.root(0),
             part: MembershipPart::Value,
@@ -3863,9 +3875,7 @@ fn admitted(
     outcome: Outcome<Value>,
 ) -> Result<Value, Stop> {
     let value = outcome_into_stop(outcome)?;
-    // The kernel `Stop` has no storage-failure channel, so a failed admission
-    // reservation is reported with the same checked invariant as a refusal.
-    if matches!(types.admits_checked(value_type, &value), Ok(true)) {
+    if types.admits_or_abort(value_type, &value) {
         Ok(value)
     } else {
         Err(invariant(CheckedInvariantCause::DeferredResultNotAdmitted))
@@ -4741,9 +4751,7 @@ pub fn operand_value(
     // compares only the identity triple, so the kind check is sufficient.
     let admitted = match (&operand.source, value) {
         (ValueType::Reference(_), value) => matches!(value, Value::Reference(_)),
-        // The kernel `Stop` has no storage-failure channel, so a failed
-        // admission reservation is reported as the same checked invariant.
-        (source, value) => matches!(types.admits_checked(source, value), Ok(true)),
+        (source, value) => types.admits_or_abort(source, value),
     };
     if !admitted {
         return Err(invariant(

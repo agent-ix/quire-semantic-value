@@ -79,6 +79,22 @@ impl<'a, R: ReservationPolicy> Frontier<'_, 'a, R> {
     }
 }
 
+/// The cause of a failed kernel leaf admission, from what the kernel compared:
+/// a value of another kind, a value outside the declared domain of its own
+/// kind, a retained type that differs, or an enum rank the shape does not hold.
+fn leaf_cause(expected: &ValueType, value: &Value) -> InvalidMembershipCause {
+    match (expected, value) {
+        (ValueType::Int(_), Value::Integer(_))
+        | (ValueType::Rational(_), Value::Rational(_))
+        | (ValueType::Decimal(_), Value::Decimal(_)) => InvalidMembershipCause::Payload,
+        (ValueType::Float(_), Value::Float(_))
+        | (ValueType::Quantity(_), Value::Quantity(_))
+        | (ValueType::Text(_), Value::Text(_)) => InvalidMembershipCause::Type,
+        (ValueType::Enum(_), Value::Enum(_)) => InvalidMembershipCause::Member,
+        _ => InvalidMembershipCause::Kind,
+    }
+}
+
 fn invalid<Cause: From<InvalidMembershipCause>>(
     cause: InvalidMembershipCause,
     locus: MembershipLocus,
@@ -228,7 +244,7 @@ impl TypeEnvironment {
             }
             _ => {
                 if !expected.admits(value) {
-                    return Err(invalid(InvalidMembershipCause::LeafMembership, here));
+                    return Err(invalid(leaf_cause(expected, value), here));
                 }
             }
         }
@@ -371,8 +387,8 @@ mod tests {
     /// The exact event stream of the nested value: each event fires once per
     /// actual step, the initial type pair has its own event, children are
     /// scheduled in push order with their true ordinal, and visits run forward.
-    /// Trace: FR-109-AC-1, FR-109-AC-2
-    #[trace("TC-908", "FR-109-AC-1", "FR-109-AC-2")]
+    /// Trace: FR-109-AC-1
+    #[trace("TC-908", "FR-109-AC-1")]
     #[test]
     fn event_stream_for_a_nested_value_is_exact() {
         let (expected, value) = nested();
@@ -466,6 +482,29 @@ mod tests {
             let (part, steps) = walked.describe(locus);
             assert_eq!((part, steps), (full[index].1, full[index].2.clone()));
         }
+    }
+
+    /// Removing the denial yields the walk's full outcome again.
+    /// Trace: FR-109-AC-5
+    #[trace("TC-908", "FR-109-AC-5")]
+    #[test]
+    fn retry_after_removing_the_denial_yields_the_same_outcome() {
+        let (expected, value) = nested();
+        let full = run(&expected, &value);
+        let denied = run_with(&expected, &value, Some(8), &GlobalReservations);
+        assert!(denied.result.is_err());
+        let policy = DenyAll {
+            seen: Cell::new(None),
+        };
+        let reservation_denied = run_with(&expected, &value, None, &policy);
+        assert!(matches!(
+            reservation_denied.result,
+            Err(Stop::Allocation { .. })
+        ));
+        let retried = run(&expected, &value);
+        assert_eq!(retried.result, Ok(()));
+        assert_eq!(retried.result, full.result);
+        assert_eq!(retried.seen(), full.seen());
     }
 
     /// A limit stop from the callback also passes through unchanged.
@@ -579,7 +618,7 @@ mod tests {
         assert_eq!(
             invalid(&leaf),
             (
-                InvalidMembershipCause::LeafMembership,
+                InvalidMembershipCause::Kind,
                 Occurrence,
                 vec![CollectionElement(1)]
             )

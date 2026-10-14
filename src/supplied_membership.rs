@@ -125,6 +125,10 @@ pub struct PathArenaCapacity {
 
 static NEXT_ARENA_ID: AtomicUsize = AtomicUsize::new(0);
 
+/// The id of every arena made by [`MembershipPathArena::scoped`]. The process
+/// counter never issues it: its last issued value is `usize::MAX - 1`.
+const SCOPED_ARENA_ID: usize = usize::MAX;
+
 fn next_arena_id(counter: &AtomicUsize) -> Result<usize, PathArenaCapacity> {
     counter
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
@@ -150,6 +154,18 @@ impl MembershipPathArena {
             id,
             nodes: Vec::new(),
         })
+    }
+
+    /// Create an arena for a walk that keeps every token to itself.
+    ///
+    /// It takes no process id, so it cannot exhaust the counter. Its tokens
+    /// never leave the walk that made them. They resolve in no arena from
+    /// [`Self::new`], and no such token resolves in a scoped arena.
+    pub(crate) const fn scoped() -> Self {
+        Self {
+            id: SCOPED_ARENA_ID,
+            nodes: Vec::new(),
+        }
     }
 
     /// Name one supplied argument without allocating path storage.
@@ -287,8 +303,6 @@ pub enum InvalidMembershipCause {
     Member,
     /// A required payload differs from its admitted shape or type.
     Payload,
-    /// A leaf value is not a member of its declared leaf type.
-    LeafMembership,
     /// A reference's object type does not conform to the declared object type.
     ReferenceConformance,
     /// A composite value's declaration does not conform to the declared one.
@@ -443,10 +457,26 @@ mod tests {
         next_arena_id, InvalidMembershipCause, MembershipEvent, MembershipLocus, MembershipPart,
         MembershipPathArena, PathAppendError, PathArenaCapacity, PathArenaCapacityUnit, PathStep,
         PathToken, SuppliedAdmissionError, SuppliedAdmissionPhase, SuppliedMembershipBudget,
+        SCOPED_ARENA_ID,
     };
 
     fn locus(path: PathToken, part: MembershipPart) -> MembershipLocus {
         MembershipLocus { path, part }
+    }
+
+    /// Trace: FR-109-AC-5
+    #[ix_trace_rs::trace("TC-908", "FR-109-AC-5")]
+    #[test]
+    fn scoped_arena_takes_no_process_id_and_shares_none_with_issued_arenas() {
+        let counter = AtomicUsize::new(usize::MAX - 1);
+        assert_eq!(next_arena_id(&counter), Ok(usize::MAX - 1));
+        assert_ne!(next_arena_id(&counter), Ok(SCOPED_ARENA_ID));
+        let scoped = MembershipPathArena::scoped();
+        let issued = MembershipPathArena::new().unwrap();
+        let part = MembershipPart::Value;
+        assert!(scoped.resolve(locus(scoped.root(0), part)).is_some());
+        assert!(scoped.resolve(locus(issued.root(0), part)).is_none());
+        assert!(issued.resolve(locus(scoped.root(0), part)).is_none());
     }
 
     /// Trace: FR-109-AC-5
