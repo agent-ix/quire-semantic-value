@@ -166,8 +166,6 @@ impl MembershipPathArena {
     /// `permit` sees the measured native reservation only when the vector
     /// must grow. A false response represents a real reservation denial,
     /// separately from checked capacity failure and allocator refusal.
-    // The #12 traversal integration is the production caller for this staged carrier.
-    #[allow(dead_code)]
     pub(crate) fn append_child<Cause>(
         &mut self,
         parent: PathToken,
@@ -289,6 +287,17 @@ pub enum InvalidMembershipCause {
     Member,
     /// A required payload differs from its admitted shape or type.
     Payload,
+    /// A leaf value is not a member of its declared leaf type.
+    LeafMembership,
+    /// A reference's object type does not conform to the declared object type.
+    ReferenceConformance,
+    /// A composite value's declaration does not conform to the declared one.
+    CompositeConformance,
+    /// A union value was supplied against a composite type, which has no union
+    /// declaration here.
+    UnsupportedUnion,
+    /// The starting locus names another invocation's arena, so no path exists.
+    ForeignPath,
 }
 
 /// A typed stop from the supplied-admission phase.
