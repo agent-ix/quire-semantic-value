@@ -249,25 +249,49 @@ impl MembershipPathArena {
         locus: MembershipLocus,
         permit: &mut impl FnMut(StorageRequest) -> bool,
     ) -> Result<PathToken, SuppliedAdmissionError<Cause>> {
-        let request = StorageRequest::new(1, StorageUnit::AdditionalElements);
+        let one = StorageRequest::new(1, StorageUnit::AdditionalElements);
         let required = self
             .nodes
             .len()
             .checked_add(1)
-            .ok_or(SuppliedAdmissionError::Capacity { request, locus })?;
-        let layout = Layout::array::<PathNode>(required)
-            .map_err(|_| SuppliedAdmissionError::Capacity { request, locus })?;
+            .ok_or(SuppliedAdmissionError::Capacity {
+                request: one,
+                locus,
+            })?;
+        let layout =
+            Layout::array::<PathNode>(required).map_err(|_| SuppliedAdmissionError::Capacity {
+                request: one,
+                locus,
+            })?;
         if layout.size() > isize::MAX as usize {
-            return Err(SuppliedAdmissionError::Capacity { request, locus });
+            return Err(SuppliedAdmissionError::Capacity {
+                request: one,
+                locus,
+            });
         }
         if required > self.nodes.capacity() {
+            // Amortize path growth while keeping the requested additional
+            // elements exactly equal to the fallible Vec reservation. If
+            // doubling is not representable, reserve only the required node.
+            let doubled = self
+                .nodes
+                .capacity()
+                .checked_mul(2)
+                .unwrap_or(required)
+                .max(required);
+            let target = match Layout::array::<PathNode>(doubled) {
+                Ok(layout) if layout.size() <= isize::MAX as usize => doubled,
+                _ => required,
+            };
+            let additional = target - self.nodes.len();
+            let request = StorageRequest::new(additional, StorageUnit::AdditionalElements);
             if !permit(request) {
                 return Err(SuppliedAdmissionError::Allocation { request, locus });
             }
             #[cfg(test)]
             let previous_capacity = self.nodes.capacity();
             self.nodes
-                .try_reserve_exact(1)
+                .try_reserve_exact(additional)
                 .map_err(|_| SuppliedAdmissionError::Allocation { request, locus })?;
             #[cfg(test)]
             if let Some(probe) = &mut self.growth_probe {
