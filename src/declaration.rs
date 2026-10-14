@@ -79,6 +79,13 @@ use quire_exact::EnumShape;
 use quire_exact::NodeKey;
 use quire_exact::{compare_text, evaluate_decimal};
 
+use crate::supplied_membership::{
+    InvalidMembershipCause, MembershipLocus, MembershipPart, MembershipPathArena,
+    SuppliedAdmissionError,
+};
+
+mod membership;
+
 /// One object-type field's identity: the object type that declares it and
 /// its declared name (QSpec FR-151 field redefinition names its target this way).
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -148,7 +155,7 @@ mod storage_reservation_tests {
         let mut values: Vec<u8> = Vec::new();
         assert_eq!(
             reserve_elements(&mut values, usize::MAX, &GlobalReservations),
-            Err(EnvironmentFailure::Capacity(StorageRequest::new(
+            Err(StorageFailure::Capacity(StorageRequest::new(
                 usize::MAX,
                 StorageUnit::AdditionalElements,
             )))
@@ -617,8 +624,22 @@ pub enum ConstructionCause {
     },
     /// A value that is not a member of the declared type.
     TypeMismatch,
+    /// A representable admission worklist reservation was denied, so
+    /// membership was not decided.
+    StorageDenied(StorageRequest),
+    /// Admission worklist size arithmetic overflowed, so membership was not
+    /// decided.
+    StorageCapacity(StorageRequest),
 }
 
+impl From<StorageFailure> for ConstructionCause {
+    fn from(failure: StorageFailure) -> Self {
+        match failure {
+            StorageFailure::Allocation(request) => Self::StorageDenied(request),
+            StorageFailure::Capacity(request) => Self::StorageCapacity(request),
+        }
+    }
+}
 /// A typed construction refusal at its originating component.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, thiserror::Error)]
 #[error("construction refused at {component:?}: {cause:?}")]
@@ -689,10 +710,14 @@ pub fn fill_slots<F: AsRef<FieldDeclaration>, D: Clone + IntoIterator<Item = F>>
             (FieldValue::Null, Presence::Required) => {
                 return refuse(component(), ConstructionCause::NullForRequiredField)
             }
-            (FieldValue::Present(value), _) if !types.admits(&field.value_type, value) => {
-                return refuse(component(), ConstructionCause::TypeMismatch)
+            (FieldValue::Present(value), _) => {
+                match types.admits_checked(&field.value_type, value) {
+                    Ok(true) => {}
+                    Ok(false) => return refuse(component(), ConstructionCause::TypeMismatch),
+                    Err(failure) => return refuse(component(), failure.into()),
+                }
             }
-            (FieldValue::Present(_) | FieldValue::Absent | FieldValue::Null, _) => {}
+            (FieldValue::Absent | FieldValue::Null, _) => {}
         }
         slots.push(slot);
     }
@@ -1489,29 +1514,48 @@ impl ReservationPolicy for GlobalReservations {
     }
 }
 
+/// A reservation that produced no storage: the two classifications every
+/// checked reservation distinguishes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StorageFailure {
+    /// A representable reservation was denied.
+    Allocation(StorageRequest),
+    /// Reservation size arithmetic or representation overflowed.
+    Capacity(StorageRequest),
+}
+
+impl From<StorageFailure> for EnvironmentFailure {
+    fn from(failure: StorageFailure) -> Self {
+        match failure {
+            StorageFailure::Allocation(request) => Self::Allocation(request),
+            StorageFailure::Capacity(request) => Self::Capacity(request),
+        }
+    }
+}
+
 fn reserve_elements<T, R: ReservationPolicy>(
     values: &mut Vec<T>,
     additional: usize,
     policy: &R,
-) -> Admission<()> {
+) -> Result<(), StorageFailure> {
     let request = StorageRequest::new(additional, StorageUnit::AdditionalElements);
     let required = values
         .len()
         .checked_add(additional)
-        .ok_or(EnvironmentFailure::Capacity(request))?;
-    let layout = Layout::array::<T>(required).map_err(|_| EnvironmentFailure::Capacity(request))?;
+        .ok_or(StorageFailure::Capacity(request))?;
+    let layout = Layout::array::<T>(required).map_err(|_| StorageFailure::Capacity(request))?;
     if layout.size() > isize::MAX as usize {
-        return Err(EnvironmentFailure::Capacity(request));
+        return Err(StorageFailure::Capacity(request));
     }
     if required <= values.capacity() {
         return Ok(());
     }
     if !policy.permit(request) {
-        return Err(EnvironmentFailure::Allocation(request));
+        return Err(StorageFailure::Allocation(request));
     }
     values
         .try_reserve_exact(additional)
-        .map_err(|_| EnvironmentFailure::Allocation(request))
+        .map_err(|_| StorageFailure::Allocation(request))
 }
 
 fn try_push<T, R: ReservationPolicy>(values: &mut Vec<T>, value: T, policy: &R) -> Admission<()> {
@@ -2085,47 +2129,72 @@ impl TypeEnvironment {
     /// collection, is the exact kernel [`ValueType::admits`], so admission is
     /// never covariant over a type constructor. The answer carries no cause
     /// and charges no work: the callers that hold the value own its
-    /// accounting.
-    pub fn admits(&self, value_type: &ValueType, value: &Value) -> bool {
-        let mut pending = vec![(value_type, value)];
-        while let Some((declared, value)) = pending.pop() {
-            match (declared, value) {
-                (ValueType::Reference(object_type), Value::Reference(reference)) => {
-                    if !self.conforms(reference.object_type(), *object_type) {
-                        return false;
-                    }
-                }
-                (ValueType::Composite(declaration), Value::Composite(composite)) => {
-                    if !self.composite_conforms(composite.declaration(), *declaration) {
-                        return false;
-                    }
-                }
-                (ValueType::Option(payload), Value::Option(option)) => {
-                    if !declared.admits(value) {
-                        return false;
-                    }
-                    if let Some(present) = option.payload() {
-                        pending.push((&**payload, present));
-                    }
-                }
-                (ValueType::Collection(collection_type), Value::Collection(collection)) => {
-                    if !declared.admits(value) {
-                        return false;
-                    }
-                    let element = collection_type.element();
-                    pending.extend(collection.elements().iter().map(|held| (element, held)));
-                }
-                // QSV declares only record and tuple composites, so a union
-                // value has no declaration to be admitted against.
-                (ValueType::Composite(_), Value::Union(_)) => return false,
-                _ => {
-                    if !declared.admits(value) {
-                        return false;
-                    }
-                }
+    /// accounting. A refused reservation is an error, never `false`; the
+    /// cause-carrying, event-by-event form is `admits_walk`.
+    pub fn admits(
+        &self,
+        value_type: &ValueType,
+        value: &Value,
+    ) -> Result<bool, EnvironmentFailure> {
+        Ok(self.admits_checked(value_type, value)?)
+    }
+
+    /// [`Self::admits`] for the evaluator callers, whose kernel `Stop` has no
+    /// storage-failure channel (a typed one needs a storage variant in
+    /// `quire-exact`'s `Stop` or `CheckedInvariantCause`). A failed worklist
+    /// reservation is a real allocator failure here, and it aborts as the
+    /// infallible worklist growth did before the seam. It is never reported as
+    /// a value that is not admitted.
+    fn admits_or_abort(&self, value_type: &ValueType, value: &Value) -> bool {
+        match self.admits_checked(value_type, value) {
+            Ok(admitted) => admitted,
+            Err(StorageFailure::Allocation(request) | StorageFailure::Capacity(request)) => {
+                let layout =
+                    Layout::array::<usize>(request.amount()).unwrap_or(Layout::new::<usize>());
+                alloc::alloc::handle_alloc_error(layout)
             }
         }
-        true
+    }
+
+    /// [`Self::admits`] reporting only the storage classifications its
+    /// reservations can produce, for callers that map them to their own
+    /// refusal.
+    fn admits_checked(
+        &self,
+        value_type: &ValueType,
+        value: &Value,
+    ) -> Result<bool, StorageFailure> {
+        let mut arena = MembershipPathArena::scoped();
+        let at = MembershipLocus {
+            path: arena.root(0),
+            part: MembershipPart::Value,
+        };
+        match self.admits_walk::<InvalidMembershipCause>(
+            value_type,
+            value,
+            &mut arena,
+            at,
+            &mut |_, _| Ok(()),
+            &GlobalReservations,
+        ) {
+            Ok(()) => Ok(true),
+            Err(SuppliedAdmissionError::Invalid { .. }) => Ok(false),
+            Err(SuppliedAdmissionError::Allocation { request, .. }) => {
+                Err(StorageFailure::Allocation(request))
+            }
+            // The no-op callback never stops the walk, so a limit or a
+            // cancellation cannot occur here; they are still mapped to an
+            // error, never to an answer.
+            Err(SuppliedAdmissionError::Capacity { request, .. }) => {
+                Err(StorageFailure::Capacity(request))
+            }
+            Err(
+                SuppliedAdmissionError::Limit { .. } | SuppliedAdmissionError::Cancelled { .. },
+            ) => Err(StorageFailure::Capacity(StorageRequest::new(
+                0,
+                StorageUnit::AdditionalElements,
+            ))),
+        }
     }
 
     /// Check a type named outside a declaration (a parameter or result type):
@@ -3301,15 +3370,17 @@ impl TypeEnvironment {
         positions: Vec<Value>,
     ) -> Result<Value, ConstructionRefusal> {
         let declared = self.tuple_positions(declaration, positions.len())?;
-        if let Some(position) = declared
-            .iter()
-            .zip(&positions)
-            .position(|(value_type, value)| !self.admits(value_type, value))
-        {
-            return refuse(
-                Component::Position(position),
-                ConstructionCause::TypeMismatch,
-            );
+        for (position, (value_type, value)) in declared.iter().zip(&positions).enumerate() {
+            match self.admits_checked(value_type, value) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return refuse(
+                        Component::Position(position),
+                        ConstructionCause::TypeMismatch,
+                    )
+                }
+                Err(failure) => return refuse(Component::Position(position), failure.into()),
+            }
         }
         let slots = positions.into_iter().map(FieldValue::Present).collect();
         Ok(composite(declaration, slots))
@@ -3804,7 +3875,7 @@ fn admitted(
     outcome: Outcome<Value>,
 ) -> Result<Value, Stop> {
     let value = outcome_into_stop(outcome)?;
-    if types.admits(value_type, &value) {
+    if types.admits_or_abort(value_type, &value) {
         Ok(value)
     } else {
         Err(invariant(CheckedInvariantCause::DeferredResultNotAdmitted))
@@ -4232,12 +4303,24 @@ mod native_type_tests {
                 &UnitScope::new(types.units()),
             ));
         }
-        assert!(types.admits(&ValueType::Uuid, &uuid));
-        assert!(types.admits(&ValueType::Timestamp, &timestamp));
-        assert!(!types.admits(&ValueType::Uuid, &timestamp));
-        assert!(!types.admits(&ValueType::Timestamp, &uuid));
-        assert!(!types.admits(&ValueType::Uuid, &Value::Integer(Integer::one())));
-        assert!(!types.admits(&ValueType::Timestamp, &Value::Integer(Integer::one())));
+        assert!(types
+            .admits(&ValueType::Uuid, &uuid)
+            .expect("admission reserves storage"));
+        assert!(types
+            .admits(&ValueType::Timestamp, &timestamp)
+            .expect("admission reserves storage"));
+        assert!(!types
+            .admits(&ValueType::Uuid, &timestamp)
+            .expect("admission reserves storage"));
+        assert!(!types
+            .admits(&ValueType::Timestamp, &uuid)
+            .expect("admission reserves storage"));
+        assert!(!types
+            .admits(&ValueType::Uuid, &Value::Integer(Integer::one()))
+            .expect("admission reserves storage"));
+        assert!(!types
+            .admits(&ValueType::Timestamp, &Value::Integer(Integer::one()))
+            .expect("admission reserves storage"));
     }
 
     /// Native String has exact scalar-sequence equality and never inherits Text normalization.
@@ -4251,10 +4334,18 @@ mod native_type_tests {
 
         assert_eq!(types.check_type(&ValueType::String), Ok(()));
         assert!(!types.contains_ieee(&ValueType::String));
-        assert!(types.admits(&ValueType::String, &decomposed));
-        assert!(!types.admits(&ValueType::String, &composed_as_text()));
-        assert!(!types.admits(&ValueType::Text(text_type()), &decomposed));
-        assert!(types.admits(&ValueType::String, &equal_copy));
+        assert!(types
+            .admits(&ValueType::String, &decomposed)
+            .expect("admission reserves storage"));
+        assert!(!types
+            .admits(&ValueType::String, &composed_as_text())
+            .expect("admission reserves storage"));
+        assert!(!types
+            .admits(&ValueType::Text(text_type()), &decomposed)
+            .expect("admission reserves storage"));
+        assert!(types
+            .admits(&ValueType::String, &equal_copy)
+            .expect("admission reserves storage"));
 
         let enum_members = EnumMemberIndex::default();
         let equality = types
@@ -4336,7 +4427,9 @@ mod native_type_tests {
             composite.slots(),
             [FieldValue::Present(Value::String(text))] if text.as_str() == "hello"
         ));
-        assert!(types.admits(&ValueType::Composite(record), &value));
+        assert!(types
+            .admits(&ValueType::Composite(record), &value)
+            .expect("admission reserves storage"));
     }
 
     /// A union value is never admitted at a record or tuple composite type,
@@ -4398,12 +4491,16 @@ mod native_type_tests {
         };
         for key in [record, tuple] {
             let value = union_at(key);
-            assert!(!types.admits(&ValueType::Composite(key), &value));
-            assert!(!types.admits(
-                &ValueType::option(ValueType::Composite(key)),
-                &quire_exact::OptionValue::present(ValueType::Composite(key), value.clone())
-                    .expect("option payload type matches")
-            ));
+            assert!(!types
+                .admits(&ValueType::Composite(key), &value)
+                .expect("admission reserves storage"));
+            assert!(!types
+                .admits(
+                    &ValueType::option(ValueType::Composite(key)),
+                    &quire_exact::OptionValue::present(ValueType::Composite(key), value.clone())
+                        .expect("option payload type matches")
+                )
+                .expect("admission reserves storage"));
         }
         let refusal = types
             .record(
@@ -4487,13 +4584,21 @@ mod native_type_tests {
         assert!(types.composite_conforms(child, intermediate));
         assert!(types.composite_conforms(child, parent));
         assert!(!types.composite_conforms(parent, child));
-        assert!(types.admits(&ValueType::Composite(parent), &value));
-        assert!(types.admits(&ValueType::Composite(child), &value));
-        assert!(!types.admits(&ValueType::Composite(child), &record_value(&types, parent)));
-        assert!(!types.admits(
-            &ValueType::Composite(parent),
-            &record_value(&types, unrelated)
-        ));
+        assert!(types
+            .admits(&ValueType::Composite(parent), &value)
+            .expect("admission reserves storage"));
+        assert!(types
+            .admits(&ValueType::Composite(child), &value)
+            .expect("admission reserves storage"));
+        assert!(!types
+            .admits(&ValueType::Composite(child), &record_value(&types, parent))
+            .expect("admission reserves storage"));
+        assert!(!types
+            .admits(
+                &ValueType::Composite(parent),
+                &record_value(&types, unrelated)
+            )
+            .expect("admission reserves storage"));
         let Value::Composite(composite) = &value else {
             panic!("record construction returns a composite value");
         };
@@ -4646,7 +4751,7 @@ pub fn operand_value(
     // compares only the identity triple, so the kind check is sufficient.
     let admitted = match (&operand.source, value) {
         (ValueType::Reference(_), value) => matches!(value, Value::Reference(_)),
-        (source, value) => types.admits(source, value),
+        (source, value) => types.admits_or_abort(source, value),
     };
     if !admitted {
         return Err(invariant(
@@ -6309,14 +6414,20 @@ mod staged_admission_tests {
             &ValueType::Reference(id(4))
         );
         assert!(child_field.stands_for(&FieldRef::new(id(1), "f")));
-        assert!(completed.admits(parent_field.field().value_type(), &reference));
-        assert!(completed.admits(child_field.field().value_type(), &reference));
+        assert!(completed
+            .admits(parent_field.field().value_type(), &reference)
+            .expect("admission reserves storage"));
+        assert!(completed
+            .admits(child_field.field().value_type(), &reference)
+            .expect("admission reserves storage"));
         let unrelated = Value::Reference(ObjectReference::new(
             UniverseId::from_digest([7; 32]),
             id(5),
             ObjectId::new("other").expect("identity"),
         ));
-        assert!(!completed.admits(parent_field.field().value_type(), &unrelated));
+        assert!(!completed
+            .admits(parent_field.field().value_type(), &unrelated)
+            .expect("admission reserves storage"));
         let Value::Reference(actual) = reference else {
             panic!("reference fixture")
         };
@@ -6435,6 +6546,7 @@ mod ancestor_steps_tests {
 )]
 mod nested_conformance_tests {
     use super::*;
+    use crate::supplied_membership::MembershipEvent;
     use ix_trace_rs::trace;
     use quire_exact::{
         form, from_admitted, CollectionKind, CollectionType, ObjectId, ObjectReference,
@@ -6592,7 +6704,8 @@ mod nested_conformance_tests {
         let present = option(parent.clone(), Some(child.clone()));
         assert!(fx
             .types
-            .admits(&ValueType::option(parent.clone()), &present));
+            .admits(&ValueType::option(parent.clone()), &present)
+            .expect("admission reserves storage"));
 
         for kind in collection_kinds() {
             let value = collection(
@@ -6601,11 +6714,22 @@ mod nested_conformance_tests {
                 vec![intermediate.clone(), child.clone()],
             );
             let declared = ValueType::collection(collection_type(kind, parent.clone()));
-            assert!(fx.types.admits(&declared, &value), "{kind:?} of P");
+            assert!(
+                fx.types
+                    .admits(&declared, &value)
+                    .expect("admission reserves storage"),
+                "{kind:?} of P"
+            );
         }
         // The top-level `C` at `P` and `M` already passes.
-        assert!(fx.types.admits(&parent, &child));
-        assert!(fx.types.admits(&ValueType::Composite(fx.m), &child));
+        assert!(fx
+            .types
+            .admits(&parent, &child)
+            .expect("admission reserves storage"));
+        assert!(fx
+            .types
+            .admits(&ValueType::Composite(fx.m), &child)
+            .expect("admission reserves storage"));
     }
 
     /// A nonconforming element or payload, a reversed slot and a
@@ -6625,12 +6749,15 @@ mod nested_conformance_tests {
         let option_of_unrelated = option(parent.clone(), Some(unrelated.clone()));
         assert!(!fx
             .types
-            .admits(&ValueType::option(parent.clone()), &option_of_unrelated));
+            .admits(&ValueType::option(parent.clone()), &option_of_unrelated)
+            .expect("admission reserves storage"));
         for kind in collection_kinds() {
             let value = collection(kind, parent.clone(), vec![unrelated.clone()]);
             let declared = ValueType::collection(collection_type(kind, parent.clone()));
             assert!(
-                !fx.types.admits(&declared, &value),
+                !fx.types
+                    .admits(&declared, &value)
+                    .expect("admission reserves storage"),
                 "{kind:?} of P holding U"
             );
         }
@@ -6638,11 +6765,19 @@ mod nested_conformance_tests {
         // A `P` inside a container recorded and declared at `C` or `M`.
         for slot in [&child_type, &intermediate_type] {
             let held = option(slot.clone(), Some(plain.clone()));
-            assert!(!fx.types.admits(&ValueType::option(slot.clone()), &held));
+            assert!(!fx
+                .types
+                .admits(&ValueType::option(slot.clone()), &held)
+                .expect("admission reserves storage"));
             for kind in collection_kinds() {
                 let value = collection(kind, slot.clone(), vec![plain.clone()]);
                 let declared = ValueType::collection(collection_type(kind, slot.clone()));
-                assert!(!fx.types.admits(&declared, &value), "{kind:?} of {slot:?}");
+                assert!(
+                    !fx.types
+                        .admits(&declared, &value)
+                        .expect("admission reserves storage"),
+                    "{kind:?} of {slot:?}"
+                );
             }
         }
 
@@ -6650,7 +6785,8 @@ mod nested_conformance_tests {
         let option_of_child = option(child_type.clone(), Some(child.clone()));
         assert!(!fx
             .types
-            .admits(&ValueType::option(parent.clone()), &option_of_child));
+            .admits(&ValueType::option(parent.clone()), &option_of_child)
+            .expect("admission reserves storage"));
         let sequence_of_child = collection(
             CollectionKind::Sequence,
             child_type.clone(),
@@ -6658,13 +6794,17 @@ mod nested_conformance_tests {
         );
         let sequence_of_parent =
             ValueType::collection(collection_type(CollectionKind::Sequence, parent.clone()));
-        assert!(!fx.types.admits(&sequence_of_parent, &sequence_of_child));
+        assert!(!fx
+            .types
+            .admits(&sequence_of_parent, &sequence_of_child)
+            .expect("admission reserves storage"));
         // A collection kind never converts to another.
         let set_of_child_in_parent =
             collection(CollectionKind::Set, parent.clone(), vec![child.clone()]);
         assert!(!fx
             .types
-            .admits(&sequence_of_parent, &set_of_child_in_parent));
+            .admits(&sequence_of_parent, &set_of_child_in_parent)
+            .expect("admission reserves storage"));
     }
 
     /// Nesting goes as deep as the value does, and one `U` among conforming
@@ -6689,13 +6829,19 @@ mod nested_conformance_tests {
         };
 
         let conforming = build(vec![fx.value(fx.c, "c"), fx.value(fx.p, "p")]);
-        assert!(fx.types.admits(&declared, &conforming));
+        assert!(fx
+            .types
+            .admits(&declared, &conforming)
+            .expect("admission reserves storage"));
         let mixed = build(vec![
             fx.value(fx.c, "c"),
             fx.value(fx.u, "u"),
             fx.value(fx.m, "m"),
         ]);
-        assert!(!fx.types.admits(&declared, &mixed));
+        assert!(!fx
+            .types
+            .admits(&declared, &mixed)
+            .expect("admission reserves storage"));
     }
 
     /// A member that completes to a conforming child is kept; a member that
@@ -6931,16 +7077,25 @@ mod nested_conformance_tests {
         // A conforming object type, and the identical one, are admitted.
         for object_type in [fx.child_object, fx.parent_object] {
             let held = option_at(&declared_parent, reference(object_type));
-            assert!(fx.types.admits(&option_type, &held), "{object_type:?}");
+            assert!(
+                fx.types
+                    .admits(&option_type, &held)
+                    .expect("admission reserves storage"),
+                "{object_type:?}"
+            );
         }
         // An unrelated object type and a supertype at a child slot are refused,
         // although the recorded payload type alone would admit them.
         let stranger = option_at(&declared_parent, reference(fx.stranger_object));
-        assert!(!fx.types.admits(&option_type, &stranger));
+        assert!(!fx
+            .types
+            .admits(&option_type, &stranger)
+            .expect("admission reserves storage"));
         let reversed = option_at(&declared_child, reference(fx.parent_object));
         assert!(!fx
             .types
-            .admits(&ValueType::option(declared_child.clone()), &reversed));
+            .admits(&ValueType::option(declared_child.clone()), &reversed)
+            .expect("admission reserves storage"));
         // Likewise for a collection element.
         let sequence_type = collection_type(CollectionKind::Sequence, declared_parent.clone());
         let declared = ValueType::collection(sequence_type);
@@ -6949,13 +7104,19 @@ mod nested_conformance_tests {
             declared_parent.clone(),
             vec![reference(fx.child_object)],
         );
-        assert!(fx.types.admits(&declared, &conforming));
+        assert!(fx
+            .types
+            .admits(&declared, &conforming)
+            .expect("admission reserves storage"));
         let unrelated = collection(
             CollectionKind::Sequence,
             declared_parent,
             vec![reference(fx.child_object), reference(fx.stranger_object)],
         );
-        assert!(!fx.types.admits(&declared, &unrelated));
+        assert!(!fx
+            .types
+            .admits(&declared, &unrelated)
+            .expect("admission reserves storage"));
     }
 
     /// `Set<P>` and `Bag<P>` holding a `C` and a `P` of equal shared fields
@@ -6981,7 +7142,105 @@ mod nested_conformance_tests {
             assert_eq!(held.elements().len(), 2, "{kind:?} keeps both");
             assert!(fx
                 .types
-                .admits(&ValueType::collection(collection_type), &formed));
+                .admits(&ValueType::collection(collection_type), &formed)
+                .expect("admission reserves storage"));
         }
+    }
+    /// Walk one occurrence, returning the failure's cause, part and the
+    /// descriptor-query events that fired.
+    fn walk_failure(
+        types: &TypeEnvironment,
+        expected: &ValueType,
+        value: &Value,
+    ) -> (
+        Result<(), SuppliedAdmissionError<InvalidMembershipCause>>,
+        MembershipPart,
+        Vec<MembershipEvent>,
+    ) {
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(0),
+            part: MembershipPart::Value,
+        };
+        let mut events = Vec::new();
+        let result = types.admits_walk::<InvalidMembershipCause>(
+            expected,
+            value,
+            &mut arena,
+            at,
+            &mut |event, _| {
+                events.push(event);
+                Ok(())
+            },
+            &GlobalReservations,
+        );
+        let part = match &result {
+            Err(SuppliedAdmissionError::Invalid { locus, .. }) => {
+                arena.resolve(*locus).expect("resolves").part()
+            }
+            _ => MembershipPart::Value,
+        };
+        (result, part, events)
+    }
+
+    /// Conformance failures and an unsupported union value each carry their
+    /// own typed cause, and a conformance check is preceded by a descriptor
+    /// query.
+    /// Trace: FR-109-AC-4
+    #[trace("TC-908", "FR-109-AC-4")]
+    #[test]
+    fn conformance_and_union_failures_have_distinct_causes() {
+        let fx = fixture();
+        let cause =
+            |result: &Result<(), SuppliedAdmissionError<InvalidMembershipCause>>| match result {
+                Err(SuppliedAdmissionError::Invalid { cause, .. }) => Some(*cause),
+                _ => None,
+            };
+        let (composite, part, events) = walk_failure(
+            &fx.types,
+            &ValueType::Composite(fx.p),
+            &fx.value(fx.u, "stranger"),
+        );
+        assert_eq!(
+            cause(&composite),
+            Some(InvalidMembershipCause::CompositeConformance)
+        );
+        assert_eq!(part, MembershipPart::Descriptor(0));
+        assert_eq!(
+            events,
+            [
+                MembershipEvent::ValueVisit,
+                MembershipEvent::DescriptorQuery
+            ]
+        );
+        let reference = Value::Reference(ObjectReference::new(
+            UniverseId::from_digest([74; 32]),
+            fx.stranger_object,
+            ObjectId::new("object").expect("non-empty identity"),
+        ));
+        let (reference, part, _) = walk_failure(
+            &fx.types,
+            &ValueType::Reference(fx.parent_object),
+            &reference,
+        );
+        assert_eq!(
+            cause(&reference),
+            Some(InvalidMembershipCause::ReferenceConformance)
+        );
+        assert_eq!(part, MembershipPart::Descriptor(0));
+        let union = quire_exact::UnionValue::from_admitted(
+            quire_exact::UnionMember::from_admitted(
+                fx.p,
+                NodeKey::from_digest([33; 32]),
+                quire_exact::Identifier::new("m").expect("identifier"),
+            ),
+            vec![Value::Integer(Integer::one())],
+        );
+        let (union, part, _) = walk_failure(&fx.types, &ValueType::Composite(fx.p), &union);
+        assert_eq!(
+            cause(&union),
+            Some(InvalidMembershipCause::UnsupportedUnion)
+        );
+        assert_eq!(part, MembershipPart::Value);
     }
 }
