@@ -24,7 +24,9 @@ use crate::supplied_membership::{
 /// A logical event request or a response boundary after its indivisible
 /// helper. Only the former spends a work unit.
 pub(super) enum MembershipBoundary {
+    /// Charge one logical event before its action.
     Event(MembershipEvent, MembershipLocus),
+    /// Poll cancellation after an indivisible helper without another charge.
     AfterHelper(MembershipEvent, MembershipLocus),
 }
 
