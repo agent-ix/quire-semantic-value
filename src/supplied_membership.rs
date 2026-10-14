@@ -397,6 +397,9 @@ pub enum InvalidMembershipCause {
 /// yet qualified by its owning contract.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum UnsupportedHelperFamily {
+    /// Integer-interval and rational-domain comparisons lack an admitted
+    /// magnitude-bit bound for the caller-supplied operands.
+    NumericDomain,
     /// Decimal-domain membership can allocate while comparing coefficients.
     DecimalDomain,
     /// Union payload and descriptor admission awaits its owning public shape.

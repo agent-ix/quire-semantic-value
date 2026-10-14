@@ -163,6 +163,17 @@ fn same_type_walk<Cause: From<InvalidMembershipCause>>(
                 at,
             ))?;
         }
+        if matches!(
+            (left, right),
+            (ValueType::Int(_), ValueType::Int(_))
+                | (ValueType::Rational(_), ValueType::Rational(_))
+        ) {
+            on_boundary(MembershipBoundary::RequiresQualification(
+                UnsupportedHelperFamily::NumericDomain,
+                MembershipEvent::TypeLinkComparison,
+                at,
+            ))?;
+        }
         let step = match (left, right) {
             (ValueType::Option(a), ValueType::Option(b)) => TypeStep::Continue(a, b),
             (ValueType::Collection(a), ValueType::Collection(b)) => {
@@ -364,6 +375,17 @@ impl TypeEnvironment {
                         here,
                     ))?;
                 }
+                if matches!(
+                    (expected, value),
+                    (ValueType::Int(_), Value::Integer(_))
+                        | (ValueType::Rational(_), Value::Rational(_))
+                ) {
+                    on_boundary(MembershipBoundary::RequiresQualification(
+                        UnsupportedHelperFamily::NumericDomain,
+                        MembershipEvent::ValueVisit,
+                        here,
+                    ))?;
+                }
                 let admitted = expected.admits(value);
                 on_boundary(MembershipBoundary::AfterHelper(
                     MembershipEvent::ValueVisit,
@@ -400,8 +422,9 @@ mod tests {
     use ix_trace_rs::trace;
     use quire_exact::{
         from_admitted, Cancel, CancelCause, CollectionKind, CollectionType, Decimal, DecimalType,
-        EffectiveId, Identifier, Integer, NodeKey, ObjectId, ObjectReference, OptionValue,
-        RoundingMode, UnionMember, UnionValue, UniverseId,
+        EffectiveId, EnumMember, EnumShape, Identifier, Integer, IntegerInterval, NodeKey,
+        ObjectId, ObjectReference, OptionValue, Rational, RationalDomain, RoundingMode,
+        UnionMember, UnionValue, UniverseId, VariantId,
     };
 
     use super::*;
@@ -784,7 +807,7 @@ mod tests {
     }
 
     /// A refused worklist reservation reports its exact native request before
-    /// any child event; arithmetic overflow keeps its own classification.
+    /// any child event.
     /// Trace: FR-109-AC-5
     #[trace("TC-908", "FR-109-AC-5")]
     #[test]
@@ -807,13 +830,50 @@ mod tests {
         assert_eq!(policy.seen.get(), Some(request));
         assert_eq!(walked.describe(locus).0, Child(CollectionElement(2)));
         assert!(walked.seen().iter().all(|event| event.0 != ChildScheduling));
-        let at = MembershipLocus {
-            path: walked.arena.root(0),
-            part: MembershipPart::Value,
+    }
+
+    /// The actual pending-worklist reserve rejects size overflow before a
+    /// child can be scheduled or a reservation policy can run. A synthetic
+    /// child count reaches this checked boundary without allocating it.
+    /// Trace: FR-109-AC-5
+    #[trace("TC-908", "FR-109-AC-5")]
+    #[test]
+    fn worklist_checked_size_overflow_is_typed_capacity() {
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let root = arena.root(0);
+        let expected = ValueType::Integer;
+        let value = integer(1);
+        let pending = vec![(&expected, &value, root)];
+        let policy = DenyAll {
+            seen: Cell::new(None),
         };
+        let mut frontier = Frontier {
+            arena: &mut arena,
+            pending,
+            reservation: &policy,
+        };
+        let mut after_reservation = false;
+        let result = frontier.reserve::<InvalidMembershipCause>(
+            usize::MAX,
+            root,
+            PathStep::CollectionElement(0),
+            &mut |_| {
+                after_reservation = true;
+                Ok(())
+            },
+        );
+        let request = StorageRequest::new(usize::MAX, StorageUnit::AdditionalElements);
+        let locus = MembershipLocus {
+            path: root,
+            part: Child(CollectionElement(0)),
+        };
+        assert_eq!(result, Err(Stop::Capacity { request, locus }));
+        assert!(!after_reservation);
+        assert_eq!(policy.seen.get(), None);
+        assert_eq!(frontier.pending.len(), 1);
         assert_eq!(
-            storage::<InvalidMembershipCause>(StorageFailure::Capacity(request), at),
-            Stop::Capacity { request, locus: at }
+            arena.resolve(locus).expect("root remains valid").argument(),
+            0
         );
     }
 
@@ -1030,6 +1090,134 @@ mod tests {
             })
         );
         assert_eq!(budget.spent(), 1);
+    }
+
+    /// The public supplied API preserves the owning ranked-member cause and
+    /// root locus for an enum member outside its admitted shape.
+    /// Trace: FR-109-AC-4
+    #[trace("TC-908", "FR-109-AC-4")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked enum identities without minting them in production"
+    )]
+    #[test]
+    fn supplied_api_reports_enum_member_failure() {
+        let admitted = VariantId::from_digest([1; 32]);
+        let missing = VariantId::from_digest([2; 32]);
+        let expected = ValueType::Enum(EnumShape::new(false, [admitted]));
+        let value = Value::Enum(EnumMember::new(missing, 0));
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(0),
+            part: Occurrence,
+        };
+        let mut budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut budget,
+                &Cancel::new(),
+            ),
+            Err(Stop::Invalid {
+                cause: InvalidMembershipCause::Member,
+                locus: at,
+            })
+        );
+        assert_eq!(budget.spent(), 1);
+        assert_eq!(arena.resolve(at).expect("root remains valid").argument(), 0);
+    }
+
+    /// Supplied numeric domains stop before unbounded BigInt comparisons,
+    /// including those reached through a retained nested type. The plain
+    /// Integer kind still has a fixed-time kind check.
+    /// Trace: FR-109-AC-7
+    #[trace("TC-908", "FR-109-AC-7")]
+    #[test]
+    fn supplied_api_reports_unqualified_numeric_domain_before_comparison() {
+        let interval = IntegerInterval::spanning(Integer::zero(), Integer::from(10_i64));
+        let rational = RationalDomain::new(
+            interval.clone(),
+            IntegerInterval::spanning(Integer::one(), Integer::from(2_i64)),
+        )
+        .expect("positive denominator range");
+        for (expected, value) in [
+            (ValueType::Int(interval.clone()), integer(1)),
+            (
+                ValueType::Rational(rational),
+                Value::Rational(Rational::from_integer(Integer::one())),
+            ),
+        ] {
+            let mut arena = MembershipPathArena::new().expect("arena");
+            let at = MembershipLocus {
+                path: arena.root(0),
+                part: Occurrence,
+            };
+            let mut budget = SuppliedMembershipBudget::new(1);
+            assert_eq!(
+                environment().admit_supplied::<InvalidMembershipCause>(
+                    &expected,
+                    &value,
+                    &mut arena,
+                    at,
+                    &mut budget,
+                    &Cancel::new(),
+                ),
+                Err(Stop::UnsupportedHelper {
+                    family: UnsupportedHelperFamily::NumericDomain,
+                    locus: at,
+                })
+            );
+            assert_eq!(budget.spent(), 1);
+        }
+
+        let numeric = ValueType::Int(interval);
+        let nested = OptionValue::from_admitted(numeric.clone(), None);
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(1),
+            part: Occurrence,
+        };
+        let mut budget = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied::<InvalidMembershipCause>(
+                &ValueType::option(numeric),
+                &nested,
+                &mut arena,
+                at,
+                &mut budget,
+                &Cancel::new(),
+            ),
+            Err(Stop::UnsupportedHelper {
+                family: UnsupportedHelperFamily::NumericDomain,
+                locus: MembershipLocus {
+                    path: at.path,
+                    part: TypeLink(0),
+                },
+            })
+        );
+        assert_eq!(budget.spent(), 2);
+
+        let mut kind_arena = MembershipPathArena::new().expect("arena");
+        let kind_at = MembershipLocus {
+            path: kind_arena.root(2),
+            part: Occurrence,
+        };
+        let mut kind_budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied::<InvalidMembershipCause>(
+                &ValueType::Integer,
+                &integer(1),
+                &mut kind_arena,
+                kind_at,
+                &mut kind_budget,
+                &Cancel::new(),
+            ),
+            Ok(())
+        );
+        assert_eq!(kind_budget.spent(), 1);
     }
 
     /// The supplied API stops before the bool-only Decimal domain helper,
