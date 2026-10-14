@@ -72,3 +72,22 @@ lands together with the QSL adaptation PR (the PR body says it is separate).
 | FND-003 | medium | Recorded. `admitted` and `operand_value` report a storage failure as the not-admitted checked invariant. This is documented in the PR, and under `GlobalReservations` it is reachable only on a real allocator failure, where the old code aborted. A proper fix needs a storage channel in the quire-exact `Stop`. | src/declaration.rs:3865-3871; src/declaration.rs:4744-4746 |
 | FND-004 | low | Recorded. `admits_checked` maps `Limit`/`Cancelled` to a fabricated `Capacity(0)`. Neither can fire: the callback is a no-op, and `append_child` produces only Allocation or Capacity. A total type-level match would need a carrier error type without those variants. Arena-id exhaustion is also labelled with unit `AdditionalElements` instead of `ArenaIdentifiers`. | src/declaration.rs:2150-2155; src/declaration.rs:2176-2185 |
 | FND-005 | low | Recorded. The `_` leaf arm also gets kind mismatches such as an `Option` type against an `Integer` value, so these are labelled `LeafMembership`. The bool answer is correct. FR-109 Dependencies still says "`TypeEnvironment::admits` is bool-only". | src/declaration/membership.rs:229-233; spec/functional/FR-109-bound-supplied-value-traversal.md |
+
+## New findings (disposition pass 1)
+
+| ID | Severity | Summary | Refs |
+| --- | --- | --- | --- |
+| FND-006 | low | Recorded. The `leaf_cause` mapping added in 1210842 has no test for its Payload, Type and Member arms; only Kind is asserted. A `Population` pair has matching kinds, yet the kernel always refuses it and the mapping labels it `Kind`. Every bool answer is still correct. | src/declaration/membership.rs:82-96 |
+
+## Dispositions
+
+Round 1, reviewed at 12108429e38885b4d85b4cf07e2b4d356dfca8d3.
+
+| FND | outcome | sha/reason |
+| --- | --- | --- |
+| FND-001 | fixed | 1210842: `admits_checked` walks in `MembershipPathArena::scoped()` (id `usize::MAX`), which the counter never issues. `fetch_update` with `checked_add` returns `usize::MAX - 1` last, then `Err`, and never wraps. `scoped` is `pub(crate)`, `admits_walk` is `pub(super)`, and only `StorageFailure` (no locus) leaves the plain path, so a scoped token cannot escape. |
+| FND-002 | deferred | Carrier `append_child_owned` growth is unchanged. It is luna:IR's carrier code and stays with its owner. |
+| FND-003 | fixed | 1210842: `admitted`/`operand_value` call `admits_or_abort`, which aborts through `handle_alloc_error` on a storage failure (main's infallible worklist aborted too). A valid value is never reported as not admitted. |
+| FND-004 | accepted-no-change | The unit mislabel is gone because `new()` is no longer called. The `Limit`/`Cancelled` arm stays and cannot fire (no-op callback; `append_child` yields only Allocation or Capacity). Low and recorded. |
+| FND-005 | accepted-no-change | `LeafMembership` is replaced by the kernel-derived causes in 1210842. FR-109 Dependencies line 140 still says "bool-only". That is a low spec-text item, recorded. |
+| FND-006 | accepted-no-change | Low, recorded in the last review round. The cause labels do not change any admission answer. |

@@ -53,3 +53,12 @@ recorded, non-blocking.
 | --- | --- | --- | --- |
 | FND-001 | medium | Recorded. `event_stream_for_a_nested_value_is_exact` is tagged FR-109-AC-2, but it asserts one argument's event stream. Nothing in it shares a budget across two arguments, so the AC-2 binding inflates coverage. Leave the tag for IR-714's integrated test. | src/declaration/membership.rs:375 |
 | FND-002 | low | Recorded. The AC-5 clause "retry after removing the denial yields the same membership outcome" has no test. The walker never produces Capacity in any test, which is covered only through the `storage` helper. | src/declaration/membership.rs:619-649 |
+
+## Dispositions
+
+Round 1, reviewed at 12108429e38885b4d85b4cf07e2b4d356dfca8d3.
+
+| FND | outcome | sha/reason |
+| --- | --- | --- |
+| FND-001 | fixed | 1210842: `event_stream_for_a_nested_value_is_exact` is retagged to FR-109-AC-1 only. |
+| FND-002 | fixed | 1210842: `retry_after_removing_the_denial_yields_the_same_outcome` covers a callback denial and a reservation denial, then retries to the identical result and event stream. A walker-produced Capacity is still covered only through the helper (low, recorded). |
