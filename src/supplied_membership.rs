@@ -5,6 +5,8 @@
 //! records only events it explicitly requests; it does not inspect values or
 //! debit the evaluator's meter.
 
+#[cfg(test)]
+use alloc::collections::TryReserveError;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -100,6 +102,16 @@ struct PathNode {
 pub struct MembershipPathArena {
     id: usize,
     nodes: Vec<PathNode>,
+    #[cfg(test)]
+    growth_probe: Option<PathArenaGrowthProbe>,
+}
+
+/// Test-only record of actual successful path-vector capacity transitions.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct PathArenaGrowthProbe {
+    pub(crate) transitions: Vec<(usize, usize)>,
+    pub(crate) truncated: bool,
 }
 
 /// The native unit requested when creating a supplied-membership path arena.
@@ -153,6 +165,8 @@ impl MembershipPathArena {
         Ok(Self {
             id,
             nodes: Vec::new(),
+            #[cfg(test)]
+            growth_probe: None,
         })
     }
 
@@ -165,7 +179,36 @@ impl MembershipPathArena {
         Self {
             id: SCOPED_ARENA_ID,
             nodes: Vec::new(),
+            #[cfg(test)]
+            growth_probe: None,
         }
+    }
+
+    /// Preallocate test observation outside the measured traversal.
+    #[cfg(test)]
+    pub(crate) fn probe_growth(&mut self, max_transitions: usize) -> Result<(), TryReserveError> {
+        let mut transitions = Vec::new();
+        transitions.try_reserve_exact(max_transitions)?;
+        self.growth_probe = Some(PathArenaGrowthProbe {
+            transitions,
+            truncated: false,
+        });
+        Ok(())
+    }
+
+    /// Test-only path node count and observed capacity transitions.
+    #[cfg(test)]
+    pub(crate) fn growth_observation(&self) -> (usize, &PathArenaGrowthProbe) {
+        (
+            self.nodes.len(),
+            self.growth_probe.as_ref().expect("growth probe enabled"),
+        )
+    }
+
+    /// Native node size for the test-only relocation bound.
+    #[cfg(test)]
+    pub(crate) const fn path_node_size() -> usize {
+        core::mem::size_of::<PathNode>()
     }
 
     /// Name one supplied argument without allocating path storage.
@@ -206,24 +249,60 @@ impl MembershipPathArena {
         locus: MembershipLocus,
         permit: &mut impl FnMut(StorageRequest) -> bool,
     ) -> Result<PathToken, SuppliedAdmissionError<Cause>> {
-        let request = StorageRequest::new(1, StorageUnit::AdditionalElements);
+        let one = StorageRequest::new(1, StorageUnit::AdditionalElements);
         let required = self
             .nodes
             .len()
             .checked_add(1)
-            .ok_or(SuppliedAdmissionError::Capacity { request, locus })?;
-        let layout = Layout::array::<PathNode>(required)
-            .map_err(|_| SuppliedAdmissionError::Capacity { request, locus })?;
+            .ok_or(SuppliedAdmissionError::Capacity {
+                request: one,
+                locus,
+            })?;
+        let layout =
+            Layout::array::<PathNode>(required).map_err(|_| SuppliedAdmissionError::Capacity {
+                request: one,
+                locus,
+            })?;
         if layout.size() > isize::MAX as usize {
-            return Err(SuppliedAdmissionError::Capacity { request, locus });
+            return Err(SuppliedAdmissionError::Capacity {
+                request: one,
+                locus,
+            });
         }
         if required > self.nodes.capacity() {
+            // Amortize path growth while keeping the requested additional
+            // elements exactly equal to the fallible Vec reservation. If
+            // doubling is not representable, reserve only the required node.
+            let doubled = self
+                .nodes
+                .capacity()
+                .checked_mul(2)
+                .unwrap_or(required)
+                .max(required);
+            let target = match Layout::array::<PathNode>(doubled) {
+                Ok(layout) if layout.size() <= isize::MAX as usize => doubled,
+                _ => required,
+            };
+            let additional = target - self.nodes.len();
+            let request = StorageRequest::new(additional, StorageUnit::AdditionalElements);
             if !permit(request) {
                 return Err(SuppliedAdmissionError::Allocation { request, locus });
             }
+            #[cfg(test)]
+            let previous_capacity = self.nodes.capacity();
             self.nodes
-                .try_reserve_exact(1)
+                .try_reserve_exact(additional)
                 .map_err(|_| SuppliedAdmissionError::Allocation { request, locus })?;
+            #[cfg(test)]
+            if let Some(probe) = &mut self.growth_probe {
+                if probe.transitions.len() < probe.transitions.capacity() {
+                    probe
+                        .transitions
+                        .push((previous_capacity, self.nodes.capacity()));
+                } else {
+                    probe.truncated = true;
+                }
+            }
         }
         let token = PathToken {
             arena: self.id,
@@ -314,6 +393,19 @@ pub enum InvalidMembershipCause {
     ForeignPath,
 }
 
+/// A helper family whose supplied-admission cost and storage bounds are not
+/// yet qualified by its owning contract.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum UnsupportedHelperFamily {
+    /// Integer-interval and rational-domain comparisons lack an admitted
+    /// magnitude-bit bound for the caller-supplied operands.
+    NumericDomain,
+    /// Decimal-domain membership can allocate while comparing coefficients.
+    DecimalDomain,
+    /// Union payload and descriptor admission awaits its owning public shape.
+    UnionPayloadDescriptor,
+}
+
 /// A typed stop from the supplied-admission phase.
 ///
 /// `Cause` is the owning supported family's invalid-membership cause. A
@@ -326,6 +418,13 @@ pub enum SuppliedAdmissionError<Cause = InvalidMembershipCause> {
         /// The failed membership rule.
         cause: Cause,
         /// Where the rule failed.
+        locus: MembershipLocus,
+    },
+    /// A required helper has no qualified supplied-admission contract yet.
+    UnsupportedHelper {
+        /// The owning helper family that remains an implementation dependency.
+        family: UnsupportedHelperFamily,
+        /// The boundary before that helper would run.
         locus: MembershipLocus,
     },
     /// The next one-unit event would exceed the caller's ceiling.

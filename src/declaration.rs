@@ -81,7 +81,7 @@ use quire_exact::{compare_text, evaluate_decimal};
 
 use crate::supplied_membership::{
     InvalidMembershipCause, MembershipLocus, MembershipPart, MembershipPathArena,
-    SuppliedAdmissionError,
+    SuppliedAdmissionError, SuppliedMembershipBudget,
 };
 
 mod membership;
@@ -2139,6 +2139,61 @@ impl TypeEnvironment {
         Ok(self.admits_checked(value_type, value)?)
     }
 
+    /// Check one supplied value with the caller's cumulative admission budget
+    /// and original cancellation handle. Reuse `budget` and `arena` for later
+    /// arguments in the same invocation, rooting each at its argument index.
+    /// Successful membership is distinct from an invalid value or a stop.
+    pub fn admit_supplied<Cause: From<InvalidMembershipCause>>(
+        &self,
+        expected: &ValueType,
+        value: &Value,
+        arena: &mut MembershipPathArena,
+        at: MembershipLocus,
+        budget: &mut SuppliedMembershipBudget,
+        cancel: &quire_exact::Cancel,
+    ) -> Result<(), SuppliedAdmissionError<Cause>> {
+        self.admit_supplied_with(
+            expected,
+            value,
+            arena,
+            at,
+            budget,
+            cancel,
+            &GlobalReservations,
+        )
+    }
+
+    fn admit_supplied_with<Cause: From<InvalidMembershipCause>>(
+        &self,
+        expected: &ValueType,
+        value: &Value,
+        arena: &mut MembershipPathArena,
+        at: MembershipLocus,
+        budget: &mut SuppliedMembershipBudget,
+        cancel: &quire_exact::Cancel,
+        reservation: &impl ReservationPolicy,
+    ) -> Result<(), SuppliedAdmissionError<Cause>> {
+        self.admits_walk_observed(
+            expected,
+            value,
+            arena,
+            at,
+            &mut |boundary| match boundary {
+                membership::MembershipBoundary::Event(event, locus) => {
+                    budget.charge(event, locus, cancel)
+                }
+                membership::MembershipBoundary::AfterHelper(event, locus) => {
+                    budget.check_cancel(event, locus, cancel)
+                }
+                membership::MembershipBoundary::RequiresQualification(family, event, locus) => {
+                    budget.check_cancel(event, locus, cancel)?;
+                    Err(SuppliedAdmissionError::UnsupportedHelper { family, locus })
+                }
+            },
+            reservation,
+        )
+    }
+
     /// [`Self::admits`] for the evaluator callers, whose kernel `Stop` has no
     /// storage-failure channel (a typed one needs a storage variant in
     /// `quire-exact`'s `Stop` or `CheckedInvariantCause`). A failed worklist
@@ -2182,14 +2237,17 @@ impl TypeEnvironment {
             Err(SuppliedAdmissionError::Allocation { request, .. }) => {
                 Err(StorageFailure::Allocation(request))
             }
-            // The no-op callback never stops the walk, so a limit or a
-            // cancellation cannot occur here; they are still mapped to an
-            // error, never to an answer.
             Err(SuppliedAdmissionError::Capacity { request, .. }) => {
                 Err(StorageFailure::Capacity(request))
             }
+            // `admits_walk` invokes the callback only for event requests;
+            // this call passes `|_, _| Ok(())`, and its wrapper ignores every
+            // qualification boundary. It cannot construct any of these three
+            // supplied-only stops. This arm only exhausts the shared type.
             Err(
-                SuppliedAdmissionError::Limit { .. } | SuppliedAdmissionError::Cancelled { .. },
+                SuppliedAdmissionError::Limit { .. }
+                | SuppliedAdmissionError::Cancelled { .. }
+                | SuppliedAdmissionError::UnsupportedHelper { .. },
             ) => Err(StorageFailure::Capacity(StorageRequest::new(
                 0,
                 StorageUnit::AdditionalElements,
