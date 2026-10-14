@@ -102,14 +102,39 @@ pub struct MembershipPathArena {
     nodes: Vec<PathNode>,
 }
 
+/// The native unit requested when creating a supplied-membership path arena.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum PathArenaCapacityUnit {
+    /// One distinct process-local arena identifier.
+    ArenaIdentifiers,
+}
+
 /// The process has exhausted distinct supplied-membership path arena IDs.
 ///
 /// No arena or token is returned in this case. This is a capacity failure
 /// before supplied traversal begins, separate from path-vector allocation.
+/// There is no membership locus yet, and this request is not a worklist
+/// [`StorageRequest`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct PathArenaCapacity;
+pub struct PathArenaCapacity {
+    /// The number of identifiers requested at the failed boundary.
+    pub requested: usize,
+    /// The request's native unit.
+    pub unit: PathArenaCapacityUnit,
+}
 
 static NEXT_ARENA_ID: AtomicUsize = AtomicUsize::new(0);
+
+fn next_arena_id(counter: &AtomicUsize) -> Result<usize, PathArenaCapacity> {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            next.checked_add(1)
+        })
+        .map_err(|_| PathArenaCapacity {
+            requested: 1,
+            unit: PathArenaCapacityUnit::ArenaIdentifiers,
+        })
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PathAppendError<Cause> {
@@ -120,11 +145,7 @@ pub(crate) enum PathAppendError<Cause> {
 impl MembershipPathArena {
     /// Create an empty invocation arena with a never-reused process ID.
     pub fn new() -> Result<Self, PathArenaCapacity> {
-        let id = NEXT_ARENA_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
-                next.checked_add(1)
-            })
-            .map_err(|_| PathArenaCapacity)?;
+        let id = next_arena_id(&NEXT_ARENA_ID)?;
         Ok(Self {
             id,
             nodes: Vec::new(),
@@ -403,19 +424,36 @@ impl SuppliedMembershipBudget {
 #[cfg(test)]
 mod tests {
     use alloc::{vec, vec::Vec};
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     use quire_exact::{Cancel, CancelCause};
 
     use crate::declaration::{StorageRequest, StorageUnit};
 
     use super::{
-        InvalidMembershipCause, MembershipEvent, MembershipLocus, MembershipPart,
-        MembershipPathArena, PathAppendError, PathStep, PathToken, SuppliedAdmissionError,
-        SuppliedAdmissionPhase, SuppliedMembershipBudget,
+        next_arena_id, InvalidMembershipCause, MembershipEvent, MembershipLocus, MembershipPart,
+        MembershipPathArena, PathAppendError, PathArenaCapacity, PathArenaCapacityUnit, PathStep,
+        PathToken, SuppliedAdmissionError, SuppliedAdmissionPhase, SuppliedMembershipBudget,
     };
 
     fn locus(path: PathToken, part: MembershipPart) -> MembershipLocus {
         MembershipLocus { path, part }
+    }
+
+    /// Trace: FR-109-AC-5
+    #[ix_trace_rs::trace("TC-908", "FR-109-AC-5")]
+    #[test]
+    fn arena_identifier_exhaustion_reports_one_native_unit_without_a_locus() {
+        let counter = AtomicUsize::new(usize::MAX - 1);
+        assert_eq!(next_arena_id(&counter), Ok(usize::MAX - 1));
+        assert_eq!(counter.load(Ordering::Relaxed), usize::MAX);
+        let capacity = PathArenaCapacity {
+            requested: 1,
+            unit: PathArenaCapacityUnit::ArenaIdentifiers,
+        };
+        assert_eq!(next_arena_id(&counter), Err(capacity));
+        assert_eq!(next_arena_id(&counter), Err(capacity));
+        assert_eq!(counter.load(Ordering::Relaxed), usize::MAX);
     }
 
     /// Trace: FR-109-AC-1, FR-109-AC-2
