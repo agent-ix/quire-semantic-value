@@ -7,6 +7,7 @@
 
 use alloc::vec::Vec;
 use core::alloc::Layout;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use quire_exact::{Cancel, CancelCause};
 
@@ -67,6 +68,7 @@ pub enum PathStep {
 /// arena is retained, including after a traversal error.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PathToken {
+    arena: usize,
     argument: usize,
     node: Option<usize>,
 }
@@ -94,20 +96,45 @@ struct PathNode {
 /// Store it with the result until the consumer resolves any error locus. One
 /// node is stored per actually scheduled child; a denied scheduling event
 /// still resolves through its parent token and [`MembershipPart::Child`].
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MembershipPathArena {
+    id: usize,
     nodes: Vec<PathNode>,
 }
 
+/// The process has exhausted distinct supplied-membership path arena IDs.
+///
+/// No arena or token is returned in this case. This is a capacity failure
+/// before supplied traversal begins, separate from path-vector allocation.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PathArenaCapacity;
+
+static NEXT_ARENA_ID: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PathAppendError {
+    ForeignParent,
+    Admission(SuppliedAdmissionError),
+}
+
 impl MembershipPathArena {
-    /// Create an empty invocation arena.
-    pub const fn new() -> Self {
-        Self { nodes: Vec::new() }
+    /// Create an empty invocation arena with a never-reused process ID.
+    pub fn new() -> Result<Self, PathArenaCapacity> {
+        let id = NEXT_ARENA_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                next.checked_add(1)
+            })
+            .map_err(|_| PathArenaCapacity)?;
+        Ok(Self {
+            id,
+            nodes: Vec::new(),
+        })
     }
 
     /// Name one supplied argument without allocating path storage.
     pub const fn root(&self, argument: usize) -> PathToken {
         PathToken {
+            arena: self.id,
             argument,
             node: None,
         }
@@ -125,11 +152,25 @@ impl MembershipPathArena {
         parent: PathToken,
         step: PathStep,
         permit: &mut impl FnMut(StorageRequest) -> bool,
-    ) -> Result<PathToken, SuppliedAdmissionError> {
+    ) -> Result<PathToken, PathAppendError> {
         let locus = MembershipLocus {
             path: parent,
             part: MembershipPart::Child(step),
         };
+        if self.resolve(locus).is_none() {
+            return Err(PathAppendError::ForeignParent);
+        }
+        self.append_child_owned(parent, step, locus, permit)
+            .map_err(PathAppendError::Admission)
+    }
+
+    fn append_child_owned(
+        &mut self,
+        parent: PathToken,
+        step: PathStep,
+        locus: MembershipLocus,
+        permit: &mut impl FnMut(StorageRequest) -> bool,
+    ) -> Result<PathToken, SuppliedAdmissionError> {
         let request = StorageRequest::new(1, StorageUnit::AdditionalElements);
         let required = self
             .nodes
@@ -150,6 +191,7 @@ impl MembershipPathArena {
                 .map_err(|_| SuppliedAdmissionError::Allocation { request, locus })?;
         }
         let token = PathToken {
+            arena: self.id,
             argument: parent.argument,
             node: Some(self.nodes.len()),
         };
@@ -163,6 +205,9 @@ impl MembershipPathArena {
     /// Child steps are exposed from leaf to root in linear time; the argument
     /// root and final event part are separate typed fields.
     pub fn resolve(&self, locus: MembershipLocus) -> Option<ResolvedMembershipPath<'_>> {
+        if locus.path.arena != self.id {
+            return None;
+        }
         if let Some(index) = locus.path.node {
             self.nodes.get(index)?;
         }
@@ -360,8 +405,9 @@ mod tests {
     use crate::declaration::{StorageRequest, StorageUnit};
 
     use super::{
-        MembershipEvent, MembershipLocus, MembershipPart, MembershipPathArena, PathStep, PathToken,
-        SuppliedAdmissionError, SuppliedAdmissionPhase, SuppliedMembershipBudget,
+        MembershipEvent, MembershipLocus, MembershipPart, MembershipPathArena, PathAppendError,
+        PathStep, PathToken, SuppliedAdmissionError, SuppliedAdmissionPhase,
+        SuppliedMembershipBudget,
     };
 
     fn locus(path: PathToken, part: MembershipPart) -> MembershipLocus {
@@ -374,7 +420,7 @@ mod tests {
     fn exact_one_less_and_zero_share_cumulative_event_boundaries() {
         // The budget receives an independently enumerated event order across
         // two arguments, including a nested type and one scheduled child.
-        let arena = MembershipPathArena::new();
+        let arena = MembershipPathArena::new().unwrap();
         let first = arena.root(0);
         let second = arena.root(1);
         let events = [
@@ -443,7 +489,7 @@ mod tests {
     fn original_handle_cancellation_stops_before_next_event() {
         let cancel = Cancel::new();
         let mut budget = SuppliedMembershipBudget::new(3);
-        let arena = MembershipPathArena::new();
+        let arena = MembershipPathArena::new().unwrap();
         let path = arena.root(0);
         let first = locus(path, MembershipPart::Value);
         let next = locus(path, MembershipPart::TypeLink(0));
@@ -470,7 +516,7 @@ mod tests {
     fn cancellation_after_bounded_helper_keeps_successful_event_spend() {
         let cancel = Cancel::new();
         let mut budget = SuppliedMembershipBudget::new(1);
-        let arena = MembershipPathArena::new();
+        let arena = MembershipPathArena::new().unwrap();
         let at = locus(arena.root(0), MembershipPart::Descriptor(0));
         budget
             .charge(MembershipEvent::DescriptorQuery, at, &cancel)
@@ -492,7 +538,7 @@ mod tests {
     #[ix_trace_rs::trace("TC-908", "FR-109-AC-1", "FR-109-AC-2", "FR-109-AC-4")]
     #[test]
     fn sibling_payloads_and_repeated_occurrences_keep_distinct_rooted_paths() {
-        let mut arena = MembershipPathArena::new();
+        let mut arena = MembershipPathArena::new().unwrap();
         let root = arena.root(2);
         let mut permit = |_| true;
         let first = arena
@@ -558,7 +604,7 @@ mod tests {
     #[ix_trace_rs::trace("TC-908", "FR-109-AC-1", "FR-109-AC-5")]
     #[test]
     fn denied_child_event_and_reservation_keep_resolvable_parent_path() {
-        let mut arena = MembershipPathArena::new();
+        let mut arena = MembershipPathArena::new().unwrap();
         let root = arena.root(0);
         let mut permit = |_| true;
         let collection_child = arena
@@ -606,7 +652,7 @@ mod tests {
             vec![PathStep::OptionPayload, PathStep::CollectionElement(1)]
         );
 
-        let mut empty = MembershipPathArena::new();
+        let mut empty = MembershipPathArena::new().unwrap();
         let other_root = empty.root(3);
         let request = StorageRequest::new(1, StorageUnit::AdditionalElements);
         let mut denied_request = None;
@@ -619,10 +665,10 @@ mod tests {
         assert_eq!(denied_request, Some(request));
         assert_eq!(
             allocation,
-            SuppliedAdmissionError::Allocation {
+            PathAppendError::Admission(SuppliedAdmissionError::Allocation {
                 request,
                 locus: locus(other_root, MembershipPart::Child(PathStep::OptionPayload)),
-            }
+            })
         );
         let unresolved_child = empty
             .resolve(locus(
@@ -642,6 +688,56 @@ mod tests {
                 .steps_from_leaf()
                 .collect::<Vec<_>>(),
             vec![PathStep::OptionPayload]
+        );
+    }
+
+    /// Trace: FR-109-AC-4, FR-109-AC-5
+    #[ix_trace_rs::trace("TC-908", "FR-109-AC-4", "FR-109-AC-5")]
+    #[test]
+    fn equal_child_indexes_from_different_arenas_cannot_cross_resolve() {
+        let mut first = MembershipPathArena::new().unwrap();
+        let mut second = MembershipPathArena::new().unwrap();
+        let first_root = first.root(0);
+        let second_root = second.root(0);
+        let mut permit = |_| true;
+        let first_child = first
+            .append_child(first_root, PathStep::OptionPayload, &mut permit)
+            .unwrap();
+        let second_child = second
+            .append_child(second_root, PathStep::CollectionElement(0), &mut permit)
+            .unwrap();
+        assert_eq!(first_child.node, second_child.node);
+        assert_ne!(first_child.arena, second_child.arena);
+
+        let first_locus = locus(first_child, MembershipPart::Value);
+        let second_locus = locus(second_child, MembershipPart::Value);
+        assert!(first.resolve(second_locus).is_none());
+        assert!(second.resolve(first_locus).is_none());
+        assert!(first
+            .resolve(locus(second_root, MembershipPart::Value))
+            .is_none());
+        assert!(second
+            .resolve(locus(first_root, MembershipPart::Value))
+            .is_none());
+        assert_eq!(
+            first
+                .resolve(first_locus)
+                .unwrap()
+                .steps_from_leaf()
+                .collect::<Vec<_>>(),
+            vec![PathStep::OptionPayload]
+        );
+        assert_eq!(
+            second
+                .resolve(second_locus)
+                .unwrap()
+                .steps_from_leaf()
+                .collect::<Vec<_>>(),
+            vec![PathStep::CollectionElement(0)]
+        );
+        assert_eq!(
+            second.append_child(first_child, PathStep::OptionPayload, &mut permit),
+            Err(PathAppendError::ForeignParent)
         );
     }
 }
