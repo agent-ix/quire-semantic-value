@@ -112,9 +112,9 @@ pub struct PathArenaCapacity;
 static NEXT_ARENA_ID: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PathAppendError {
+pub(crate) enum PathAppendError<Cause> {
     ForeignParent,
-    Admission(SuppliedAdmissionError),
+    Admission(SuppliedAdmissionError<Cause>),
 }
 
 impl MembershipPathArena {
@@ -147,12 +147,12 @@ impl MembershipPathArena {
     /// separately from checked capacity failure and allocator refusal.
     // The #12 traversal integration is the production caller for this staged carrier.
     #[allow(dead_code)]
-    pub(crate) fn append_child(
+    pub(crate) fn append_child<Cause>(
         &mut self,
         parent: PathToken,
         step: PathStep,
         permit: &mut impl FnMut(StorageRequest) -> bool,
-    ) -> Result<PathToken, PathAppendError> {
+    ) -> Result<PathToken, PathAppendError<Cause>> {
         let locus = MembershipLocus {
             path: parent,
             part: MembershipPart::Child(step),
@@ -164,13 +164,13 @@ impl MembershipPathArena {
             .map_err(PathAppendError::Admission)
     }
 
-    fn append_child_owned(
+    fn append_child_owned<Cause>(
         &mut self,
         parent: PathToken,
         step: PathStep,
         locus: MembershipLocus,
         permit: &mut impl FnMut(StorageRequest) -> bool,
-    ) -> Result<PathToken, SuppliedAdmissionError> {
+    ) -> Result<PathToken, SuppliedAdmissionError<Cause>> {
         let request = StorageRequest::new(1, StorageUnit::AdditionalElements);
         let required = self
             .nodes
@@ -271,12 +271,16 @@ pub enum InvalidMembershipCause {
 }
 
 /// A typed stop from the supplied-admission phase.
+///
+/// `Cause` is the owning supported family's invalid-membership cause. A
+/// traversal callback can retain that type instead of projecting it into a
+/// generic mismatch. The other variants are independent of `Cause`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum SuppliedAdmissionError {
+pub enum SuppliedAdmissionError<Cause = InvalidMembershipCause> {
     /// The input failed a membership rule at the given locus.
     Invalid {
         /// The failed membership rule.
-        cause: InvalidMembershipCause,
+        cause: Cause,
         /// Where the rule failed.
         locus: MembershipLocus,
     },
@@ -320,7 +324,7 @@ pub enum SuppliedAdmissionError {
     },
 }
 
-impl SuppliedAdmissionError {
+impl<Cause> SuppliedAdmissionError<Cause> {
     /// The owning phase, independent of the failure classification.
     pub const fn phase(&self) -> SuppliedAdmissionPhase {
         SuppliedAdmissionPhase::Membership
@@ -354,12 +358,12 @@ impl SuppliedMembershipBudget {
     }
 
     /// Request one event before performing it, polling the original handle.
-    pub fn charge(
+    pub fn charge<Cause>(
         &mut self,
         event: MembershipEvent,
         locus: MembershipLocus,
         cancel: &Cancel,
-    ) -> Result<(), SuppliedAdmissionError> {
+    ) -> Result<(), SuppliedAdmissionError<Cause>> {
         self.check_cancel(event, locus, cancel)?;
         match self.spent.checked_add(1) {
             Some(next) if next <= self.ceiling => {
@@ -377,12 +381,12 @@ impl SuppliedMembershipBudget {
     }
 
     /// Poll after an indivisible helper, without charging another event.
-    pub fn check_cancel(
+    pub fn check_cancel<Cause>(
         &self,
         event: MembershipEvent,
         locus: MembershipLocus,
         cancel: &Cancel,
-    ) -> Result<(), SuppliedAdmissionError> {
+    ) -> Result<(), SuppliedAdmissionError<Cause>> {
         let _ = cancel.poll();
         if let Some(cause) = cancel.cause() {
             return Err(SuppliedAdmissionError::Cancelled {
@@ -405,9 +409,9 @@ mod tests {
     use crate::declaration::{StorageRequest, StorageUnit};
 
     use super::{
-        MembershipEvent, MembershipLocus, MembershipPart, MembershipPathArena, PathAppendError,
-        PathStep, PathToken, SuppliedAdmissionError, SuppliedAdmissionPhase,
-        SuppliedMembershipBudget,
+        InvalidMembershipCause, MembershipEvent, MembershipLocus, MembershipPart,
+        MembershipPathArena, PathAppendError, PathStep, PathToken, SuppliedAdmissionError,
+        SuppliedAdmissionPhase, SuppliedMembershipBudget,
     };
 
     fn locus(path: PathToken, part: MembershipPart) -> MembershipLocus {
@@ -455,10 +459,9 @@ mod tests {
         let cancel = Cancel::new();
         for ceiling in [0, 5, 6] {
             let mut budget = SuppliedMembershipBudget::new(ceiling);
-            let result = events
-                .iter()
-                .copied()
-                .try_for_each(|(event, at)| budget.charge(event, at, &cancel));
+            let result = events.iter().copied().try_for_each(|(event, at)| {
+                budget.charge::<InvalidMembershipCause>(event, at, &cancel)
+            });
             if ceiling == 6 {
                 assert_eq!(result, Ok(()));
                 assert_eq!(budget.spent(), 6);
@@ -494,11 +497,15 @@ mod tests {
         let first = locus(path, MembershipPart::Value);
         let next = locus(path, MembershipPart::TypeLink(0));
         budget
-            .charge(MembershipEvent::ValueVisit, first, &cancel)
+            .charge::<InvalidMembershipCause>(MembershipEvent::ValueVisit, first, &cancel)
             .unwrap();
         cancel.cancel(CancelCause::Requested);
         assert_eq!(
-            budget.charge(MembershipEvent::TypeLinkComparison, next, &cancel),
+            budget.charge::<InvalidMembershipCause>(
+                MembershipEvent::TypeLinkComparison,
+                next,
+                &cancel
+            ),
             Err(SuppliedAdmissionError::Cancelled {
                 cause: CancelCause::Requested,
                 spent: 1,
@@ -519,11 +526,15 @@ mod tests {
         let arena = MembershipPathArena::new().unwrap();
         let at = locus(arena.root(0), MembershipPart::Descriptor(0));
         budget
-            .charge(MembershipEvent::DescriptorQuery, at, &cancel)
+            .charge::<InvalidMembershipCause>(MembershipEvent::DescriptorQuery, at, &cancel)
             .unwrap();
         cancel.cancel(CancelCause::Deadline);
         assert_eq!(
-            budget.check_cancel(MembershipEvent::DescriptorQuery, at, &cancel),
+            budget.check_cancel::<InvalidMembershipCause>(
+                MembershipEvent::DescriptorQuery,
+                at,
+                &cancel
+            ),
             Err(SuppliedAdmissionError::Cancelled {
                 cause: CancelCause::Deadline,
                 spent: 1,
@@ -542,25 +553,45 @@ mod tests {
         let root = arena.root(2);
         let mut permit = |_| true;
         let first = arena
-            .append_child(root, PathStep::CollectionElement(0), &mut permit)
+            .append_child::<InvalidMembershipCause>(
+                root,
+                PathStep::CollectionElement(0),
+                &mut permit,
+            )
             .unwrap();
         let first_payload = arena
-            .append_child(first, PathStep::OptionPayload, &mut permit)
+            .append_child::<InvalidMembershipCause>(first, PathStep::OptionPayload, &mut permit)
             .unwrap();
         let second = arena
-            .append_child(root, PathStep::CollectionElement(1), &mut permit)
+            .append_child::<InvalidMembershipCause>(
+                root,
+                PathStep::CollectionElement(1),
+                &mut permit,
+            )
             .unwrap();
         let second_payload = arena
-            .append_child(second, PathStep::OptionPayload, &mut permit)
+            .append_child::<InvalidMembershipCause>(second, PathStep::OptionPayload, &mut permit)
             .unwrap();
         let first_nested = arena
-            .append_child(first_payload, PathStep::TuplePosition(0), &mut permit)
+            .append_child::<InvalidMembershipCause>(
+                first_payload,
+                PathStep::TuplePosition(0),
+                &mut permit,
+            )
             .unwrap();
         let sibling_nested = arena
-            .append_child(first_payload, PathStep::TuplePosition(1), &mut permit)
+            .append_child::<InvalidMembershipCause>(
+                first_payload,
+                PathStep::TuplePosition(1),
+                &mut permit,
+            )
             .unwrap();
         let repeated = arena
-            .append_child(root, PathStep::CollectionElement(2), &mut permit)
+            .append_child::<InvalidMembershipCause>(
+                root,
+                PathStep::CollectionElement(2),
+                &mut permit,
+            )
             .unwrap();
 
         let steps = |path| {
@@ -608,10 +639,18 @@ mod tests {
         let root = arena.root(0);
         let mut permit = |_| true;
         let collection_child = arena
-            .append_child(root, PathStep::CollectionElement(1), &mut permit)
+            .append_child::<InvalidMembershipCause>(
+                root,
+                PathStep::CollectionElement(1),
+                &mut permit,
+            )
             .unwrap();
         let payload = arena
-            .append_child(collection_child, PathStep::OptionPayload, &mut permit)
+            .append_child::<InvalidMembershipCause>(
+                collection_child,
+                PathStep::OptionPayload,
+                &mut permit,
+            )
             .unwrap();
         let denied_at = locus(payload, MembershipPart::Child(PathStep::TuplePosition(0)));
         let cancel = Cancel::new();
@@ -626,10 +665,12 @@ mod tests {
                 locus(root, MembershipPart::Child(PathStep::CollectionElement(1))),
             ),
         ] {
-            budget.charge(event, at, &cancel).unwrap();
+            budget
+                .charge::<InvalidMembershipCause>(event, at, &cancel)
+                .unwrap();
         }
         let denied = budget
-            .charge(MembershipEvent::ChildScheduling, denied_at, &cancel)
+            .charge::<InvalidMembershipCause>(MembershipEvent::ChildScheduling, denied_at, &cancel)
             .unwrap_err();
         assert_eq!(
             denied,
@@ -657,10 +698,14 @@ mod tests {
         let request = StorageRequest::new(1, StorageUnit::AdditionalElements);
         let mut denied_request = None;
         let allocation = empty
-            .append_child(other_root, PathStep::OptionPayload, &mut |seen| {
-                denied_request = Some(seen);
-                false
-            })
+            .append_child::<InvalidMembershipCause>(
+                other_root,
+                PathStep::OptionPayload,
+                &mut |seen| {
+                    denied_request = Some(seen);
+                    false
+                },
+            )
             .unwrap_err();
         assert_eq!(denied_request, Some(request));
         assert_eq!(
@@ -679,7 +724,11 @@ mod tests {
         assert_eq!(unresolved_child.argument(), 3);
         assert!(unresolved_child.steps_from_leaf().next().is_none());
         let retry = empty
-            .append_child(other_root, PathStep::OptionPayload, &mut permit)
+            .append_child::<InvalidMembershipCause>(
+                other_root,
+                PathStep::OptionPayload,
+                &mut permit,
+            )
             .unwrap();
         assert_eq!(
             empty
@@ -701,10 +750,18 @@ mod tests {
         let second_root = second.root(0);
         let mut permit = |_| true;
         let first_child = first
-            .append_child(first_root, PathStep::OptionPayload, &mut permit)
+            .append_child::<InvalidMembershipCause>(
+                first_root,
+                PathStep::OptionPayload,
+                &mut permit,
+            )
             .unwrap();
         let second_child = second
-            .append_child(second_root, PathStep::CollectionElement(0), &mut permit)
+            .append_child::<InvalidMembershipCause>(
+                second_root,
+                PathStep::CollectionElement(0),
+                &mut permit,
+            )
             .unwrap();
         assert_eq!(first_child.node, second_child.node);
         assert_ne!(first_child.arena, second_child.arena);
@@ -736,8 +793,47 @@ mod tests {
             vec![PathStep::CollectionElement(0)]
         );
         assert_eq!(
-            second.append_child(first_child, PathStep::OptionPayload, &mut permit),
+            second.append_child::<InvalidMembershipCause>(
+                first_child,
+                PathStep::OptionPayload,
+                &mut permit
+            ),
             Err(PathAppendError::ForeignParent)
         );
+    }
+
+    /// Trace: FR-109-AC-4
+    #[ix_trace_rs::trace("TC-908", "FR-109-AC-4")]
+    #[test]
+    fn callback_family_cause_retains_its_type_and_locus() {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        enum FamilyCause {
+            WrongMember { rank: u32 },
+        }
+
+        let arena = MembershipPathArena::new().unwrap();
+        let at = locus(arena.root(1), MembershipPart::Descriptor(0));
+        let cancel = Cancel::new();
+        let mut budget = SuppliedMembershipBudget::new(2);
+        let mut callback = |event, locus| -> Result<(), SuppliedAdmissionError<FamilyCause>> {
+            budget.charge::<FamilyCause>(event, locus, &cancel)?;
+            if event == MembershipEvent::DescriptorQuery {
+                return Err(SuppliedAdmissionError::Invalid {
+                    cause: FamilyCause::WrongMember { rank: 7 },
+                    locus,
+                });
+            }
+            Ok(())
+        };
+        let result = callback(MembershipEvent::ValueVisit, at)
+            .and_then(|()| callback(MembershipEvent::DescriptorQuery, at));
+        assert_eq!(
+            result,
+            Err(SuppliedAdmissionError::Invalid {
+                cause: FamilyCause::WrongMember { rank: 7 },
+                locus: at,
+            })
+        );
+        assert_eq!(budget.spent(), 2);
     }
 }
