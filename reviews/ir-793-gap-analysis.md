@@ -37,3 +37,12 @@ Examined FR-117-AC-1 through AC-5 and TC-917 steps 1 through 5. QSV tests cover 
 FR-117-AC-2 and TC-917 step 2 require simultaneous oversized expected and actual endpoints. The twelve new rows make only one side oversized at a time. A regression that chooses the wrong side only when both exceed B could pass those rows. Add a QSV-level case with both oversized and assert the first expected endpoint, measured bits, B, rooted locus, and charged spend.
 
 FR-117-AC-3 and TC-917 step 3 require pre-cancellation for a paired numeric type link with configured B. The new late-cancel test enters the helper, while the new pre-cancel assertion invokes `admit_supplied` without B. Existing bounded pre-cancel tests exercise numeric VALUE admission. Add a pre-cancelled `admit_supplied_bounded_numeric` type-link case, ideally with an oversized endpoint, asserting the original cause, event/locus, zero successful spend, and cancellation precedence over the size stop.
+
+## Dispositions
+
+Round 1, reviewed at 0d285cda13aa952cf168522010d7da49487361ff. The delta changes tests and copies the review artifacts; production code is unchanged. `cargo test --locked --lib bounded_numeric_type_link` passed all five selected tests.
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | The added Int and Rational cases use the same over-B domain on both sides, then assert the first expected endpoint, measured bits 2, B 1, rooted TypeLink(0), and spend 2. |
+| FND-002 | fixed | The added bounded Option<Int> case pre-cancels the original handle with Deadline while both endpoints exceed B, then asserts Cancelled at the initial ValueVisit, rooted argument 11, and zero spend. |
