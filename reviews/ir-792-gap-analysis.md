@@ -34,3 +34,11 @@ Examined: FR-380-AC-6 and TC-928 step 5 (caller integration); FR-109-AC-1/2/3/7;
 | FND-001 | medium | No QSV test exercises cancellation inside the bounded numeric helper and asserts typed cause, cumulative spend, and rooted locus | src/declaration/membership.rs:269 |
 
 The new mapping of `NumericMembershipFailure::Cancelled(cause)` returns `SuppliedAdmissionError::Cancelled` with a copied spent count, `ValueVisit` and the occurrence locus. The only new cancellation assertion pre-cancels before `budget.charge`, so it stops with spent zero and never enters this mapping. A defect in the kernel-cancellation arm could ship while all three new tests pass. Exercise a deterministic admitted comparison cancellation through the real QSV entry point and assert the original cause and charged spend at its rooted locus.
+
+## Dispositions
+
+Round 1, reviewed at be8f81e874197df4d285b9bc367d5afa95030ba5. The delta adds one test and commits the two original review artifacts; production code is unchanged. QExact f8e0577's `integer_contains` polls at helper entry, each of three operands, comparison entry, then before its first borrowed-limb pair. QSV's `budget.charge` polls first, making the test's seventh poll the first limb-pair poll after a successful ValueVisit charge. The focused test passed.
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | `bounded_numeric_maps_cancellation_during_kernel_comparison` uses the original observing Cancel to trip Deadline on the first borrowed-limb poll, then asserts the typed Cancelled result with ValueVisit, spent 1, rooted argument 7, seven observed polls and the tripped original handle. |
