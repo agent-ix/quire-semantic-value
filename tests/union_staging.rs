@@ -256,8 +256,8 @@ fn sealed_union_payload_uses_one_rooted_supplied_budget() {
     }
 }
 
-/// Trace: FR-108-AC-1, FR-109-AC-4
-#[trace("TC-907", "TC-908", "FR-108-AC-1", "FR-109-AC-4")]
+/// Trace: FR-109-AC-5
+#[trace("TC-908", "FR-109-AC-5")]
 #[test]
 fn public_supplied_reservation_denial_retains_request_and_locus() {
     let mut env = TypeEnvironment::new([shape()], []).unwrap();
@@ -294,7 +294,13 @@ fn public_supplied_reservation_denial_retains_request_and_locus() {
         request,
         StorageRequest::new(2, StorageUnit::AdditionalElements)
     );
-    assert_eq!(arena.resolve(locus).unwrap().argument(), 7);
+    let resolved = arena.resolve(locus).unwrap();
+    assert_eq!(resolved.argument(), 7);
+    assert_eq!(
+        resolved.part(),
+        MembershipPart::Child(PathStep::UnionPayload(1))
+    );
+    assert_eq!(resolved.steps_from_leaf().count(), 0);
     assert_eq!(budget.spent(), 2);
 
     let mut retry_arena = MembershipPathArena::new().unwrap();
