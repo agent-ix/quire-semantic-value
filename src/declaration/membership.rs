@@ -2458,8 +2458,8 @@ mod tests {
     /// Two Decimal arguments have exactly two owning value visits. The
     /// declared minimum scale bounds the normalization shift without a
     /// separate helper event or per-limb charge.
-    /// Trace: FR-109-AC-1, FR-109-AC-2, FR-372-AC-5
-    #[trace("TC-908", "FR-109-AC-1", "FR-109-AC-2", "FR-372-AC-5")]
+    /// Trace: FR-109-AC-1, FR-109-AC-2, FR-109-AC-8, FR-372-AC-5
+    #[trace("TC-908", "FR-109-AC-1", "FR-109-AC-2", "FR-109-AC-8", "FR-372-AC-5")]
     #[test]
     fn bounded_decimal_uses_cumulative_exact_event_boundary() {
         let expected = ValueType::Decimal(
@@ -2551,8 +2551,8 @@ mod tests {
 
     /// The magnitude premise is checked before invoking the helper; a
     /// completed nonmember is still a typed payload refusal at the same root.
-    /// Trace: FR-109-AC-4, FR-372-AC-5
-    #[trace("TC-908", "FR-109-AC-4", "FR-372-AC-5")]
+    /// Trace: FR-109-AC-4, FR-109-AC-8, FR-372-AC-5
+    #[trace("TC-908", "FR-109-AC-4", "FR-109-AC-8", "FR-372-AC-5")]
     #[test]
     fn bounded_decimal_retains_size_and_nonmembership_locus() {
         let expected = ValueType::Decimal(
