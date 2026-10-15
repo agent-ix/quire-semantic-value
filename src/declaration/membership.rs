@@ -12,13 +12,17 @@
 //! [`SuppliedAdmissionError::Capacity`] with the exact native request.
 
 use alloc::vec::Vec;
+use core::cell::Cell;
 
-use quire_exact::{Value, ValueType};
+use quire_exact::{Cancel, NumericMembershipFailure, Value, ValueType};
 
-use super::{reserve_elements, ReservationPolicy, StorageFailure, TypeEnvironment};
+use super::{
+    reserve_elements, GlobalReservations, ReservationPolicy, StorageFailure, TypeEnvironment,
+};
 use crate::supplied_membership::{
-    InvalidMembershipCause, MembershipEvent, MembershipLocus, MembershipPart, MembershipPathArena,
-    PathAppendError, PathStep, PathToken, SuppliedAdmissionError, UnsupportedHelperFamily,
+    BoundedSuppliedAdmissionError, InvalidMembershipCause, MembershipEvent, MembershipLocus,
+    MembershipPart, MembershipPathArena, PathAppendError, PathStep, PathToken,
+    SuppliedAdmissionError, SuppliedMembershipBudget, UnsupportedHelperFamily,
 };
 
 /// A logical event request or a response boundary after its indivisible
@@ -32,8 +36,7 @@ pub(super) enum MembershipBoundary {
     RequiresQualification(UnsupportedHelperFamily, MembershipEvent, MembershipLocus),
 }
 
-type Callback<'f, Cause> =
-    dyn FnMut(MembershipBoundary) -> Result<(), SuppliedAdmissionError<Cause>> + 'f;
+type Callback<'f, Error> = dyn FnMut(MembershipBoundary) -> Result<(), Error> + 'f;
 
 /// A pending occurrence: its expected type, the value, and its rooted path.
 type Pending<'a> = (&'a ValueType, &'a Value, PathToken);
@@ -49,19 +52,19 @@ impl<'a, R: ReservationPolicy> Frontier<'_, 'a, R> {
     /// Reserve room for one node's whole batch of children, before the batch's
     /// first scheduling event. `first` is the child that would be scheduled
     /// first, which names the locus of a failure.
-    fn reserve<Cause>(
+    fn reserve<Cause, Error: From<SuppliedAdmissionError<Cause>>>(
         &mut self,
         additional: usize,
         parent: PathToken,
         first: PathStep,
-        on_boundary: &mut Callback<'_, Cause>,
-    ) -> Result<(), SuppliedAdmissionError<Cause>> {
+        on_boundary: &mut Callback<'_, Error>,
+    ) -> Result<(), Error> {
         let locus = MembershipLocus {
             path: parent,
             part: MembershipPart::Child(first),
         };
         reserve_elements(&mut self.pending, additional, self.reservation)
-            .map_err(|failure| storage(failure, locus))?;
+            .map_err(|failure| Error::from(storage(failure, locus)))?;
         on_boundary(MembershipBoundary::AfterHelper(
             MembershipEvent::ChildScheduling,
             locus,
@@ -70,13 +73,13 @@ impl<'a, R: ReservationPolicy> Frontier<'_, 'a, R> {
 
     /// Emit the scheduling event for one actual child, then retain its path
     /// node and queue it into the already reserved worklist.
-    fn schedule<Cause: From<InvalidMembershipCause>>(
+    fn schedule<Cause: From<InvalidMembershipCause>, Error: From<SuppliedAdmissionError<Cause>>>(
         &mut self,
         parent: PathToken,
         step: PathStep,
         child: (&'a ValueType, &'a Value),
-        on_boundary: &mut Callback<'_, Cause>,
-    ) -> Result<(), SuppliedAdmissionError<Cause>> {
+        on_boundary: &mut Callback<'_, Error>,
+    ) -> Result<(), Error> {
         let at = MembershipLocus {
             path: parent,
             part: MembershipPart::Child(step),
@@ -89,9 +92,13 @@ impl<'a, R: ReservationPolicy> Frontier<'_, 'a, R> {
         let path = self
             .arena
             .append_child::<Cause>(parent, step, &mut |request| reservation.permit(request))
-            .map_err(|failure| match failure {
-                PathAppendError::ForeignParent => invalid(InvalidMembershipCause::ForeignPath, at),
-                PathAppendError::Admission(stop) => stop,
+            .map_err(|failure| {
+                Error::from(match failure {
+                    PathAppendError::ForeignParent => {
+                        invalid(InvalidMembershipCause::ForeignPath, at)
+                    }
+                    PathAppendError::Admission(stop) => stop,
+                })
             })?;
         on_boundary(MembershipBoundary::AfterHelper(
             MembershipEvent::ChildScheduling,
@@ -130,13 +137,16 @@ fn invalid<Cause: From<InvalidMembershipCause>>(
 
 /// Compare two type chains one link pair at a time, emitting one event per
 /// pair, the initial one included. Ordinals count from `first_ordinal`.
-fn same_type_walk<Cause: From<InvalidMembershipCause>>(
+fn same_type_walk<
+    Cause: From<InvalidMembershipCause>,
+    Error: From<SuppliedAdmissionError<Cause>>,
+>(
     left: &ValueType,
     right: &ValueType,
     path: PathToken,
     first_ordinal: u64,
-    on_boundary: &mut Callback<'_, Cause>,
-) -> Result<(), SuppliedAdmissionError<Cause>> {
+    on_boundary: &mut Callback<'_, Error>,
+) -> Result<(), Error> {
     enum TypeStep<'a> {
         Continue(&'a ValueType, &'a ValueType),
         Equal,
@@ -193,13 +203,84 @@ fn same_type_walk<Cause: From<InvalidMembershipCause>>(
         (left, right) = match step {
             TypeStep::Continue(left, right) => (left, right),
             TypeStep::Equal => return Ok(()),
-            TypeStep::Mismatch => return Err(invalid(InvalidMembershipCause::Type, at)),
+            TypeStep::Mismatch => return Err(invalid(InvalidMembershipCause::Type, at).into()),
         };
         ordinal = ordinal.saturating_add(1);
     }
 }
 
 impl TypeEnvironment {
+    /// Check a supplied value with the caller's authenticated maximum magnitude
+    /// bit length for numeric VALUE membership. Reuse `budget` and `arena`
+    /// across arguments to keep work cumulative and loci rooted. `magnitude_bits`
+    /// is explicit; this method supplies no default. Retained numeric type-link
+    /// comparison remains unqualified and reports `UnsupportedHelper`.
+    pub fn admit_supplied_bounded_numeric<Cause: From<InvalidMembershipCause>>(
+        &self,
+        expected: &ValueType,
+        value: &Value,
+        arena: &mut MembershipPathArena,
+        at: MembershipLocus,
+        budget: &mut SuppliedMembershipBudget,
+        cancel: &Cancel,
+        magnitude_bits: u64,
+    ) -> Result<(), BoundedSuppliedAdmissionError<Cause>> {
+        let spent = Cell::new(budget.spent());
+        self.admits_walk_core(
+            expected,
+            value,
+            arena,
+            at,
+            &mut |boundary| match boundary {
+                MembershipBoundary::Event(event, locus) => {
+                    budget.charge(event, locus, cancel)?;
+                    spent.set(budget.spent());
+                    Ok(())
+                }
+                MembershipBoundary::AfterHelper(event, locus) => budget
+                    .check_cancel(event, locus, cancel)
+                    .map_err(Into::into),
+                MembershipBoundary::RequiresQualification(family, event, locus) => {
+                    budget.check_cancel(event, locus, cancel)?;
+                    Err(SuppliedAdmissionError::UnsupportedHelper { family, locus }.into())
+                }
+            },
+            &mut |expected, value, locus| {
+                let admitted = match (expected, value) {
+                    (ValueType::Int(interval), Value::Integer(integer)) => {
+                        interval.try_contains_bounded(integer, magnitude_bits, cancel)
+                    }
+                    (ValueType::Rational(domain), Value::Rational(rational)) => {
+                        domain.try_contains_bounded(rational, magnitude_bits, cancel)
+                    }
+                    _ => return Ok(None),
+                };
+                admitted.map(Some).map_err(|failure| match failure {
+                    NumericMembershipFailure::UnsupportedSize {
+                        operand,
+                        measured_bits,
+                        limit_bits,
+                    } => BoundedSuppliedAdmissionError::NumericSize {
+                        operand,
+                        measured_bits,
+                        limit_bits,
+                        locus,
+                    },
+                    NumericMembershipFailure::Cancelled(cause) => {
+                        SuppliedAdmissionError::Cancelled {
+                            cause,
+                            spent: spent.get(),
+                            event: MembershipEvent::ValueVisit,
+                            locus,
+                        }
+                        .into()
+                    }
+                })
+            },
+            &GlobalReservations,
+        )
+    }
+
     /// Walk `value` against `expected` under this environment's conformance,
     /// as [`Self::admits`] decides it, emitting a typed event and rooted
     /// locus to `on_event` immediately before each logical action. The
@@ -241,8 +322,33 @@ impl TypeEnvironment {
         on_boundary: &mut impl FnMut(MembershipBoundary) -> Result<(), SuppliedAdmissionError<Cause>>,
         reservation: &impl ReservationPolicy,
     ) -> Result<(), SuppliedAdmissionError<Cause>> {
+        self.admits_walk_core(
+            expected,
+            value,
+            arena,
+            at,
+            on_boundary,
+            &mut |_, _, _| Ok(None),
+            reservation,
+        )
+    }
+
+    fn admits_walk_core<
+        'a,
+        Cause: From<InvalidMembershipCause>,
+        Error: From<SuppliedAdmissionError<Cause>>,
+    >(
+        &self,
+        expected: &'a ValueType,
+        value: &'a Value,
+        arena: &mut MembershipPathArena,
+        at: MembershipLocus,
+        on_boundary: &mut impl FnMut(MembershipBoundary) -> Result<(), Error>,
+        on_numeric: &mut impl FnMut(&ValueType, &Value, MembershipLocus) -> Result<Option<bool>, Error>,
+        reservation: &impl ReservationPolicy,
+    ) -> Result<(), Error> {
         if arena.resolve(at).is_none() {
-            return Err(invalid(InvalidMembershipCause::ForeignPath, at));
+            return Err(invalid(InvalidMembershipCause::ForeignPath, at).into());
         }
         let mut frontier = Frontier {
             arena,
@@ -256,19 +362,31 @@ impl TypeEnvironment {
                 part: MembershipPart::Value,
             };
             on_boundary(MembershipBoundary::Event(MembershipEvent::ValueVisit, here))?;
-            self.admit_occurrence(expected, value, path, &mut frontier, on_boundary)?;
+            self.admit_occurrence::<Cause, Error>(
+                expected,
+                value,
+                path,
+                &mut frontier,
+                on_boundary,
+                on_numeric,
+            )?;
         }
         Ok(())
     }
 
-    fn admit_occurrence<'a, Cause: From<InvalidMembershipCause>>(
+    fn admit_occurrence<
+        'a,
+        Cause: From<InvalidMembershipCause>,
+        Error: From<SuppliedAdmissionError<Cause>>,
+    >(
         &self,
         expected: &'a ValueType,
         value: &'a Value,
         path: PathToken,
         frontier: &mut Frontier<'_, 'a, impl ReservationPolicy>,
-        on_boundary: &mut Callback<'_, Cause>,
-    ) -> Result<(), SuppliedAdmissionError<Cause>> {
+        on_boundary: &mut Callback<'_, Error>,
+        on_numeric: &mut impl FnMut(&ValueType, &Value, MembershipLocus) -> Result<Option<bool>, Error>,
+    ) -> Result<(), Error> {
         let here = MembershipLocus {
             path,
             part: MembershipPart::Value,
@@ -289,7 +407,7 @@ impl TypeEnvironment {
                     query,
                 ))?;
                 if !conforms {
-                    return Err(invalid(InvalidMembershipCause::ReferenceConformance, query));
+                    return Err(invalid(InvalidMembershipCause::ReferenceConformance, query).into());
                 }
             }
             (ValueType::Composite(declared), Value::Composite(composite)) => {
@@ -303,7 +421,7 @@ impl TypeEnvironment {
                     query,
                 ))?;
                 if !conforms {
-                    return Err(invalid(InvalidMembershipCause::CompositeConformance, query));
+                    return Err(invalid(InvalidMembershipCause::CompositeConformance, query).into());
                 }
             }
             (ValueType::Enum(_), Value::Enum(_)) => {
@@ -317,7 +435,7 @@ impl TypeEnvironment {
                     query,
                 ))?;
                 if !admitted {
-                    return Err(invalid(InvalidMembershipCause::Member, query));
+                    return Err(invalid(InvalidMembershipCause::Member, query).into());
                 }
             }
             (ValueType::Composite(_), Value::Union(_)) => {
@@ -326,13 +444,24 @@ impl TypeEnvironment {
                     MembershipEvent::ValueVisit,
                     here,
                 ))?;
-                return Err(invalid(InvalidMembershipCause::UnsupportedUnion, here));
+                return Err(invalid(InvalidMembershipCause::UnsupportedUnion, here).into());
             }
             (ValueType::Option(payload), Value::Option(option)) => {
-                same_type_walk(option.payload_type(), payload, path, 0, on_boundary)?;
+                same_type_walk::<Cause, Error>(
+                    option.payload_type(),
+                    payload,
+                    path,
+                    0,
+                    on_boundary,
+                )?;
                 if let Some(present) = option.payload() {
-                    frontier.reserve(1, path, PathStep::OptionPayload, on_boundary)?;
-                    frontier.schedule(
+                    frontier.reserve::<Cause, Error>(
+                        1,
+                        path,
+                        PathStep::OptionPayload,
+                        on_boundary,
+                    )?;
+                    frontier.schedule::<Cause, Error>(
                         path,
                         PathStep::OptionPayload,
                         (payload, present),
@@ -357,12 +486,18 @@ impl TypeEnvironment {
                     pair,
                 ))?;
                 if !matching {
-                    return Err(invalid(InvalidMembershipCause::Type, pair));
+                    return Err(invalid(InvalidMembershipCause::Type, pair).into());
                 }
-                same_type_walk(actual.element(), declared.element(), path, 1, on_boundary)?;
+                same_type_walk::<Cause, Error>(
+                    actual.element(),
+                    declared.element(),
+                    path,
+                    1,
+                    on_boundary,
+                )?;
                 let elements = collection.elements();
                 if let Some(last) = elements.len().checked_sub(1) {
-                    frontier.reserve(
+                    frontier.reserve::<Cause, Error>(
                         elements.len(),
                         path,
                         PathStep::CollectionElement(last),
@@ -370,7 +505,7 @@ impl TypeEnvironment {
                     )?;
                 }
                 for (index, element) in elements.iter().enumerate().rev() {
-                    frontier.schedule(
+                    frontier.schedule::<Cause, Error>(
                         path,
                         PathStep::CollectionElement(index),
                         (declared.element(), element),
@@ -389,24 +524,27 @@ impl TypeEnvironment {
                         here,
                     ))?;
                 }
-                if matches!(
-                    (expected, value),
-                    (ValueType::Int(_), Value::Integer(_))
-                        | (ValueType::Rational(_), Value::Rational(_))
-                ) {
+                let numeric_admitted = on_numeric(expected, value, here)?;
+                if numeric_admitted.is_none()
+                    && matches!(
+                        (expected, value),
+                        (ValueType::Int(_), Value::Integer(_))
+                            | (ValueType::Rational(_), Value::Rational(_))
+                    )
+                {
                     on_boundary(MembershipBoundary::RequiresQualification(
                         UnsupportedHelperFamily::NumericDomain,
                         MembershipEvent::ValueVisit,
                         here,
                     ))?;
                 }
-                let admitted = expected.admits(value);
+                let admitted = numeric_admitted.unwrap_or_else(|| expected.admits(value));
                 on_boundary(MembershipBoundary::AfterHelper(
                     MembershipEvent::ValueVisit,
                     here,
                 ))?;
                 if !admitted {
-                    return Err(invalid(leaf_cause(expected, value), here));
+                    return Err(invalid(leaf_cause(expected, value), here).into());
                 }
             }
         }
@@ -867,7 +1005,7 @@ mod tests {
             reservation: &policy,
         };
         let mut after_reservation = false;
-        let result = frontier.reserve::<InvalidMembershipCause>(
+        let result = frontier.reserve::<InvalidMembershipCause, Stop>(
             usize::MAX,
             root,
             PathStep::CollectionElement(0),
@@ -1229,6 +1367,332 @@ mod tests {
             })
         );
         assert_eq!(budget.spent(), 1);
+    }
+
+    /// Every numeric operand is checked against the explicit bit ceiling
+    /// after its value-visit event has been charged.
+    /// Trace: FR-109-AC-1, FR-109-AC-7
+    #[trace("TC-908", "FR-109-AC-1", "FR-109-AC-7")]
+    #[test]
+    fn bounded_numeric_value_checks_all_three_integer_and_six_rational_operands() {
+        use quire_exact::NumericMembershipOperand as Operand;
+
+        let i = |value: i64| Integer::from(value);
+        let interval = |lower, upper| IntegerInterval::spanning(i(lower), i(upper));
+        let rational = |numerator, denominator| {
+            Rational::new(i(numerator), i(denominator)).expect("positive denominator")
+        };
+        let domain = |nl, nu, dl, du| {
+            RationalDomain::new(interval(nl, nu), interval(dl, du))
+                .expect("positive denominator interval")
+        };
+        let cases = [
+            (
+                ValueType::Int(interval(0, 1)),
+                integer(2),
+                Operand::IntegerValue,
+            ),
+            (
+                ValueType::Int(interval(2, 2)),
+                integer(1),
+                Operand::IntegerLower,
+            ),
+            (
+                ValueType::Int(interval(0, 2)),
+                integer(1),
+                Operand::IntegerUpper,
+            ),
+            (
+                ValueType::Rational(domain(0, 1, 1, 1)),
+                Value::Rational(rational(2, 1)),
+                Operand::RationalNumerator,
+            ),
+            (
+                ValueType::Rational(domain(0, 1, 1, 2)),
+                Value::Rational(rational(1, 2)),
+                Operand::RationalDenominator,
+            ),
+            (
+                ValueType::Rational(domain(2, 2, 1, 1)),
+                Value::Rational(rational(1, 1)),
+                Operand::RationalNumeratorLower,
+            ),
+            (
+                ValueType::Rational(domain(0, 2, 1, 1)),
+                Value::Rational(rational(1, 1)),
+                Operand::RationalNumeratorUpper,
+            ),
+            (
+                ValueType::Rational(domain(0, 1, 2, 2)),
+                Value::Rational(rational(1, 1)),
+                Operand::RationalDenominatorLower,
+            ),
+            (
+                ValueType::Rational(domain(0, 1, 1, 2)),
+                Value::Rational(rational(1, 1)),
+                Operand::RationalDenominatorUpper,
+            ),
+        ];
+        for (expected, value, operand) in cases {
+            let mut arena = MembershipPathArena::new().expect("arena");
+            let at = MembershipLocus {
+                path: arena.root(4),
+                part: MembershipPart::Value,
+            };
+            let mut budget = SuppliedMembershipBudget::new(1);
+            assert_eq!(
+                environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                    &expected,
+                    &value,
+                    &mut arena,
+                    at,
+                    &mut budget,
+                    &Cancel::new(),
+                    1,
+                ),
+                Err(BoundedSuppliedAdmissionError::NumericSize {
+                    operand,
+                    measured_bits: 2,
+                    limit_bits: 1,
+                    locus: at,
+                })
+            );
+            assert_eq!(budget.spent(), 1);
+            assert_eq!(arena.resolve(at).expect("rooted locus").argument(), 4);
+        }
+    }
+
+    /// The value event precedes the numeric helper, and the same budget covers
+    /// later arguments. Zero needs one bit, even when the integer is zero.
+    /// Trace: FR-109-AC-1, FR-109-AC-2, FR-109-AC-3
+    #[trace("TC-908", "FR-109-AC-1", "FR-109-AC-2", "FR-109-AC-3")]
+    #[test]
+    fn bounded_numeric_respects_event_order_zero_and_original_cancel() {
+        let expected = ValueType::Int(IntegerInterval::spanning(Integer::zero(), Integer::one()));
+        let value = integer(0);
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let first = MembershipLocus {
+            path: arena.root(0),
+            part: MembershipPart::Value,
+        };
+        let second = MembershipLocus {
+            path: arena.root(1),
+            part: MembershipPart::Value,
+        };
+        let cancel = Cancel::new();
+        let mut budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                first,
+                &mut budget,
+                &cancel,
+                1,
+            ),
+            Ok(())
+        );
+        assert_eq!(budget.spent(), 1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                second,
+                &mut budget,
+                &cancel,
+                0,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Limit {
+                ceiling: 1,
+                spent: 1,
+                requested: 1,
+                event: MembershipEvent::ValueVisit,
+                locus: second,
+            }))
+        );
+        assert_eq!(budget.spent(), 1);
+
+        let mut zero_budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                second,
+                &mut zero_budget,
+                &cancel,
+                0,
+            ),
+            Err(BoundedSuppliedAdmissionError::NumericSize {
+                operand: quire_exact::NumericMembershipOperand::IntegerValue,
+                measured_bits: 1,
+                limit_bits: 0,
+                locus: second,
+            })
+        );
+        assert_eq!(zero_budget.spent(), 1);
+
+        cancel.cancel(CancelCause::Requested);
+        let mut cancelled_budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                second,
+                &mut cancelled_budget,
+                &cancel,
+                0,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Cancelled {
+                cause: CancelCause::Requested,
+                spent: 0,
+                event: MembershipEvent::ValueVisit,
+                locus: second,
+            }))
+        );
+        assert_eq!(cancelled_budget.spent(), 0);
+        assert_eq!(cancel.tripped(), Some(CancelCause::Requested));
+    }
+
+    /// The seventh poll is the first borrowed-limb comparison after the
+    /// value event, helper entry, three operand checks, and comparison entry.
+    /// Trace: FR-109-AC-3
+    #[trace("TC-908", "FR-109-AC-3")]
+    #[test]
+    fn bounded_numeric_maps_cancellation_during_kernel_comparison() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let polls = Arc::new(AtomicUsize::new(0));
+        let trigger = Arc::new(Mutex::new(None::<Cancel>));
+        let observed_polls = Arc::clone(&polls);
+        let observed_trigger = Arc::clone(&trigger);
+        let cancel = Cancel::observing(move || {
+            let ordinal = observed_polls.fetch_add(1, Ordering::SeqCst) + 1;
+            if ordinal == 7 {
+                observed_trigger
+                    .lock()
+                    .expect("test cancellation handle lock")
+                    .take()
+                    .expect("test cancellation handle")
+                    .cancel(CancelCause::Deadline);
+            }
+        });
+        *trigger.lock().expect("test cancellation handle lock") = Some(cancel.clone());
+
+        let expected = ValueType::Int(IntegerInterval::spanning(
+            Integer::from(10_i64),
+            Integer::from(12_i64),
+        ));
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(7),
+            part: MembershipPart::Value,
+        };
+        let mut budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &integer(11),
+                &mut arena,
+                at,
+                &mut budget,
+                &cancel,
+                4,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Cancelled {
+                cause: CancelCause::Deadline,
+                spent: 1,
+                event: MembershipEvent::ValueVisit,
+                locus: at,
+            }))
+        );
+        assert_eq!(budget.spent(), 1);
+        assert_eq!(polls.load(Ordering::SeqCst), 7);
+        assert_eq!(cancel.tripped(), Some(CancelCause::Deadline));
+        assert_eq!(arena.resolve(at).expect("rooted locus").argument(), 7);
+    }
+
+    /// The new caller path reports invalid membership and successful bounded
+    /// numeric membership while retaining an independent root for each call.
+    /// Trace: FR-109-AC-2, FR-109-AC-4
+    #[trace("TC-908", "FR-109-AC-2", "FR-109-AC-4")]
+    #[test]
+    fn bounded_numeric_accepts_at_b_and_rejects_outside_domain() {
+        let expected = ValueType::Int(IntegerInterval::spanning(
+            Integer::zero(),
+            Integer::from(2_i64),
+        ));
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let first = MembershipLocus {
+            path: arena.root(0),
+            part: MembershipPart::Value,
+        };
+        let second = MembershipLocus {
+            path: arena.root(1),
+            part: MembershipPart::Value,
+        };
+        let mut budget = SuppliedMembershipBudget::new(2);
+        let cancel = Cancel::new();
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &integer(2),
+                &mut arena,
+                first,
+                &mut budget,
+                &cancel,
+                2,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &integer(3),
+                &mut arena,
+                second,
+                &mut budget,
+                &cancel,
+                2,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Invalid {
+                cause: InvalidMembershipCause::Payload,
+                locus: second,
+            }))
+        );
+        assert_eq!(budget.spent(), 2);
+
+        let rational =
+            Rational::new(Integer::one(), Integer::from(2_i64)).expect("positive denominator");
+        let rational_type = ValueType::Rational(
+            RationalDomain::new(
+                IntegerInterval::spanning(Integer::zero(), Integer::one()),
+                IntegerInterval::spanning(Integer::one(), Integer::from(2_i64)),
+            )
+            .expect("positive denominator interval"),
+        );
+        let third = MembershipLocus {
+            path: arena.root(2),
+            part: MembershipPart::Value,
+        };
+        let mut rational_budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &rational_type,
+                &Value::Rational(rational),
+                &mut arena,
+                third,
+                &mut rational_budget,
+                &cancel,
+                2,
+            ),
+            Ok(())
+        );
+        assert_eq!(rational_budget.spent(), 1);
     }
 
     /// Supplied numeric domains stop before unbounded BigInt comparisons,
