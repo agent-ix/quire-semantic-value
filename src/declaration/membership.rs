@@ -2662,8 +2662,8 @@ mod tests {
     /// The QSV projection preserves a constructed kernel resource failure's
     /// actual native request and rooted locus. Exact TC-920 tests the kernel's
     /// production allocation and checked-capacity mechanisms separately.
-    /// Trace: FR-372-AC-5
-    #[trace("TC-908", "FR-372-AC-5")]
+    /// Trace: FR-109-AC-8, FR-372-AC-5
+    #[trace("TC-908", "FR-109-AC-8", "FR-372-AC-5")]
     #[test]
     fn decimal_kernel_resource_failures_project_without_partial_admission() {
         let arena = MembershipPathArena::new().expect("arena");
@@ -2710,8 +2710,8 @@ mod tests {
 
     /// Cancellation observed by the kernel after the owning value event
     /// retains the original handle's cause and the already-spent budget.
-    /// Trace: FR-109-AC-3, FR-372-AC-5
-    #[trace("TC-908", "FR-109-AC-3", "FR-372-AC-5")]
+    /// Trace: FR-109-AC-3, FR-109-AC-8, FR-372-AC-5
+    #[trace("TC-908", "FR-109-AC-3", "FR-109-AC-8", "FR-372-AC-5")]
     #[test]
     fn bounded_decimal_maps_original_handle_cancellation_during_helper() {
         use core::sync::atomic::{AtomicUsize, Ordering};
