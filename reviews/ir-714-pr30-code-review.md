@@ -55,3 +55,9 @@ scope:
 ## Review limits
 
 This PR does not complete IR-714's Numeric/Decimal or QSL cross-phase requirements. The strict matrix's one untagged criterion is FR-109-AC-6, already owned by QSL-772 integration, and is not caused by this diff.
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | At head 1dd12c28453f4c9b5a6f96418928380357ecf10c, FR-115 and TC-915 Status now describe enabled typed-event Union membership and keep separate consumer obligations distinct. |

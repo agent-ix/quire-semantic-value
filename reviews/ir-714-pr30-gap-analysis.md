@@ -63,3 +63,10 @@ bindings:
   - {test_id: sealed_union_final_key_never_admits_a_record_or_tuple_carrier, ac_id: FR-115-AC-5, trace: correct}
   - {test_id: record_and_tuple_carriers_are_not_admitted_at_a_union_type, ac_id: FR-115-AC-5, trace: correct}
 ```
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | At head 1dd12c28453f4c9b5a6f96418928380357ecf10c, the new supplied-admission test asserts Member for unknown/spoofed bindings, Payload for arity, and Kind for a positional value, with rooted descriptor/payload loci and spend. |
+| FND-002 | fixed | At head 1dd12c28453f4c9b5a6f96418928380357ecf10c, the sealed carrier test checks Option-wrapped refusal for Record/Tuple shaped slots on both handle and final keys. |
