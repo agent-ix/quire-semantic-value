@@ -1557,6 +1557,65 @@ mod tests {
         assert_eq!(cancel.tripped(), Some(CancelCause::Requested));
     }
 
+    /// The seventh poll is the first borrowed-limb comparison after the
+    /// value event, helper entry, three operand checks, and comparison entry.
+    /// Trace: FR-109-AC-3
+    #[trace("TC-908", "FR-109-AC-3")]
+    #[test]
+    fn bounded_numeric_maps_cancellation_during_kernel_comparison() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let polls = Arc::new(AtomicUsize::new(0));
+        let trigger = Arc::new(Mutex::new(None::<Cancel>));
+        let observed_polls = Arc::clone(&polls);
+        let observed_trigger = Arc::clone(&trigger);
+        let cancel = Cancel::observing(move || {
+            let ordinal = observed_polls.fetch_add(1, Ordering::SeqCst) + 1;
+            if ordinal == 7 {
+                observed_trigger
+                    .lock()
+                    .expect("test cancellation handle lock")
+                    .take()
+                    .expect("test cancellation handle")
+                    .cancel(CancelCause::Deadline);
+            }
+        });
+        *trigger.lock().expect("test cancellation handle lock") = Some(cancel.clone());
+
+        let expected = ValueType::Int(IntegerInterval::spanning(
+            Integer::from(10_i64),
+            Integer::from(12_i64),
+        ));
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(7),
+            part: MembershipPart::Value,
+        };
+        let mut budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &integer(11),
+                &mut arena,
+                at,
+                &mut budget,
+                &cancel,
+                4,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Cancelled {
+                cause: CancelCause::Deadline,
+                spent: 1,
+                event: MembershipEvent::ValueVisit,
+                locus: at,
+            }))
+        );
+        assert_eq!(budget.spent(), 1);
+        assert_eq!(polls.load(Ordering::SeqCst), 7);
+        assert_eq!(cancel.tripped(), Some(CancelCause::Deadline));
+        assert_eq!(arena.resolve(at).expect("rooted locus").argument(), 7);
+    }
+
     /// The new caller path reports invalid membership and successful bounded
     /// numeric membership while retaining an independent root for each call.
     /// Trace: FR-109-AC-2, FR-109-AC-4
