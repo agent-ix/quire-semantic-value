@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The QSpec FR-143 declared record, tuple and model object-type registry, and
+//! The QSpec FR-143 declared record, tuple, union and model object-type registry, and
 //! the QSpec FR-149 checked equality layer over it.
 //!
 //! It owns the registry (`TypeEnvironment`, `ObjectTypeDeclaration`,
@@ -77,7 +77,7 @@ use quire_exact::CollectionKind;
 use quire_exact::EffectiveId;
 use quire_exact::EnumShape;
 use quire_exact::NodeKey;
-use quire_exact::{compare_text, evaluate_decimal};
+use quire_exact::{compare_text, evaluate_decimal, Identifier, UnionMember, UnionValue, VariantId};
 
 use crate::supplied_membership::{
     InvalidMembershipCause, MembershipLocus, MembershipPart, MembershipPathArena,
@@ -175,6 +175,197 @@ mod storage_reservation_tests {
                 true
             }
         }
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "structural fixtures retain supplied identities; this is not FR441 minting"
+    )]
+    fn union_key(byte: u8) -> NodeKey {
+        NodeKey::from_digest([byte; 32])
+    }
+
+    fn union_topology() -> CompositeDeclaration {
+        CompositeDeclaration::new(
+            union_key(1),
+            "Tree",
+            CompositeShape::Union(vec![
+                UnionMemberDeclaration::resolved(Identifier::new("End").unwrap(), vec![]),
+                UnionMemberDeclaration::resolved(
+                    Identifier::new("Next").unwrap(),
+                    vec![ValueType::option(ValueType::Composite(union_key(1)))],
+                ),
+            ]),
+        )
+    }
+
+    fn union_bindings() -> Vec<UnionMember> {
+        vec![
+            UnionMember::from_admitted(
+                union_key(40),
+                union_key(10),
+                Identifier::new("End").unwrap(),
+            ),
+            UnionMember::from_admitted(
+                union_key(40),
+                union_key(11),
+                Identifier::new("Next").unwrap(),
+            ),
+        ]
+    }
+
+    struct DenyUnionPhase {
+        selected: StoragePhase,
+        phase: Cell<Option<StoragePhase>>,
+        next: usize,
+        calls: Cell<usize>,
+        denied: Cell<Option<StorageRequest>>,
+    }
+
+    impl ReservationPolicy for DenyUnionPhase {
+        fn phase(&self, phase: StoragePhase) {
+            self.phase.set(Some(phase));
+        }
+
+        fn permit(&self, request: StorageRequest) -> bool {
+            if self.phase.get() == Some(self.selected) {
+                let call = self.calls.get() + 1;
+                self.calls.set(call);
+                if call == self.next {
+                    self.denied.set(Some(request));
+                    return false;
+                }
+            }
+            true
+        }
+    }
+
+    /// Trace: FR-108-AC-1, FR-108-AC-3, FR-115-AC-3
+    #[trace("TC-907", "TC-915", "FR-108-AC-1", "FR-108-AC-3", "FR-115-AC-3")]
+    #[test]
+    fn union_topology_storage_denial_and_retry_use_the_production_boundary() {
+        for selected in [
+            StoragePhase::Registry,
+            StoragePhase::MemberTypes,
+            StoragePhase::Traversal,
+        ] {
+            let denial = DenyUnionPhase {
+                selected,
+                phase: Cell::new(None),
+                next: 1,
+                calls: Cell::new(0),
+                denied: Cell::new(None),
+            };
+            let result = TypeEnvironment::bounded_with_reservations(
+                [union_topology()],
+                [],
+                TypeEnvironmentLimits::default(),
+                None,
+                &denial,
+            );
+            let requested = denial
+                .denied
+                .get()
+                .expect("selected Union boundary reached");
+            assert_eq!(
+                requested,
+                StorageRequest::new(1, StorageUnit::AdditionalElements)
+            );
+            assert_eq!(result, Err(EnvironmentFailure::Allocation(requested)));
+            let retry = TypeEnvironment::new([union_topology()], [])
+                .expect("same input admits after denial");
+            assert_eq!(retry.union_key(union_key(1)), None);
+            assert_eq!(retry.union_handle(union_key(40)), None);
+        }
+    }
+
+    /// Trace: FR-108-AC-3, FR-115-AC-2, FR-115-AC-3
+    #[trace("TC-907", "TC-915", "FR-108-AC-3", "FR-115-AC-2", "FR-115-AC-3")]
+    #[test]
+    fn each_union_seal_destination_denies_before_any_binding_is_published() {
+        for (next, expected_amount) in [(1, 2), (2, 1), (3, 1)] {
+            let mut environment = TypeEnvironment::new([union_topology()], []).unwrap();
+            let before = environment.clone();
+            let denial = DenyUnionPhase {
+                selected: StoragePhase::KeyJoin,
+                phase: Cell::new(None),
+                next,
+                calls: Cell::new(0),
+                denied: Cell::new(None),
+            };
+            let result = environment.seal_union_with_reservations(
+                union_key(1),
+                union_key(40),
+                union_bindings(),
+                &denial,
+            );
+            let requested = denial
+                .denied
+                .get()
+                .expect("selected join reservation reached");
+            assert_eq!(
+                requested,
+                StorageRequest::new(expected_amount, StorageUnit::AdditionalElements)
+            );
+            assert_eq!(result, Err(EnvironmentFailure::Allocation(requested)));
+            assert_eq!(environment, before);
+            assert_eq!(environment.union_key(union_key(1)), None);
+            assert_eq!(environment.union_handle(union_key(40)), None);
+            let CompositeShape::Union(members) =
+                environment.composite(union_key(1)).unwrap().shape()
+            else {
+                panic!("resolved Union descriptor retained");
+            };
+            assert!(members.iter().all(|member| member.member().is_none()));
+            environment
+                .seal_union_verified(union_key(1), union_key(40), union_bindings())
+                .unwrap();
+            let mut fresh = before;
+            fresh
+                .seal_union_verified(union_key(1), union_key(40), union_bindings())
+                .unwrap();
+            assert_eq!(environment, fresh);
+            assert_eq!(environment.union_key(union_key(1)), Some(union_key(40)));
+            assert_eq!(environment.union_handle(union_key(40)), Some(union_key(1)));
+        }
+    }
+
+    /// Trace: FR-108-AC-1, FR-108-AC-4, FR-115-AC-3
+    #[trace("TC-907", "TC-915", "FR-108-AC-1", "FR-108-AC-4", "FR-115-AC-3")]
+    #[test]
+    fn union_binding_validation_byte_failure_retains_its_native_request() {
+        let mut environment = TypeEnvironment::new([union_topology()], []).unwrap();
+        let before = environment.clone();
+        let denial = DenyBytes {
+            seen: Cell::new(None),
+        };
+        let bad = || {
+            vec![UnionMember::from_admitted(
+                union_key(40),
+                union_key(10),
+                Identifier::new("End").unwrap(),
+            )]
+        };
+        assert_eq!(
+            environment.seal_union_with_reservations(union_key(1), union_key(40), bad(), &denial,),
+            Err(EnvironmentFailure::Allocation(StorageRequest::new(
+                4,
+                StorageUnit::Bytes
+            )))
+        );
+        assert_eq!(
+            denial.seen.get(),
+            Some(StorageRequest::new(4, StorageUnit::Bytes))
+        );
+        assert_eq!(environment, before);
+        assert_eq!(
+            environment.seal_union_verified(union_key(1), union_key(40), bad()),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                declaration: "Tree".into(),
+                cause: DeclarationCause::Type(IllTypedCause::TypeMismatch),
+            }))
+        );
+        assert_eq!(environment, before);
     }
 
     /// Trace: FR-108-AC-1, FR-108-AC-2, FR-108-AC-4
@@ -736,17 +927,73 @@ fn composite(declaration: NodeKey, slots: Box<[FieldValue]>) -> Value {
     from_admitted_slots(declaration, slots)
 }
 
-/// The shape of a composite declaration. Complete V1 has no variant or sum
-/// declaration.
+/// One resolved union member's topology, optionally sealed to a verified identity.
+/// Names and position types are available before canonical declaration lowering.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnionMemberDeclaration {
+    identity: UnionMemberIdentity,
+    positions: Vec<ValueType>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum UnionMemberIdentity {
+    Resolved(Identifier),
+    Verified(UnionMember),
+}
+
+impl UnionMemberDeclaration {
+    /// Resolve an authored member without granting runtime value admission.
+    pub fn resolved(identifier: Identifier, positions: Vec<ValueType>) -> Self {
+        Self {
+            identity: UnionMemberIdentity::Resolved(identifier),
+            positions,
+        }
+    }
+
+    /// Retain an already verified declaration/key/identifier triple and its
+    /// declared payload types for a final-keyed checked-package declaration.
+    /// Environment admission checks ownership, completeness and duplicates.
+    pub fn from_verified(member: UnionMember, positions: Vec<ValueType>) -> Self {
+        Self {
+            identity: UnionMemberIdentity::Verified(member),
+            positions,
+        }
+    }
+
+    /// The exact authored identifier, available before member-key verification.
+    pub fn identifier(&self) -> &Identifier {
+        match &self.identity {
+            UnionMemberIdentity::Resolved(identifier) => identifier,
+            UnionMemberIdentity::Verified(member) => member.identifier(),
+        }
+    }
+
+    /// The authoritative binding, absent until the entire union is sealed.
+    pub fn member(&self) -> Option<&UnionMember> {
+        match &self.identity {
+            UnionMemberIdentity::Resolved(_) => None,
+            UnionMemberIdentity::Verified(member) => Some(member),
+        }
+    }
+
+    /// Payload types in declared position order, empty for a nullary member.
+    pub fn positions(&self) -> &[ValueType] {
+        &self.positions
+    }
+}
+
+/// The shape of a composite declaration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CompositeShape {
     /// A record with fields in declaration order.
     Record(Vec<FieldDeclaration>),
     /// A tuple of exactly these position types.
     Tuple(Vec<ValueType>),
+    /// Resolved union members in declaration order, with optional verified bindings.
+    Union(Vec<UnionMemberDeclaration>),
 }
 
-/// A record or tuple declaration with its producer-assigned node key and
+/// A record, tuple or union declaration with its producer-assigned node key and
 /// optional direct composite supertypes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompositeDeclaration {
@@ -1812,6 +2059,11 @@ pub struct TypeEnvironment {
     field_keys: Vec<(EffectiveId, usize)>,
     /// The units a `ValueType::Quantity` of this package names by id.
     units: UnitTable,
+    union_members: OrderedIndex<(NodeKey, VariantId), usize>,
+    /// Explicit internal declaration handle to settled canonical union key join.
+    union_keys: OrderedIndex<NodeKey, NodeKey>,
+    /// The inverse join, used only for sealed unions; Record/Tuple keys stay intact.
+    union_handles: OrderedIndex<NodeKey, NodeKey>,
     /// Admission work is observed separately from semantic equality.
     admission_work_units: u64,
 }
@@ -1826,6 +2078,8 @@ impl PartialEq for TypeEnvironment {
             && self.attribute_slots == other.attribute_slots
             && self.field_keys == other.field_keys
             && self.units == other.units
+            && self.union_keys == other.union_keys
+            && self.union_handles == other.union_handles
     }
 }
 
@@ -1934,6 +2188,7 @@ impl TypeEnvironment {
         check_widening: bool,
     ) -> Admission<PendingTypeEnvironment> {
         let mut environment = Self::default();
+        let mut budget = WorkBudget::new(limits.work_units, cancel);
         reserve.phase(StoragePhase::Registry);
         for declaration in composites {
             let refuse = |cause| -> Admission<EnvironmentFailure> {
@@ -1952,6 +2207,86 @@ impl TypeEnvironment {
                     return Err(refuse(DeclarationCause::RedefinitionTarget(
                         try_clone_field_ref(target, reserve)?,
                     ))?);
+                }
+            }
+            if let CompositeShape::Union(members) = &declaration.shape {
+                // This declaration's existing unit precedes registry growth;
+                // member/type validation does not debit it again.
+                budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+                let mut names: OrderedIndex<&str, ()> = OrderedIndex::default();
+                let sealed = members
+                    .first()
+                    .is_some_and(|member| member.member().is_some());
+                for (position, member) in members.iter().enumerate() {
+                    budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+                    if member.member().is_some() != sealed {
+                        return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch))?);
+                    }
+                    if names
+                        .try_insert(member.identifier().as_str(), (), reserve)?
+                        .is_some()
+                    {
+                        return Err(refuse(DeclarationCause::DuplicateMember(try_clone_str(
+                            member.identifier().as_str(),
+                            reserve,
+                        )?))?);
+                    }
+                    if sealed {
+                        let Some(binding) = member.member() else {
+                            return Err(refuse(DeclarationCause::Type(
+                                IllTypedCause::TypeMismatch,
+                            ))?);
+                        };
+                        if binding.declaration() != declaration.key
+                            || binding.identifier() != member.identifier()
+                        {
+                            return Err(refuse(DeclarationCause::Type(
+                                IllTypedCause::TypeMismatch,
+                            ))?);
+                        }
+                        if environment
+                            .union_members
+                            .try_insert((declaration.key, binding.variant()), position, reserve)?
+                            .is_some()
+                        {
+                            return Err(refuse(DeclarationCause::DuplicateKey)?);
+                        }
+                    }
+                    for ty in &member.positions {
+                        let mut link = ty;
+                        loop {
+                            budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+                            match link {
+                                ValueType::Option(child) => link = child,
+                                ValueType::Collection(child) => link = child.element(),
+                                ValueType::Boolean
+                                | ValueType::Integer
+                                | ValueType::Int(_)
+                                | ValueType::Rational(_)
+                                | ValueType::Decimal(_)
+                                | ValueType::Float(_)
+                                | ValueType::Quantity(_)
+                                | ValueType::Text(_)
+                                | ValueType::Uuid
+                                | ValueType::Timestamp
+                                | ValueType::String
+                                | ValueType::Enum(_)
+                                | ValueType::Composite(_)
+                                | ValueType::Reference(_)
+                                | ValueType::Population(_) => break,
+                            }
+                        }
+                    }
+                }
+                if sealed {
+                    environment
+                        .union_keys
+                        .try_insert(declaration.key, declaration.key, reserve)?;
+                    environment.union_handles.try_insert(
+                        declaration.key,
+                        declaration.key,
+                        reserve,
+                    )?;
                 }
             }
             if environment.composites.contains_key(&declaration.key) {
@@ -1981,11 +2316,10 @@ impl TypeEnvironment {
                 .try_insert(declaration.key, declaration, reserve)?;
         }
         reserve.phase(StoragePhase::MemberTypes);
-        environment.check_member_types(reserve)?;
+        environment.check_member_types(&mut budget, reserve)?;
         reserve.phase(StoragePhase::Traversal);
-        environment.check_recursion(RecursionEdges::Unnamed, reserve)?;
-        environment.check_recursion(RecursionEdges::NonEscaping, reserve)?;
-        let mut budget = WorkBudget::new(limits.work_units, cancel);
+        environment.check_recursion(RecursionEdges::Unnamed, &mut budget, reserve)?;
+        environment.check_recursion(RecursionEdges::NonEscaping, &mut budget, reserve)?;
         environment.check_composite_supertypes(&mut budget, reserve)?;
         environment.composite_ancestry =
             environment.compute_composite_ancestors(&mut budget, reserve)?;
@@ -2079,7 +2413,8 @@ impl TypeEnvironment {
 
     /// The admitted record or tuple declaration with this key.
     pub fn composite(&self, key: NodeKey) -> Option<&CompositeDeclaration> {
-        self.composites.get(&key)
+        let handle = self.union_handles.get(&key).copied().unwrap_or(key);
+        self.composites.get(&handle)
     }
 
     /// Every admitted record and tuple declaration in key order.
@@ -2108,13 +2443,235 @@ impl TypeEnvironment {
 
     /// Whether composite declaration `sub` conforms to `sup`: reflexive, or
     /// `sup` is in `sub`'s admitted transitive composite-supertype closure.
-    /// Unknown unequal keys never conform.
+    /// Unknown unequal keys never conform, and a union declaration never conforms
+    /// to or from anything.
     pub fn composite_conforms(&self, sub: NodeKey, sup: NodeKey) -> bool {
+        // A union takes no part in composite generalization: no Record or Tuple
+        // carrier conforms to a union type, by either its handle or its final key.
+        if matches!(self.shape(sub), Some(CompositeShape::Union(_)))
+            || matches!(self.shape(sup), Some(CompositeShape::Union(_)))
+        {
+            return false;
+        }
         sub == sup
             || self
                 .composite_ancestry
                 .get(&sub)
                 .is_some_and(|ancestors| ancestors.binary_search(&sup).is_ok())
+    }
+
+    /// The settled canonical key explicitly attached to this internal union handle.
+    /// Returns `None` before sealing; no temporary handle is promoted implicitly.
+    pub fn union_key(&self, handle: NodeKey) -> Option<NodeKey> {
+        self.union_keys.get(&handle).copied()
+    }
+
+    /// The original declaration handle for a verified final union key.
+    pub fn union_handle(&self, final_key: NodeKey) -> Option<NodeKey> {
+        self.union_handles.get(&final_key).copied()
+    }
+
+    /// Attach a settled canonical key and producer-verified FR-441 bindings to an
+    /// already resolved union. The caller must verify the final key against its
+    /// settled canonical type node, and each binding against that node and the
+    /// exact declared identifier. This method hashes nothing.
+    /// Failed validation or reservation leaves the resolved registry unchanged.
+    /// Bindings must cover every member once, in declaration order; resealing
+    /// is refused.
+    pub fn seal_union_verified(
+        &mut self,
+        handle: NodeKey,
+        final_key: NodeKey,
+        bindings: Vec<UnionMember>,
+    ) -> Admission<()> {
+        self.seal_union_with_reservations(handle, final_key, bindings, &GlobalReservations)
+    }
+
+    fn seal_union_with_reservations<R: ReservationPolicy>(
+        &mut self,
+        handle: NodeKey,
+        final_key: NodeKey,
+        bindings: Vec<UnionMember>,
+        reserve: &R,
+    ) -> Admission<()> {
+        let Some(declaration) = self.composites.get(&handle) else {
+            return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                declaration: String::new(),
+                cause: DeclarationCause::UnknownDeclaration(handle),
+            }));
+        };
+        let refuse = |cause| -> Admission<EnvironmentFailure> {
+            Ok(EnvironmentFailure::Refused(InvalidDeclaration {
+                declaration: try_clone_str(&declaration.name, reserve)?,
+                cause,
+            }))
+        };
+        let CompositeShape::Union(members) = &declaration.shape else {
+            return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch))?);
+        };
+        if self.union_keys.contains_key(&handle)
+            || self.union_handles.contains_key(&final_key)
+            || (final_key != handle && self.composites.contains_key(&final_key))
+        {
+            return Err(refuse(DeclarationCause::DuplicateKey)?);
+        }
+        if members.len() != bindings.len() {
+            return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch))?);
+        }
+        reserve.phase(StoragePhase::Sealing);
+        let mut keys: OrderedIndex<VariantId, ()> = OrderedIndex::default();
+        for (member, binding) in members.iter().zip(&bindings) {
+            if member.member().is_some()
+                || binding.declaration() != final_key
+                || binding.identifier() != member.identifier()
+            {
+                return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch))?);
+            }
+            if keys.try_insert(binding.variant(), (), reserve)?.is_some() {
+                return Err(refuse(DeclarationCause::DuplicateKey)?);
+            }
+        }
+        // All three destinations reserve their complete growth before a binding
+        // is attached. Subsequent inserts fit these capacities and cannot deny a
+        // reservation. A failed reserve changes no descriptor or logical join.
+        reserve.phase(StoragePhase::KeyJoin);
+        reserve_elements(&mut self.union_members.entries, bindings.len(), reserve)?;
+        reserve_elements(&mut self.union_keys.entries, 1, reserve)?;
+        reserve_elements(&mut self.union_handles.entries, 1, reserve)?;
+        // Validation completes before the first mutation. The exact same
+        // declaration remains in this registry; only its verified attachment changes.
+        let Some(declaration) = self.composites.get_mut(&handle) else {
+            return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                declaration: String::new(),
+                cause: DeclarationCause::UnknownDeclaration(handle),
+            }));
+        };
+        let CompositeShape::Union(members) = &mut declaration.shape else {
+            return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                declaration: try_clone_str(&declaration.name, reserve)?,
+                cause: DeclarationCause::Type(IllTypedCause::TypeMismatch),
+            }));
+        };
+        for (position, (member, binding)) in members.iter_mut().zip(bindings).enumerate() {
+            self.union_members
+                .try_insert((handle, binding.variant()), position, reserve)?;
+            member.identity = UnionMemberIdentity::Verified(binding);
+        }
+        self.union_keys.try_insert(handle, final_key, reserve)?;
+        self.union_handles.try_insert(final_key, handle, reserve)?;
+        Ok(())
+    }
+
+    /// Compare resolved types using the explicit sealed union handle/key join.
+    /// Option and collection nesting is iterative; Record/Tuple identity is
+    /// unchanged.
+    pub fn same_type(&self, left: &ValueType, right: &ValueType) -> bool {
+        let (mut left, mut right) = (left, right);
+        loop {
+            match (left, right) {
+                (ValueType::Option(a), ValueType::Option(b)) => {
+                    left = a;
+                    right = b;
+                }
+                (ValueType::Collection(a), ValueType::Collection(b)) => {
+                    if a.kind() != b.kind() || a.bound() != b.bound() {
+                        return false;
+                    }
+                    left = a.element();
+                    right = b.element();
+                }
+                (ValueType::Composite(a), ValueType::Composite(b)) => {
+                    return self.union_handles.get(a).unwrap_or(a)
+                        == self.union_handles.get(b).unwrap_or(b);
+                }
+                _ => return left == right,
+            }
+        }
+    }
+
+    /// Resolve union handles in a runtime type through verified final-key joins,
+    /// rebuilding each Option and collection wrapper iteratively and preserving
+    /// its kind and bounds. An unsealed union leaf is `None`; other declaration
+    /// keys stay unchanged.
+    pub fn runtime_type(&self, value_type: &ValueType) -> Option<ValueType> {
+        let mut link = value_type;
+        let mut wrappers = Vec::new();
+        loop {
+            match link {
+                ValueType::Option(payload) => {
+                    wrappers.push(link);
+                    link = payload;
+                }
+                ValueType::Collection(collection) => {
+                    wrappers.push(link);
+                    link = collection.element();
+                }
+                _ => break,
+            }
+        }
+        let mut resolved = match link {
+            ValueType::Composite(key) => {
+                let declaration = self.composite(*key)?;
+                match declaration.shape() {
+                    CompositeShape::Union(_) => {
+                        ValueType::Composite(self.union_key(declaration.key())?)
+                    }
+                    CompositeShape::Record(_) | CompositeShape::Tuple(_) => {
+                        ValueType::Composite(*key)
+                    }
+                }
+            }
+            other => other.clone(),
+        };
+        while let Some(wrapper) = wrappers.pop() {
+            resolved = match wrapper {
+                ValueType::Option(_) => ValueType::option(resolved),
+                ValueType::Collection(collection) => {
+                    ValueType::collection(quire_exact::CollectionType::new(
+                        collection.kind(),
+                        resolved,
+                        collection.bound(),
+                    ))
+                }
+                _ => return None,
+            };
+        }
+        Some(resolved)
+    }
+
+    /// Resolve a member only after sealing, by internal handle or final key.
+    /// Returns declaration position and the same retained descriptor and binding.
+    pub fn union_member(
+        &self,
+        declaration: NodeKey,
+        variant: VariantId,
+    ) -> Option<(usize, &UnionMemberDeclaration)> {
+        let declaration = self
+            .union_handles
+            .get(&declaration)
+            .copied()
+            .unwrap_or(declaration);
+        self.union_key(declaration)?;
+        let position = *self.union_members.get(&(declaration, variant))?;
+        let CompositeShape::Union(members) = self.shape(declaration)? else {
+            return None;
+        };
+        Some((position, members.get(position)?))
+    }
+
+    /// Resolve an authored member name to its topology, before or after sealing.
+    pub fn union_member_named(
+        &self,
+        declaration: NodeKey,
+        name: &str,
+    ) -> Option<(usize, &UnionMemberDeclaration)> {
+        let Some(CompositeShape::Union(members)) = self.shape(declaration) else {
+            return None;
+        };
+        members
+            .iter()
+            .enumerate()
+            .find(|(_, member)| member.identifier().as_str() == name)
     }
 
     /// Whether `value_type` admits `value` under this environment's
@@ -2283,15 +2840,18 @@ impl TypeEnvironment {
                     if !visited.insert(*key) {
                         continue;
                     }
-                    match self
-                        .composites
-                        .get(key)
-                        .map(|declaration| &declaration.shape)
-                    {
+                    match self.composite(*key).map(|declaration| &declaration.shape) {
                         Some(CompositeShape::Record(fields)) => {
                             pending.extend(fields.iter().map(FieldDeclaration::value_type));
                         }
                         Some(CompositeShape::Tuple(positions)) => pending.extend(positions),
+                        // Every member is inspected, including alternatives no
+                        // value ever selects.
+                        Some(CompositeShape::Union(members)) => {
+                            for member in members {
+                                pending.extend(&member.positions);
+                            }
+                        }
                         None => {}
                     }
                 }
@@ -2318,7 +2878,7 @@ impl TypeEnvironment {
         let mut pending = vec![value_type];
         while let Some(value_type) = pending.pop() {
             match value_type {
-                ValueType::Composite(key) if !self.composites.contains_key(key) => {
+                ValueType::Composite(key) if self.composite(*key).is_none() => {
                     return Some(DeclarationCause::UnknownDeclaration(*key));
                 }
                 // QSpec FR-143: `T` in `Reference<T>` must name a model object
@@ -2374,12 +2934,19 @@ impl TypeEnvironment {
     fn contains_ieee_admission<R: ReservationPolicy>(
         &self,
         value_type: &ValueType,
+        charge: &mut impl FnMut(usize) -> Admission<()>,
         reserve: &R,
     ) -> Admission<bool> {
         let mut visited: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
+        charge(1)?;
         let mut pending = Vec::new();
         try_push(&mut pending, value_type, reserve)?;
+        let mut first = true;
         while let Some(value_type) = pending.pop() {
+            if !first {
+                charge(1)?;
+            }
+            first = false;
             match value_type {
                 ValueType::Float(_) => return Ok(true),
                 ValueType::Option(payload) => try_push(&mut pending, payload, reserve)?,
@@ -2406,6 +2973,15 @@ impl TypeEnvironment {
                                 try_push(&mut pending, position, reserve)?;
                             }
                         }
+                        Some(CompositeShape::Union(members)) => {
+                            charge(members.len())?;
+                            for member in members {
+                                charge(member.positions.len())?;
+                                for ty in &member.positions {
+                                    try_push(&mut pending, ty, reserve)?;
+                                }
+                            }
+                        }
                         None => {}
                     }
                 }
@@ -2430,11 +3006,18 @@ impl TypeEnvironment {
     fn type_refusal_admission<R: ReservationPolicy>(
         &self,
         value_type: &ValueType,
+        charge: &mut impl FnMut(usize) -> Admission<()>,
         reserve: &R,
     ) -> Admission<Option<DeclarationCause>> {
+        charge(1)?;
         let mut pending = Vec::new();
         try_push(&mut pending, value_type, reserve)?;
+        let mut first = true;
         while let Some(value_type) = pending.pop() {
+            if !first {
+                charge(1)?;
+            }
+            first = false;
             match value_type {
                 ValueType::Composite(key) if !self.composites.contains_key(key) => {
                     return Ok(Some(DeclarationCause::UnknownDeclaration(*key)));
@@ -2450,7 +3033,7 @@ impl TypeEnvironment {
                 ValueType::Option(payload) => try_push(&mut pending, payload, reserve)?,
                 ValueType::Collection(collection) => {
                     if collection.kind() != CollectionKind::Sequence
-                        && self.contains_ieee_admission(collection.element(), reserve)?
+                        && self.contains_ieee_admission(collection.element(), charge, reserve)?
                     {
                         return Ok(Some(DeclarationCause::Type(
                             IllTypedCause::OperatorIneligible,
@@ -2477,34 +3060,69 @@ impl TypeEnvironment {
         Ok(None)
     }
 
-    fn check_member_types<R: ReservationPolicy>(&self, reserve: &R) -> Admission<()> {
+    fn check_member_types<R: ReservationPolicy>(
+        &self,
+        budget: &mut WorkBudget,
+        reserve: &R,
+    ) -> Admission<()> {
         for declaration in self.composites.values() {
-            let types: &[_] = match &declaration.shape {
-                CompositeShape::Record(_) => &[],
-                CompositeShape::Tuple(positions) => positions,
-            };
-            for value_type in types {
-                if let Some(cause) = self.type_refusal_admission(value_type, reserve)? {
+            let mut check = |ty: &ValueType, metered: bool| -> Admission<()> {
+                let mut charge = |units| {
+                    if metered {
+                        budget.charge(units).map_err(EnvironmentFailure::Limit)
+                    } else {
+                        Ok(())
+                    }
+                };
+                if let Some(cause) = self.type_refusal_admission(ty, &mut charge, reserve)? {
                     return Err(EnvironmentFailure::Refused(InvalidDeclaration {
                         declaration: try_clone_str(&declaration.name, reserve)?,
                         cause,
                     }));
                 }
-            }
-            if let CompositeShape::Record(fields) = &declaration.shape {
-                for field in fields {
-                    if let Some(cause) = self.type_refusal_admission(field.value_type(), reserve)? {
-                        return Err(EnvironmentFailure::Refused(InvalidDeclaration {
-                            declaration: try_clone_str(&declaration.name, reserve)?,
-                            cause,
-                        }));
+                Ok(())
+            };
+            match &declaration.shape {
+                CompositeShape::Record(fields) => {
+                    for field in fields {
+                        check(field.value_type(), false)?;
+                    }
+                }
+                CompositeShape::Tuple(positions) => {
+                    for ty in positions {
+                        check(ty, false)?;
+                    }
+                }
+                CompositeShape::Union(members) => {
+                    // Charge the original declaration/member/position events before growth.
+                    for member in members {
+                        budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+                        budget
+                            .charge(member.positions.len())
+                            .map_err(EnvironmentFailure::Limit)?;
+                        for ty in &member.positions {
+                            if let Some(cause) = self.type_refusal_admission(
+                                ty,
+                                &mut |units| {
+                                    budget.charge(units).map_err(EnvironmentFailure::Limit)
+                                },
+                                reserve,
+                            )? {
+                                return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                                    declaration: try_clone_str(&declaration.name, reserve)?,
+                                    cause,
+                                }));
+                            }
+                        }
                     }
                 }
             }
         }
         for declaration in self.object_types.values() {
             for field in &declaration.attributes {
-                if let Some(cause) = self.type_refusal_admission(field.value_type(), reserve)? {
+                if let Some(cause) =
+                    self.type_refusal_admission(field.value_type(), &mut |_| Ok(()), reserve)?
+                {
                     return Err(EnvironmentFailure::Refused(InvalidDeclaration {
                         declaration: try_clone_str(&declaration.name, reserve)?,
                         cause,
@@ -2518,6 +3136,7 @@ impl TypeEnvironment {
     /// The recursion-rule edges leaving one declaration.
     fn edges<R: ReservationPolicy>(
         declaration: &CompositeDeclaration,
+        budget: &mut WorkBudget,
         reserve: &R,
     ) -> Admission<Vec<Edge>> {
         let mut members: Vec<(&ValueType, bool, bool)> = Vec::new();
@@ -2535,6 +3154,17 @@ impl TypeEnvironment {
                     )?;
                 }
             }
+            CompositeShape::Union(union_members) => {
+                for member in union_members {
+                    budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+                    budget
+                        .charge(member.positions.len())
+                        .map_err(EnvironmentFailure::Limit)?;
+                    for ty in &member.positions {
+                        try_push(&mut members, (ty, true, false), reserve)?;
+                    }
+                }
+            }
             CompositeShape::Tuple(positions) => {
                 for ty in positions {
                     try_push(&mut members, (ty, false, false), reserve)?;
@@ -2543,9 +3173,18 @@ impl TypeEnvironment {
         }
         let mut edges = Vec::new();
         for (value_type, named, escapes) in members {
+            let union = matches!(declaration.shape, CompositeShape::Union(_));
+            if union {
+                budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+            }
             let mut pending = Vec::new();
             try_push(&mut pending, (value_type, escapes), reserve)?;
+            let mut first = true;
             while let Some((value_type, escapes)) = pending.pop() {
+                if union && !first {
+                    budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+                }
+                first = false;
                 match value_type {
                     ValueType::Composite(target) => try_push(
                         &mut edges,
@@ -2590,12 +3229,16 @@ impl TypeEnvironment {
     fn check_recursion<R: ReservationPolicy>(
         &self,
         subgraph: RecursionEdges,
+        budget: &mut WorkBudget,
         reserve: &R,
     ) -> Admission<()> {
         let mut graph: OrderedIndex<NodeKey, Vec<NodeKey>> = OrderedIndex::default();
         for declaration in self.composites.values() {
+            if matches!(declaration.shape, CompositeShape::Union(_)) {
+                budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+            }
             let mut targets = Vec::new();
-            for edge in Self::edges(declaration, reserve)? {
+            for edge in Self::edges(declaration, budget, reserve)? {
                 let included = match subgraph {
                     RecursionEdges::Unnamed => !edge.named,
                     RecursionEdges::NonEscaping => !edge.escapes,
@@ -2612,21 +3255,35 @@ impl TypeEnvironment {
                 .map_or("", |declaration| declaration.name.as_str())
         };
         let mut finished: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
+        let mut active: OrderedIndex<NodeKey, usize> = OrderedIndex::default();
         for root in graph.keys() {
+            if matches!(self.shape(*root), Some(CompositeShape::Union(_))) {
+                budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+            }
             if finished.contains_key(root) {
                 continue;
             }
             let mut path: Vec<(NodeKey, usize)> = Vec::new();
             try_push(&mut path, (*root, 0), reserve)?;
+            active.try_insert(*root, 0, reserve)?;
             while let Some((node, next)) = path.last_mut() {
+                if matches!(self.shape(*node), Some(CompositeShape::Union(_))) {
+                    budget.charge(1).map_err(EnvironmentFailure::Limit)?;
+                }
                 let node = *node;
                 let Some(target) = graph.get(&node).and_then(|targets| targets.get(*next)) else {
                     finished.try_insert(node, (), reserve)?;
+                    active.remove(&node);
                     path.pop();
                     continue;
                 };
                 *next += 1;
-                if let Some(start) = path.iter().position(|(on_path, _)| on_path == target) {
+                if let Some(&start) = active.get(target) {
+                    if matches!(self.shape(*target), Some(CompositeShape::Union(_))) {
+                        budget
+                            .charge(path.len() - start + 1)
+                            .map_err(EnvironmentFailure::Limit)?;
+                    }
                     let mut cycle = Vec::new();
                     for (key, _) in path.iter().skip(start) {
                         try_push(&mut cycle, try_clone_str(name(key), reserve)?, reserve)?;
@@ -2641,6 +3298,7 @@ impl TypeEnvironment {
                     }));
                 }
                 if !finished.contains_key(target) {
+                    active.try_insert(*target, path.len(), reserve)?;
                     try_push(&mut path, (*target, 0), reserve)?;
                 }
             }
@@ -2663,11 +3321,20 @@ impl TypeEnvironment {
                 .map_or("", |declaration| declaration.name.as_str())
         };
         for declaration in self.composites.values() {
+            let is_union = matches!(declaration.shape, CompositeShape::Union(_));
             for supertype in &declaration.supertypes {
-                if !self.composites.contains_key(supertype) {
+                let Some(target) = self.composites.get(supertype) else {
                     return Err(EnvironmentFailure::Refused(InvalidDeclaration {
                         declaration: try_clone_str(&declaration.name, reserve)?,
                         cause: DeclarationCause::UnknownDeclaration(*supertype),
+                    }));
+                };
+                // FR-115: a union takes no part in composite generalization,
+                // neither as a subtype nor as a supertype.
+                if is_union || matches!(target.shape, CompositeShape::Union(_)) {
+                    return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        declaration: try_clone_str(&declaration.name, reserve)?,
+                        cause: DeclarationCause::Type(IllTypedCause::TypeMismatch),
                     }));
                 }
             }
@@ -3444,6 +4111,81 @@ impl TypeEnvironment {
         Ok(composite(declaration, slots))
     }
 
+    /// Construct a sealed union value for a registry-resolved member, admitting
+    /// each payload position against the member's declared type. An unsealed
+    /// union grants no construction.
+    pub fn union(
+        &self,
+        declaration: NodeKey,
+        variant: VariantId,
+        payload: Vec<Value>,
+    ) -> Result<Value, ConstructionRefusal> {
+        let member = self.union_positions(declaration, variant, payload.len())?;
+        for (position, (value_type, value)) in member.positions.iter().zip(&payload).enumerate() {
+            match self.admits_checked(value_type, value) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return refuse(
+                        Component::Position(position),
+                        ConstructionCause::TypeMismatch,
+                    )
+                }
+                Err(failure) => return refuse(Component::Position(position), failure.into()),
+            }
+        }
+        let Some(binding) = member.member() else {
+            return refuse(Component::Value, ConstructionCause::TypeMismatch);
+        };
+        Ok(UnionValue::from_admitted(binding.clone(), payload))
+    }
+
+    /// Evaluate payload positions in order, propagating the first stopped outcome,
+    /// then retain the completed union once under the existing composite schedule.
+    pub fn evaluate_union(
+        &self,
+        declaration: NodeKey,
+        variant: VariantId,
+        payload: Vec<Deferred<'_>>,
+        meter: &mut Meter,
+    ) -> Result<Outcome<Value>, ConstructionRefusal> {
+        let member = self.union_positions(declaration, variant, payload.len())?;
+        let Some(binding) = member.member() else {
+            return refuse(Component::Value, ConstructionCause::TypeMismatch);
+        };
+        let mut values = Vec::with_capacity(member.positions.len());
+        for (value_type, expression) in member.positions.iter().zip(payload) {
+            match admitted(self, value_type, expression(meter)) {
+                Ok(value) => values.push(value),
+                Err(stop) => return Ok(outcome_from_stop(Err(stop))),
+            }
+        }
+        Ok(retain_composite(
+            UnionValue::from_admitted(binding.clone(), values),
+            meter,
+        ))
+    }
+
+    fn union_positions(
+        &self,
+        declaration: NodeKey,
+        variant: VariantId,
+        supplied: usize,
+    ) -> Result<&UnionMemberDeclaration, ConstructionRefusal> {
+        let Some((_, member)) = self.union_member(declaration, variant) else {
+            return refuse(Component::Value, ConstructionCause::TypeMismatch);
+        };
+        if member.positions.len() != supplied {
+            return refuse(
+                Component::Value,
+                ConstructionCause::WrongArity {
+                    declared: member.positions.len(),
+                    supplied,
+                },
+            );
+        }
+        Ok(member)
+    }
+
     /// Evaluate a record value expression. Every construction refusal is
     /// decided before any field expression runs. Field expressions then run in
     /// declaration order, whatever the source order; the first one that does
@@ -3538,7 +4280,7 @@ impl TypeEnvironment {
     }
 
     fn shape(&self, declaration: NodeKey) -> Option<&CompositeShape> {
-        self.composites.get(&declaration).map(|d| &d.shape)
+        self.composite(declaration).map(|d| &d.shape)
     }
 }
 
@@ -4068,6 +4810,28 @@ impl TypeEnvironment {
     ) -> Result<CheckedEquality, IllTyped> {
         let ill_typed = |cause| Err(IllTyped { cause });
         for operand in [&left, &right] {
+            for value_type in core::iter::once(&operand.source).chain(operand.target.iter()) {
+                if let Some(cause) = self.type_refusal(value_type) {
+                    return ill_typed(match cause {
+                        DeclarationCause::Type(cause) => cause,
+                        _ => IllTypedCause::TypeMismatch,
+                    });
+                }
+            }
+        }
+        let resolve = |operand: EqualityOperand| -> Option<EqualityOperand> {
+            Some(EqualityOperand {
+                source: self.runtime_type(&operand.source)?,
+                target: match operand.target {
+                    Some(target) => Some(self.runtime_type(&target)?),
+                    None => None,
+                },
+            })
+        };
+        let (Some(left), Some(right)) = (resolve(left), resolve(right)) else {
+            return ill_typed(IllTypedCause::TypeMismatch);
+        };
+        for operand in [&left, &right] {
             if let Some(target) = &operand.target {
                 if !admits_equality_conversion(&operand.source, target, units) {
                     return ill_typed(IllTypedCause::TypeMismatch);
@@ -4134,7 +4898,7 @@ impl TypeEnvironment {
             {
                 EqualitySchedule::Plan
             }
-            (l, r) if l == r => EqualitySchedule::Plan,
+            (l, r) if self.same_type(l, r) => EqualitySchedule::Plan,
             _ => return ill_typed(IllTypedCause::TypeMismatch),
         };
         // Retain only the compared enum declaration's own
