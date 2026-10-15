@@ -21,7 +21,7 @@ use quire_exact::{
 
 use super::{
     reserve_elements, CompositeShape, GlobalReservations, ReservationPolicy, StorageFailure,
-    TypeEnvironment,
+    StorageRequest, TypeEnvironment,
 };
 use crate::supplied_membership::{
     BoundedSuppliedAdmissionError, DecimalMembershipOperand, InvalidMembershipCause,
@@ -50,6 +50,13 @@ type TypeNumericCallback<'f, Error> =
 struct NumericChecks<'f, Error> {
     value: &'f mut ValueNumericCallback<'f, Error>,
     type_link: &'f mut TypeNumericCallback<'f, Error>,
+}
+
+struct BoundedNumericControls<'a, R> {
+    budget: &'a mut SuppliedMembershipBudget,
+    cancel: &'a Cancel,
+    magnitude_bits: u64,
+    reservation: &'a R,
 }
 
 /// A pending occurrence: its expected type, the value, and its rooted path.
@@ -289,6 +296,71 @@ impl TypeEnvironment {
         cancel: &Cancel,
         magnitude_bits: u64,
     ) -> Result<(), BoundedSuppliedAdmissionError<Cause>> {
+        self.admit_supplied_bounded_numeric_with_policy(
+            expected,
+            value,
+            arena,
+            at,
+            BoundedNumericControls {
+                budget,
+                cancel,
+                magnitude_bits,
+                reservation: &GlobalReservations,
+            },
+        )
+    }
+
+    /// Check bounded numeric membership while observing and optionally
+    /// denying each actual supplied-worklist reservation. The callback sees
+    /// the measured native request only when storage must grow; returning
+    /// false reports a typed supplied allocation failure at its rooted locus.
+    /// Decimal helper resource failures retain their separate typed causes.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the public reservation seam extends the existing bounded admission inputs"
+    )]
+    pub fn admit_supplied_bounded_numeric_with_reservation<Cause: From<InvalidMembershipCause>>(
+        &self,
+        expected: &ValueType,
+        value: &Value,
+        arena: &mut MembershipPathArena,
+        at: MembershipLocus,
+        budget: &mut SuppliedMembershipBudget,
+        cancel: &Cancel,
+        magnitude_bits: u64,
+        permit: &impl Fn(StorageRequest) -> bool,
+    ) -> Result<(), BoundedSuppliedAdmissionError<Cause>> {
+        self.admit_supplied_bounded_numeric_with_policy(
+            expected,
+            value,
+            arena,
+            at,
+            BoundedNumericControls {
+                budget,
+                cancel,
+                magnitude_bits,
+                reservation: permit,
+            },
+        )
+    }
+
+    fn admit_supplied_bounded_numeric_with_policy<
+        Cause: From<InvalidMembershipCause>,
+        R: ReservationPolicy,
+    >(
+        &self,
+        expected: &ValueType,
+        value: &Value,
+        arena: &mut MembershipPathArena,
+        at: MembershipLocus,
+        controls: BoundedNumericControls<'_, R>,
+    ) -> Result<(), BoundedSuppliedAdmissionError<Cause>> {
+        let BoundedNumericControls {
+            budget,
+            cancel,
+            magnitude_bits,
+            reservation,
+        } = controls;
         let spent = Cell::new(budget.spent());
         self.admits_walk_core(
             expected,
@@ -407,7 +479,7 @@ impl TypeEnvironment {
                     })
                 },
             },
-            &GlobalReservations,
+            reservation,
         )
     }
 
