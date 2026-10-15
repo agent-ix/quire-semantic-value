@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use quire_exact::{Cancel, CancelCause, NumericMembershipOperand};
+use quire_exact::{Cancel, CancelCause, NumericMembershipOperand, NumericTypeEndpoint};
 
 use crate::declaration::{StorageRequest, StorageUnit};
 
@@ -484,6 +484,17 @@ pub enum BoundedSuppliedAdmissionError<Cause = InvalidMembershipCause> {
         /// The caller's authenticated ceiling.
         limit_bits: u64,
         /// The rooted value occurrence containing this operand.
+        locus: MembershipLocus,
+    },
+    /// A retained numeric type endpoint exceeds the caller's magnitude ceiling.
+    NumericTypeSize {
+        /// The endpoint checked by the exact kernel, including its side.
+        position: NumericTypeEndpoint,
+        /// Its measured magnitude bits; zero counts as one.
+        measured_bits: u64,
+        /// The caller's authenticated ceiling.
+        limit_bits: u64,
+        /// The rooted type link containing this endpoint.
         locus: MembershipLocus,
     },
 }
