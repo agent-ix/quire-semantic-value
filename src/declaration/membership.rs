@@ -1886,6 +1886,49 @@ mod tests {
             );
             assert_eq!(at_bound_budget.spent(), 2);
         }
+
+        for (numeric, first_position) in [
+            (
+                ValueType::Int(interval(2, 2)),
+                Endpoint::IntegerExpectedLower,
+            ),
+            (
+                ValueType::Rational(domain(2, 2, 1, 1)),
+                Endpoint::RationalExpectedNumeratorLower,
+            ),
+        ] {
+            let mut arena = MembershipPathArena::new().expect("arena");
+            let root = arena.root(10);
+            let at = MembershipLocus {
+                path: root,
+                part: Occurrence,
+            };
+            let link = MembershipLocus {
+                path: root,
+                part: TypeLink(0),
+            };
+            let value = OptionValue::from_admitted(numeric.clone(), None);
+            let mut budget = SuppliedMembershipBudget::new(2);
+            assert_eq!(
+                environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                    &ValueType::option(numeric),
+                    &value,
+                    &mut arena,
+                    at,
+                    &mut budget,
+                    &Cancel::new(),
+                    1,
+                ),
+                Err(BoundedSuppliedAdmissionError::NumericTypeSize {
+                    position: first_position,
+                    measured_bits: 2,
+                    limit_bits: 1,
+                    locus: link,
+                })
+            );
+            assert_eq!(budget.spent(), 2);
+            assert_eq!(arena.resolve(link).expect("rooted link").argument(), 10);
+        }
     }
 
     /// The nested collection header and numeric element link spend separately;
@@ -2020,6 +2063,46 @@ mod tests {
         assert_eq!(budget.spent(), 2);
         assert_eq!(polls.load(Ordering::SeqCst), 10);
         assert_eq!(arena.resolve(link).expect("rooted link").argument(), 7);
+    }
+
+    /// A pre-cancelled bounded call stops at the original event even when its
+    /// numeric type links would exceed B.
+    /// Trace: FR-117-AC-3
+    #[trace("TC-917", "FR-117-AC-3")]
+    #[test]
+    fn bounded_numeric_type_link_precancel_beats_oversized_endpoints() {
+        let numeric = ValueType::Int(IntegerInterval::spanning(
+            Integer::from(2_i64),
+            Integer::from(2_i64),
+        ));
+        let value = OptionValue::from_admitted(numeric.clone(), None);
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(11),
+            part: Occurrence,
+        };
+        let cancel = Cancel::new();
+        cancel.cancel(CancelCause::Deadline);
+        let mut budget = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &ValueType::option(numeric),
+                &value,
+                &mut arena,
+                at,
+                &mut budget,
+                &cancel,
+                1,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Cancelled {
+                cause: CancelCause::Deadline,
+                spent: 0,
+                event: ValueVisit,
+                locus: at,
+            }))
+        );
+        assert_eq!(budget.spent(), 0);
+        assert_eq!(arena.resolve(at).expect("rooted occurrence").argument(), 11);
     }
 
     /// The direct API keeps the numeric helper unqualified. The caller's
