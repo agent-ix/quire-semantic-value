@@ -1,3 +1,8 @@
+---
+id: RV-7891
+title: "Reviewer dispositions for SR-7891"
+type: Review
+---
 <!-- reviewer-dispositions repo=agent-ix/quire-semantic-value visibility=public quoin=0.28.3 module=spec-artifacts-process@b82e42e893612b4b4ee94127714b4577ee893502 id=SR-7891 round=1 reviewed=5870800cce45b74a6c549f1da4c855f47d535257 model=claude-opus-5-5 run=db5d20f9-c6c4-4caf-8a3b-b20170c88808 -->
 
 | FND | Outcome | sha/reason |
