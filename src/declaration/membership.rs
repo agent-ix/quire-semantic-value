@@ -14,15 +14,18 @@
 use alloc::vec::Vec;
 use core::cell::Cell;
 
-use quire_exact::{Cancel, NumericMembershipFailure, NumericTypeEqualityFailure, Value, ValueType};
+use quire_exact::{
+    Cancel, DecimalMembershipFailure, NumericMembershipFailure, NumericTypeEqualityFailure, Value,
+    ValueType,
+};
 
 use super::{
     reserve_elements, GlobalReservations, ReservationPolicy, StorageFailure, TypeEnvironment,
 };
 use crate::supplied_membership::{
-    BoundedSuppliedAdmissionError, InvalidMembershipCause, MembershipEvent, MembershipLocus,
-    MembershipPart, MembershipPathArena, PathAppendError, PathStep, PathToken,
-    SuppliedAdmissionError, SuppliedMembershipBudget, UnsupportedHelperFamily,
+    BoundedSuppliedAdmissionError, DecimalMembershipOperand, InvalidMembershipCause,
+    MembershipEvent, MembershipLocus, MembershipPart, MembershipPathArena, PathAppendError,
+    PathStep, PathToken, SuppliedAdmissionError, SuppliedMembershipBudget, UnsupportedHelperFamily,
 };
 
 /// A logical event request or a response boundary after its indivisible
@@ -145,6 +148,40 @@ fn invalid<Cause: From<InvalidMembershipCause>>(
     }
 }
 
+/// Project the exact helper's completed membership or typed stop into the
+/// supplied caller without admitting a result on a stopped helper.
+fn decimal_value_result<Cause>(
+    result: Result<bool, DecimalMembershipFailure>,
+    locus: MembershipLocus,
+    spent: u64,
+) -> Result<Option<bool>, BoundedSuppliedAdmissionError<Cause>> {
+    result.map(Some).map_err(|failure| match failure {
+        DecimalMembershipFailure::Capacity { magnitude_bits } => {
+            BoundedSuppliedAdmissionError::DecimalCapacity {
+                magnitude_bits,
+                locus,
+            }
+        }
+        DecimalMembershipFailure::Allocation {
+            additional_elements,
+            element_width,
+            layout_bytes,
+        } => BoundedSuppliedAdmissionError::DecimalAllocation {
+            additional_elements,
+            element_width,
+            layout_bytes,
+            locus,
+        },
+        DecimalMembershipFailure::Cancelled(cause) => SuppliedAdmissionError::Cancelled {
+            cause,
+            spent,
+            event: MembershipEvent::ValueVisit,
+            locus,
+        }
+        .into(),
+    })
+}
+
 /// Compare two type chains one link pair at a time, emitting one event per
 /// pair, the initial one included. Ordinals count from `first_ordinal`.
 fn same_type_walk<
@@ -230,7 +267,9 @@ impl TypeEnvironment {
     /// bit length for numeric VALUE membership. Reuse `budget` and `arena`
     /// across arguments to keep work cumulative and loci rooted. `magnitude_bits`
     /// is explicit; this method supplies no default. The same ceiling applies
-    /// to numeric values and retained numeric type links.
+    /// to numeric values and retained numeric type links. A Decimal's declared
+    /// minimum scale bounds its alignment shift because the normalized scale
+    /// is nonnegative; no independent scale allowance is selected here.
     pub fn admit_supplied_bounded_numeric<Cause: From<InvalidMembershipCause>>(
         &self,
         expected: &ValueType,
@@ -263,6 +302,35 @@ impl TypeEnvironment {
             },
             &mut NumericChecks {
                 value: &mut |expected, value, locus| {
+                    if let (ValueType::Decimal(domain), Value::Decimal(decimal)) = (expected, value)
+                    {
+                        // S = min_scale bounds max(normalized_scale, min_scale)
+                        // - normalized_scale. The kernel uses only the retained
+                        // normalized representation and checks its actual layout.
+                        for (operand, position) in [
+                            (
+                                decimal.normalized().coefficient(),
+                                DecimalMembershipOperand::Coefficient,
+                            ),
+                            (domain.lower(), DecimalMembershipOperand::Lower),
+                            (domain.upper(), DecimalMembershipOperand::Upper),
+                        ] {
+                            let measured_bits = operand.magnitude_bits();
+                            if measured_bits > magnitude_bits {
+                                return Err(BoundedSuppliedAdmissionError::DecimalSize {
+                                    operand: position,
+                                    measured_bits,
+                                    limit_bits: magnitude_bits,
+                                    locus,
+                                });
+                            }
+                        }
+                        return decimal_value_result::<Cause>(
+                            domain.try_contains(decimal, cancel),
+                            locus,
+                            spent.get(),
+                        );
+                    }
                     let admitted = match (expected, value) {
                         (ValueType::Int(interval), Value::Integer(integer)) => {
                             interval.try_contains_bounded(integer, magnitude_bits, cancel)
@@ -569,17 +637,19 @@ impl TypeEnvironment {
                 }
             }
             _ => {
-                if matches!(
-                    (expected, value),
-                    (ValueType::Decimal(_), Value::Decimal(_))
-                ) {
+                let numeric_admitted = (numeric.value)(expected, value, here)?;
+                if numeric_admitted.is_none()
+                    && matches!(
+                        (expected, value),
+                        (ValueType::Decimal(_), Value::Decimal(_))
+                    )
+                {
                     on_boundary(MembershipBoundary::RequiresQualification(
                         UnsupportedHelperFamily::DecimalDomain,
                         MembershipEvent::ValueVisit,
                         here,
                     ))?;
                 }
-                let numeric_admitted = (numeric.value)(expected, value, here)?;
                 if numeric_admitted.is_none()
                     && matches!(
                         (expected, value),
@@ -2383,6 +2453,323 @@ mod tests {
             })
         );
         assert_eq!(nested_budget.spent(), 2);
+    }
+
+    /// Two Decimal arguments have exactly two owning value visits. The
+    /// declared minimum scale bounds the normalization shift without a
+    /// separate helper event or per-limb charge.
+    /// Trace: FR-109-AC-1, FR-109-AC-2, FR-109-AC-8, FR-372-AC-5
+    #[trace("TC-908", "FR-109-AC-1", "FR-109-AC-2", "FR-109-AC-8", "FR-372-AC-5")]
+    #[test]
+    fn bounded_decimal_uses_cumulative_exact_event_boundary() {
+        let expected = ValueType::Decimal(
+            DecimalType::new(
+                Integer::zero(),
+                Integer::from(100_i64),
+                2,
+                2,
+                RoundingMode::Exact,
+            )
+            .expect("bounded Decimal declaration"),
+        );
+        let value = Value::Decimal(Decimal::new(Integer::one(), 0));
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let first = MembershipLocus {
+            path: arena.root(0),
+            part: MembershipPart::Value,
+        };
+        let second = MembershipLocus {
+            path: arena.root(1),
+            part: MembershipPart::Value,
+        };
+        let cancel = Cancel::new();
+
+        let mut exact = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected, &value, &mut arena, first, &mut exact, &cancel, 7,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected, &value, &mut arena, second, &mut exact, &cancel, 7,
+            ),
+            Ok(())
+        );
+        assert_eq!(exact.spent(), 2);
+
+        let mut one_less = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                first,
+                &mut one_less,
+                &cancel,
+                7,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                second,
+                &mut one_less,
+                &cancel,
+                7,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Limit {
+                ceiling: 1,
+                spent: 1,
+                requested: 1,
+                event: MembershipEvent::ValueVisit,
+                locus: second,
+            }))
+        );
+        assert_eq!(one_less.spent(), 1);
+        assert_eq!(arena.resolve(second).expect("second root").argument(), 1);
+
+        let mut zero = SuppliedMembershipBudget::new(0);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected, &value, &mut arena, first, &mut zero, &cancel, 7,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Limit {
+                ceiling: 0,
+                spent: 0,
+                requested: 1,
+                event: MembershipEvent::ValueVisit,
+                locus: first,
+            }))
+        );
+        assert_eq!(zero.spent(), 0);
+    }
+
+    /// The magnitude premise is checked before invoking the helper; a
+    /// completed nonmember is still a typed payload refusal at the same root.
+    /// Trace: FR-109-AC-4, FR-109-AC-8, FR-372-AC-5
+    #[trace("TC-908", "FR-109-AC-4", "FR-109-AC-8", "FR-372-AC-5")]
+    #[test]
+    fn bounded_decimal_retains_size_and_nonmembership_locus() {
+        let expected = ValueType::Decimal(
+            DecimalType::new(
+                Integer::zero(),
+                Integer::from(100_i64),
+                2,
+                2,
+                RoundingMode::Exact,
+            )
+            .expect("bounded Decimal declaration"),
+        );
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(5),
+            part: MembershipPart::Value,
+        };
+        let mut size_budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &Value::Decimal(Decimal::new(Integer::one(), 0)),
+                &mut arena,
+                at,
+                &mut size_budget,
+                &Cancel::new(),
+                6,
+            ),
+            Err(BoundedSuppliedAdmissionError::DecimalSize {
+                operand: DecimalMembershipOperand::Upper,
+                measured_bits: 7,
+                limit_bits: 6,
+                locus: at,
+            })
+        );
+        assert_eq!(size_budget.spent(), 1);
+
+        let mut coefficient_budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &Value::Decimal(Decimal::new(Integer::from(128_i64), 0)),
+                &mut arena,
+                at,
+                &mut coefficient_budget,
+                &Cancel::new(),
+                7,
+            ),
+            Err(BoundedSuppliedAdmissionError::DecimalSize {
+                operand: DecimalMembershipOperand::Coefficient,
+                measured_bits: 8,
+                limit_bits: 7,
+                locus: at,
+            })
+        );
+        assert_eq!(coefficient_budget.spent(), 1);
+
+        let lower_first = ValueType::Decimal(
+            DecimalType::new(
+                Integer::from(64_i64),
+                Integer::from(65_i64),
+                0,
+                0,
+                RoundingMode::Exact,
+            )
+            .expect("bounded Decimal declaration"),
+        );
+        let mut lower_budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &lower_first,
+                &Value::Decimal(Decimal::new(Integer::one(), 0)),
+                &mut arena,
+                at,
+                &mut lower_budget,
+                &Cancel::new(),
+                6,
+            ),
+            Err(BoundedSuppliedAdmissionError::DecimalSize {
+                operand: DecimalMembershipOperand::Lower,
+                measured_bits: 7,
+                limit_bits: 6,
+                locus: at,
+            })
+        );
+        assert_eq!(lower_budget.spent(), 1);
+
+        let mut invalid_budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &Value::Decimal(Decimal::new(Integer::from(101_i64), 0)),
+                &mut arena,
+                at,
+                &mut invalid_budget,
+                &Cancel::new(),
+                7,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Invalid {
+                cause: InvalidMembershipCause::Payload,
+                locus: at,
+            }))
+        );
+        assert_eq!(invalid_budget.spent(), 1);
+    }
+
+    /// The QSV projection preserves a constructed kernel resource failure's
+    /// actual native request and rooted locus. Exact TC-920 tests the kernel's
+    /// production allocation and checked-capacity mechanisms separately.
+    /// Trace: FR-109-AC-8, FR-372-AC-5
+    #[trace("TC-908", "FR-109-AC-8", "FR-372-AC-5")]
+    #[test]
+    fn decimal_kernel_resource_failures_project_without_partial_admission() {
+        let arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(9),
+            part: MembershipPart::Value,
+        };
+        let capacity: Result<Option<bool>, BoundedSuppliedAdmissionError<InvalidMembershipCause>> =
+            decimal_value_result(
+                Err(DecimalMembershipFailure::Capacity { magnitude_bits: 65 }),
+                at,
+                1,
+            );
+        assert_eq!(
+            capacity,
+            Err(BoundedSuppliedAdmissionError::DecimalCapacity {
+                magnitude_bits: 65,
+                locus: at,
+            })
+        );
+        let allocation: Result<
+            Option<bool>,
+            BoundedSuppliedAdmissionError<InvalidMembershipCause>,
+        > = decimal_value_result(
+            Err(DecimalMembershipFailure::Allocation {
+                additional_elements: 3,
+                element_width: 4,
+                layout_bytes: 12,
+            }),
+            at,
+            1,
+        );
+        assert_eq!(
+            allocation,
+            Err(BoundedSuppliedAdmissionError::DecimalAllocation {
+                additional_elements: 3,
+                element_width: 4,
+                layout_bytes: 12,
+                locus: at,
+            })
+        );
+        assert_eq!(arena.resolve(at).expect("resource locus").argument(), 9);
+    }
+
+    /// Cancellation observed by the kernel after the owning value event
+    /// retains the original handle's cause and the already-spent budget.
+    /// Trace: FR-109-AC-3, FR-109-AC-8, FR-372-AC-5
+    #[trace("TC-908", "FR-109-AC-3", "FR-109-AC-8", "FR-372-AC-5")]
+    #[test]
+    fn bounded_decimal_maps_original_handle_cancellation_during_helper() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let polls = Arc::new(AtomicUsize::new(0));
+        let trigger = Arc::new(Mutex::new(None::<Cancel>));
+        let observed_polls = Arc::clone(&polls);
+        let observed_trigger = Arc::clone(&trigger);
+        let cancel = Cancel::observing(move || {
+            if observed_polls.fetch_add(1, Ordering::SeqCst) + 1 == 4 {
+                observed_trigger
+                    .lock()
+                    .expect("test cancellation lock")
+                    .take()
+                    .expect("test cancellation handle")
+                    .cancel(CancelCause::Deadline);
+            }
+        });
+        *trigger.lock().expect("test cancellation lock") = Some(cancel.clone());
+
+        let expected = ValueType::Decimal(
+            DecimalType::new(
+                Integer::zero(),
+                Integer::from(100_i64),
+                2,
+                2,
+                RoundingMode::Exact,
+            )
+            .expect("bounded Decimal declaration"),
+        );
+        let value = Value::Decimal(Decimal::new(Integer::one(), 0));
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(8),
+            part: MembershipPart::Value,
+        };
+        let mut budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut budget,
+                &cancel,
+                7,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Cancelled {
+                cause: CancelCause::Deadline,
+                spent: 1,
+                event: MembershipEvent::ValueVisit,
+                locus: at,
+            }))
+        );
+        assert_eq!(budget.spent(), 1);
+        assert_eq!(cancel.tripped(), Some(CancelCause::Deadline));
+        assert!(polls.load(Ordering::SeqCst) >= 4);
     }
 
     /// Union descriptor/payload admission remains a typed dependency, not an

@@ -13,6 +13,17 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use quire_exact::{Cancel, CancelCause, NumericMembershipOperand, NumericTypeEndpoint};
 
+/// Decimal operand checked against the caller's admitted magnitude ceiling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DecimalMembershipOperand {
+    /// The supplied Decimal's normalized coefficient.
+    Coefficient,
+    /// The declared inclusive lower coefficient.
+    Lower,
+    /// The declared inclusive upper coefficient.
+    Upper,
+}
+
 use crate::declaration::{StorageRequest, StorageUnit};
 
 /// The phase that owns every result from supplied-value membership.
@@ -495,6 +506,35 @@ pub enum BoundedSuppliedAdmissionError<Cause = InvalidMembershipCause> {
         /// The caller's authenticated ceiling.
         limit_bits: u64,
         /// The rooted type link containing this endpoint.
+        locus: MembershipLocus,
+    },
+    /// A Decimal operand exceeds the caller-authenticated magnitude ceiling.
+    DecimalSize {
+        /// The first oversized operand in coefficient, lower, upper order.
+        operand: DecimalMembershipOperand,
+        /// Measured magnitude bits, counting zero as one.
+        measured_bits: u64,
+        /// Caller-authenticated ceiling in magnitude bits.
+        limit_bits: u64,
+        /// The rooted value occurrence containing this operand.
+        locus: MembershipLocus,
+    },
+    /// The Decimal helper could not represent its native scratch layout.
+    DecimalCapacity {
+        /// Largest operand magnitude bit length measured by the kernel.
+        magnitude_bits: u64,
+        /// The rooted value occurrence that requested the helper.
+        locus: MembershipLocus,
+    },
+    /// The allocator denied the Decimal helper's actual scratch reservation.
+    DecimalAllocation {
+        /// Additional `u32` elements requested from the empty buffer.
+        additional_elements: usize,
+        /// Native width of one element in bytes.
+        element_width: usize,
+        /// Actual requested layout bytes.
+        layout_bytes: usize,
+        /// The rooted value occurrence that requested the helper.
         locus: MembershipLocus,
     },
 }
