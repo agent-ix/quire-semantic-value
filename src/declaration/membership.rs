@@ -306,6 +306,20 @@ impl TypeEnvironment {
                     return Err(invalid(InvalidMembershipCause::CompositeConformance, query));
                 }
             }
+            (ValueType::Enum(_), Value::Enum(_)) => {
+                on_boundary(MembershipBoundary::Event(
+                    MembershipEvent::DescriptorQuery,
+                    query,
+                ))?;
+                let admitted = expected.admits(value);
+                on_boundary(MembershipBoundary::AfterHelper(
+                    MembershipEvent::DescriptorQuery,
+                    query,
+                ))?;
+                if !admitted {
+                    return Err(invalid(InvalidMembershipCause::Member, query));
+                }
+            }
             (ValueType::Composite(_), Value::Union(_)) => {
                 on_boundary(MembershipBoundary::RequiresQualification(
                     UnsupportedHelperFamily::UnionPayloadDescriptor,
@@ -1092,8 +1106,8 @@ mod tests {
         assert_eq!(budget.spent(), 1);
     }
 
-    /// The public supplied API preserves the owning ranked-member cause and
-    /// root locus for an enum member outside its admitted shape.
+    /// The public supplied API preserves the owning ranked-member cause at
+    /// the descriptor query for a member outside its admitted shape.
     /// Trace: FR-109-AC-4
     #[trace("TC-908", "FR-109-AC-4")]
     #[allow(
@@ -1111,7 +1125,11 @@ mod tests {
             path: arena.root(0),
             part: Occurrence,
         };
-        let mut budget = SuppliedMembershipBudget::new(1);
+        let mut budget = SuppliedMembershipBudget::new(2);
+        let query = MembershipLocus {
+            path: at.path,
+            part: MembershipPart::Descriptor(0),
+        };
         assert_eq!(
             environment().admit_supplied::<InvalidMembershipCause>(
                 &expected,
@@ -1123,11 +1141,94 @@ mod tests {
             ),
             Err(Stop::Invalid {
                 cause: InvalidMembershipCause::Member,
+                locus: query,
+            })
+        );
+        assert_eq!(budget.spent(), 2);
+        assert_eq!(
+            arena.resolve(query).expect("root remains valid").argument(),
+            0
+        );
+    }
+
+    /// The source-enumerated Enum path for a later ranked member is ValueVisit
+    /// then one DescriptorQuery. Zero denies the visit, one denies the lookup,
+    /// and two admit the member.
+    /// Trace: FR-109-AC-1, FR-109-AC-4
+    #[trace("TC-908", "FR-109-AC-1", "FR-109-AC-4")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked enum identities without minting them in production"
+    )]
+    #[test]
+    fn supplied_enum_query_has_exact_two_event_boundary() {
+        let first = VariantId::from_digest([1; 32]);
+        let second = VariantId::from_digest([2; 32]);
+        let expected = ValueType::Enum(EnumShape::new(false, [first, second]));
+        let value = Value::Enum(EnumMember::new(second, 1));
+        let cancel = Cancel::new();
+        for ceiling in [0, 1, 2] {
+            let mut arena = MembershipPathArena::new().expect("arena");
+            let at = MembershipLocus {
+                path: arena.root(0),
+                part: Occurrence,
+            };
+            let query = MembershipLocus {
+                path: at.path,
+                part: MembershipPart::Descriptor(0),
+            };
+            let mut budget = SuppliedMembershipBudget::new(ceiling);
+            let result = environment().admit_supplied::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut budget,
+                &cancel,
+            );
+            let expected_result = match ceiling {
+                0 => Err(Stop::Limit {
+                    ceiling: 0,
+                    spent: 0,
+                    requested: 1,
+                    event: ValueVisit,
+                    locus: at,
+                }),
+                1 => Err(Stop::Limit {
+                    ceiling: 1,
+                    spent: 1,
+                    requested: 1,
+                    event: MembershipEvent::DescriptorQuery,
+                    locus: query,
+                }),
+                2 => Ok(()),
+                _ => unreachable!("the fixture has only three ceilings"),
+            };
+            assert_eq!(result, expected_result);
+            assert_eq!(budget.spent(), ceiling);
+        }
+
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(1),
+            part: Occurrence,
+        };
+        let mut budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied::<InvalidMembershipCause>(
+                &expected,
+                &Value::Boolean(true),
+                &mut arena,
+                at,
+                &mut budget,
+                &cancel,
+            ),
+            Err(Stop::Invalid {
+                cause: InvalidMembershipCause::Kind,
                 locus: at,
             })
         );
         assert_eq!(budget.spent(), 1);
-        assert_eq!(arena.resolve(at).expect("root remains valid").argument(), 0);
     }
 
     /// Supplied numeric domains stop before unbounded BigInt comparisons,
