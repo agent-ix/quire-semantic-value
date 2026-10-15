@@ -12,8 +12,8 @@ relationships:
 ## Description
 
 Verify [FR-118](../functional/FR-118-bound-retained-decimal-type-links.md)
-through the public supplied-admission path after the exact-kernel bounded
-Decimal type-equality helper is available.
+through the public supplied-admission path using the published exact-kernel
+`DecimalType::try_eq_bounded` helper.
 
 ## Test Procedure
 
@@ -37,10 +37,9 @@ Decimal type-equality helper is available.
    pair or result. Observe the production helper's bound validation,
    fixed-width limb-pair count at B and 32-bit limb boundaries, cancellation
    response gap and temporary-storage use. Verify at most `2ceil(B / 32)`
-   limb-pair steps and constant auxiliary storage for an allocation-free
-   route; if the delivered kernel uses scratch instead, inspect its finite
-   byte bound and execute its real typed checked-size/allocation denial and
-   retry path. Check evaluator charges before and after refusal.
+   limb-pair steps and constant auxiliary storage without allocation or
+   native-size conversion, as [exact FR-382](ix://agent-ix/quire-exact/FR-382)
+   requires. Check evaluator charges before and after refusal.
 4. Repeat a paired Decimal link through QSV's direct no-B admission path,
    with a permitted event, denied event and cancelled event. Inspect the
    production call for expected-first operands, original B and Cancel, and
@@ -57,6 +56,5 @@ evaluation debit occurs on supplied-admission refusal.
 
 ## Status
 
-PLANNED/UNRUN; IR-799 blocks IR-798 until its exact-kernel Decimal
-type-equality requirement and helper are delivered. The QSV implementation
-is also required before this test case runs.
+PLANNED/UNRUN; exact FR-382 and its helper are published. QSV implementation
+and this acceptance test are still required.
