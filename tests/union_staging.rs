@@ -10,8 +10,8 @@ use quire_exact::{
 };
 use quire_semantic_value::declaration::{
     CompositeDeclaration, CompositeShape, DeclarationCause, EnvironmentFailure, EqualityOperand,
-    EqualityOperator, FieldDeclaration, ObjectTypeDeclaration, RecursionEdges, TypeEnvironment,
-    UnionMemberDeclaration,
+    EqualityOperator, FieldDeclaration, ObjectTypeDeclaration, RecursionEdges, StorageRequest,
+    StorageUnit, TypeEnvironment, UnionMemberDeclaration,
 };
 use quire_semantic_value::enumeration::EnumMemberIndex;
 use quire_semantic_value::object_closure::{ObjectClosure, ObjectClosureCause};
@@ -254,6 +254,73 @@ fn sealed_union_payload_uses_one_rooted_supplied_budget() {
             }
         }
     }
+}
+
+/// Trace: FR-109-AC-5
+#[trace("TC-908", "FR-109-AC-5")]
+#[test]
+fn public_supplied_reservation_denial_retains_request_and_locus() {
+    let mut env = TypeEnvironment::new([shape()], []).unwrap();
+    env.seal_union_verified(key(1), key(40), bindings(key(40)))
+        .unwrap();
+    let value =
+        UnionValue::from_admitted(binding(key(40), 11, "Rect"), vec![integer(2), integer(3)]);
+    let expected = ValueType::Composite(key(1));
+    let cancel = quire_exact::Cancel::new();
+    let mut arena = MembershipPathArena::new().unwrap();
+    let at = MembershipLocus {
+        path: arena.root(7),
+        part: MembershipPart::Value,
+    };
+    let mut budget = SuppliedMembershipBudget::new(10);
+    let observed = std::cell::Cell::new(None);
+    let denied = env.admit_supplied_with_reservation::<InvalidMembershipCause>(
+        &expected,
+        &value,
+        &mut arena,
+        at,
+        &mut budget,
+        &cancel,
+        &|request| {
+            observed.set(Some(request));
+            false
+        },
+    );
+    let Err(SuppliedAdmissionError::Allocation { request, locus }) = denied else {
+        panic!("expected measured supplied allocation denial: {denied:?}");
+    };
+    assert_eq!(observed.get(), Some(request));
+    assert_eq!(
+        request,
+        StorageRequest::new(2, StorageUnit::AdditionalElements)
+    );
+    let resolved = arena.resolve(locus).unwrap();
+    assert_eq!(resolved.argument(), 7);
+    assert_eq!(
+        resolved.part(),
+        MembershipPart::Child(PathStep::UnionPayload(1))
+    );
+    assert_eq!(resolved.steps_from_leaf().count(), 0);
+    assert_eq!(budget.spent(), 2);
+
+    let mut retry_arena = MembershipPathArena::new().unwrap();
+    let mut retry_budget = SuppliedMembershipBudget::new(10);
+    let retry_at = MembershipLocus {
+        path: retry_arena.root(7),
+        part: MembershipPart::Value,
+    };
+    assert_eq!(
+        env.admit_supplied::<InvalidMembershipCause>(
+            &expected,
+            &value,
+            &mut retry_arena,
+            retry_at,
+            &mut retry_budget,
+            &cancel,
+        ),
+        Ok(())
+    );
+    assert_eq!(retry_budget.spent(), 6);
 }
 
 /// A supplied union's wrong member or arity fails at the descriptor query;

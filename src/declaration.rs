@@ -1742,6 +1742,12 @@ trait ReservationPolicy {
     fn phase(&self, _phase: StoragePhase) {}
 }
 
+impl<F: Fn(StorageRequest) -> bool> ReservationPolicy for F {
+    fn permit(&self, request: StorageRequest) -> bool {
+        self(request)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StoragePhase {
     Registry,
@@ -2718,6 +2724,24 @@ impl TypeEnvironment {
             cancel,
             &GlobalReservations,
         )
+    }
+
+    /// Check a supplied value while observing and optionally denying each
+    /// actual worklist reservation. A false response reports the measured
+    /// request as an allocation failure at its membership locus. The callback
+    /// is invoked only when storage must grow; ordinary callers use
+    /// [`Self::admit_supplied`].
+    pub fn admit_supplied_with_reservation<Cause: From<InvalidMembershipCause>>(
+        &self,
+        expected: &ValueType,
+        value: &Value,
+        arena: &mut MembershipPathArena,
+        at: MembershipLocus,
+        budget: &mut SuppliedMembershipBudget,
+        cancel: &quire_exact::Cancel,
+        permit: &impl Fn(StorageRequest) -> bool,
+    ) -> Result<(), SuppliedAdmissionError<Cause>> {
+        self.admit_supplied_with(expected, value, arena, at, budget, cancel, permit)
     }
 
     fn admit_supplied_with<Cause: From<InvalidMembershipCause>>(
