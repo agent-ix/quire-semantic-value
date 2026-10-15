@@ -47,11 +47,24 @@ do not obtain the expected count by reading the counter being tested.
    only its initiating budget, with no duplicate phase charge.
 7. Inspect every claimed helper against its authoritative implementation and
    actual input bounds. Establish comparisons/arithmetic, peak temporary storage,
-   cancellation response boundary and reservation route. Fail qualification
-   if any premise is missing. In particular, a bool-only Decimal helper with
-   allocating radix/power operations and no cancellation/storage premise,
-   or an unpublished union candidate, cannot qualify through a small logical
-   event total.
+   cancellation response boundary and reservation route. For Decimal, check the
+   actual `DecimalType::try_contains` source against [exact-kernel FR-372](ix://agent-ix/quire-exact/FR-372):
+   the caller authenticates `B >= max(bits(c), bits(lo), bits(hi))`, with zero
+   counted as one bit, and `S >=` the actual coefficient-alignment shift before
+   the call. Confirm the one-request `4 × ceil(B / 32)`-byte scratch bound, the
+   `2 × (min(S,B) + 2) × ceil(B / 32)` limb-step bound and original-handle polling.
+   Fail caller qualification if either input bound or typed error projection is
+   missing. An unpublished union candidate cannot qualify through a small
+   logical event total.
+8. Through the integrated QSV supplied-admission caller, use an independently
+   enumerated Decimal value-visit fixture at exact N and N-1, followed by a
+   second argument on the same budget. Assert inclusive membership and adjacent
+   nonmembership against an independent oracle. Trigger actual kernel scratch
+   denial, checked capacity failure and original-handle cancellation; assert
+   distinct typed supplied-admission causes at the Decimal locus, cumulative
+   spend, no partial admission, no extra helper-entry or per-limb event and no
+   evaluator charge. Confirm a caller without source-backed `B` or `S` does not
+   claim Decimal support or select a default.
 
 ## Expected Results
 
@@ -63,16 +76,18 @@ remain distinct, no partial result escapes, and evaluation accounting is
 unchanged. A missing helper premise prevents qualification rather than
 establishing supported behavior. Mutants for reset, fresh Cancel, fabricated
 FunctionCall, duplicate phase debit, false storage cause and partial success
-are killed by the corresponding assertions.
+are killed by the corresponding assertions. Decimal caller controls retain the
+kernel's Boolean result and typed resource/cancellation distinctions at the
+same rooted supplied-admission locus without adding a logical event.
 
 ## Status
 
-PLANNED/UNRUN. No implementation or test execution is claimed. The full deep
-Tree defaults, occurrences, replay converted nodes and evaluation exact/one-less
+PLANNED/UNRUN for the QSV caller and this integrated case. The exact-kernel
+fallible Decimal helper is implemented; no QSV Decimal test execution is claimed.
+The full deep Tree defaults, occurrences, replay converted nodes and evaluation exact/one-less
 parity controls belong to the aligned QSL consumer fixtures, not this QSV-only
 case. Numerical default hypotheses and hosted source predictions are not an
-oracle for N. Implementation awaits the aligned authoritative phase carrier and QSL consumer
-contracts,
-Decimal helper qualification under IR-718 SPEC and IR-719 implementation,
-and the reviewed union API where applicable. The pending Decimal design adds
-no fifth helper-entry event to this case and supplies no test-pass evidence.
+oracle for N. Decimal caller qualification under IR-719 still requires admitted
+`B,S`, typed cause/locus projection and integrated tests. The reviewed union API
+is a separate prerequisite where applicable. The Decimal caller adds no fifth
+helper-entry event or numeric default.
