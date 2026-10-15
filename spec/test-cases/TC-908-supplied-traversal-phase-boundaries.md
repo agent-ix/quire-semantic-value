@@ -59,12 +59,20 @@ do not obtain the expected count by reading the counter being tested.
 8. Through the integrated QSV supplied-admission caller, use an independently
    enumerated Decimal value-visit fixture at exact N and N-1, followed by a
    second argument on the same budget. Assert inclusive membership and adjacent
-   nonmembership against an independent oracle. Trigger actual kernel scratch
-   denial, checked capacity failure and original-handle cancellation; assert
-   distinct typed supplied-admission causes at the Decimal locus, cumulative
-   spend, no partial admission, no extra helper-entry or per-limb event and no
+   nonmembership against an independent oracle. Cancel the original handle at
+   an observed boundary and assert its typed cause, Decimal locus, cumulative
+   spend and no partial admission, extra helper-entry or per-limb event, or
    evaluator charge. Confirm a caller without source-backed `B` or `S` does not
    claim Decimal support or select a default.
+9. Construct the typed exact-kernel capacity and allocation failure variants
+   with distinct measured fields and pass each through QSV's production Decimal
+   error-projection path at a rooted Decimal locus. Assert distinct
+   supplied-admission causes, preserved measurements and locus, and no
+   nonmembership, traversal-limit or evaluation projection. This tests QSV's
+   mapping without replacing the kernel helper or claiming that the public
+   `DecimalType::try_contains` call can inject an allocator denial or construct
+   a synthetic capacity overflow. [Exact-kernel TC-920](ix://agent-ix/quire-exact/TC-920)
+   owns the actual scratch-denial and checked-capacity mechanism controls.
 
 ## Expected Results
 
@@ -76,9 +84,12 @@ remain distinct, no partial result escapes, and evaluation accounting is
 unchanged. A missing helper premise prevents qualification rather than
 establishing supported behavior. Mutants for reset, fresh Cancel, fabricated
 FunctionCall, duplicate phase debit, false storage cause and partial success
-are killed by the corresponding assertions. Decimal caller controls retain the
-kernel's Boolean result and typed resource/cancellation distinctions at the
-same rooted supplied-admission locus without adding a logical event.
+are killed by the corresponding assertions. Integrated Decimal caller controls
+retain the kernel's Boolean result and cancellation at the same rooted
+supplied-admission locus without adding a logical event. Separate projection
+controls retain typed kernel capacity/allocation measurements and causes;
+actual scratch-denial and capacity mechanisms remain exact-kernel TC-920's
+evidence.
 
 ## Status
 
