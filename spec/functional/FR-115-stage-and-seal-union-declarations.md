@@ -23,7 +23,7 @@ attached to its producer-verified final key and member bindings.
 
 - One internal declaration handle, ordered member identifiers and position types.
 - A settled canonical declaration key and complete FR-441 verified bindings.
-- The caller's cumulative authored admission budget and original cancellation handle.
+- The environment's admission work limit and the caller's cancellation handle.
 
 ## Outputs
 
@@ -46,11 +46,14 @@ attached to its producer-verified final key and member bindings.
    FR-108's fallible storage boundary and reserve complete destination growth
    before attachment. Failed validation or reservation SHALL leave the logical
    descriptor, member index and joins unchanged. A retry SHALL retain successful
-   caller spend and use the same declarations and verified identities.
-4. Union topology, sealing and subsequent Union-specific walks SHALL accept the
-   same caller-owned budget. No Union-specific convenience entry point SHALL
-   silently replace that budget or its cancellation handle. Existing non-Union
-   declaration admission charge points and typed causes SHALL remain unchanged.
+   identical input to succeed after the denial is removed.
+4. Union topology admission SHALL charge the environment's one admission work
+   limit and poll its cancellation handle; running out SHALL be the named work
+   limit. Sealing and Union member lookup SHALL NOT take a separate budget.
+   Union payload membership SHALL be decided by the single typed-event
+   admission walk (FR-109), never by a second walk in this module. Existing
+   non-Union declaration admission charge points and typed causes SHALL remain
+   unchanged.
 5. Unsealed topology SHALL grant no runtime member lookup or construction.
    A sealed carrier SHALL retain the verified final declaration/member/name
    binding, exact payload arity and positional membership. Record and Tuple
@@ -63,7 +66,7 @@ attached to its producer-verified final key and member bindings.
 | FR-115-AC-1 | Resolved identifiers and ordered position types are readable before binding, including named Option-escaping recursion and all-member IEEE inspection; unsealed runtime member construction and admission refuse. | Test |
 | FR-115-AC-2 | Exact complete verified sealing retains the original handle and topology and exposes inverse final-key joins. Wrong count/order/name/declaration, duplicate member keys, resealing and key collisions preserve their typed cause and leave the environment unchanged. | Test |
 | FR-115-AC-3 | Actual Union registry, traversal and each sealing destination reservation can deny with FR-108's exact native request and classification. No partial binding or join is exposed; identical input succeeds after removing denial. Byte-request and capacity controls retain distinct carriers. | Test |
-| FR-115-AC-4 | One caller budget and borrowed cancellation handle span topology, sealing and Union member/type walks. Existing 5,000-member, 1,000-Option and 10,000-value fixtures and exact N/N-1 controls remain in the source. Released non-Union limits and both Record/Tuple prior-stop regressions remain unchanged. | Test |
+| FR-115-AC-4 | Union topology admission charges the environment's admission work limit with exact N/N-1 behaviour over the 5,000-member and 1,000-Option fixtures, and observes its cancellation handle. Released non-Union limits and both Record/Tuple prior-stop regressions remain unchanged. | Test |
 
 ## Dependencies
 
@@ -78,7 +81,11 @@ QSL-503 owns actual run admission, references, conversion and no-charge evidence
 
 ## Status
 
-Implemented in this crate and covered by tests/union_registry.rs and
-tests/union_staging.rs. Supplied-phase failure transport and caller migration
-are owned elsewhere (FR-109, QSL-681, QSL-502 to QSL-504). Independent review
-is pending.
+Declaration, sealing, member lookup, construction and graph/closure staging
+are implemented in this crate and covered by tests/union_registry.rs and
+tests/union_staging.rs. Union VALUE membership through the typed-event admission
+walk (FR-109) is not implemented here: that walk still refuses a union value as
+`UnsupportedUnion` until its union arms land, so the tests that need it are
+listed in the pull request under "waits for the union arms in admits_walk_core".
+Supplied-phase failure transport and caller migration are owned elsewhere
+(FR-109, QSL-681, QSL-502 to QSL-504). Independent review is pending.

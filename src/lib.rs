@@ -24,4 +24,5 @@ pub mod object_closure;
 pub mod quantity;
 pub mod semantic_node;
 pub mod stop;
+pub mod supplied_membership;
 pub mod unit;

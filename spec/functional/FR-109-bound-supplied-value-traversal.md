@@ -104,7 +104,7 @@ caller/admission input bound and the helper operation it constrains.
 | Enum member | Ranked lookup scans at most E retained variants and compares fixed-size variant identities. | Establish E from the admitted shape; a cache hit retains the logical query event. Poll around the bounded helper. |
 | Nested retained type | At most T type-chain link comparisons; leaf comparisons include any input-sized retained enum/numeric data. | Charge type links through the bounded interface; bound leaf data separately. No outer one-event substitution for an entire unbounded type chain. |
 | Reference conformance | The retained ancestry path uses registry lookups and a binary search over at most A ancestor positions; registry size is R. | Establish finite lookup-comparison bounds from the authoritative container implementation and actual admitted R/A. Poll around each bounded helper. A nominal query does not prove internal cost or cancellation latency. |
-| Decimal domain | The released helper computes decimal digit counts; equal-digit comparisons can materialize an absolute coefficient multiplied by a power of ten. | Bit/scale bounds, temporary allocation and cancellation latency require a source-backed qualified helper. The released bool-only helper does not establish these premises. For coefficient 1 at scale 0 under interval [0,100] with min/max scale 2, radix-digit conversion and the equal-digit power/multiply branch allocate even with tiny bounded inputs. Allocation denial there has no typed result. Finite input bounds alone cannot establish fallible storage; this path remains unqualified until its owner resolves it. |
+| Decimal domain | The authoritative `DecimalType::try_contains` helper borrows the normalized coefficient `c` and interval endpoints `lo,hi`. On a scale-admissible path, let `b = max(bits(c), bits(lo), bits(hi))`, counting zero as one bit, and let `k` be the actual nonnegative coefficient-alignment shift. The caller SHALL establish admitted `B >= b` and `S >= k` before invoking it. With `L_B = ceil(B / 32)`, [exact-kernel FR-372](ix://agent-ix/quire-exact/FR-372) bounds the two endpoint comparisons by `2 × (min(S,B) + 2) × L_B` limb steps and one live fallible scratch request of at most `4 × L_B` bytes. A scale refusal completes without scratch. | The helper polls the original cancellation handle before allocation, after successful allocation, before each limb step and before completion; allocation/release are indivisible calls with no wall-clock guarantee. Checked layout capacity, actual scratch-allocation denial and cancellation retain distinct typed causes. The QSV caller SHALL preserve those causes and the supplied-admission locus, with no additional logical event or evaluator debit. The caller SHALL NOT infer `B` or `S` from a default or substitute a smaller bound for `c`, either endpoint or the actual shift. |
 | Future union payload/descriptor | Public union declaration/member and bounded helper ordering must be supplied by their owning contracts. | Unpublished candidate bodies and predicted Tree counts are not qualification evidence. |
 
 ## Acceptance Criteria
@@ -117,7 +117,8 @@ caller/admission input bound and the helper operation it constrains.
 | FR-109-AC-4 | Invalid kind/type and member/payload failures permitted by the owning supported-family contracts return their typed membership cause and locus, never a partial admission. Released nested construction custody is preserved; a helper cannot manufacture extra payload visits. | Test |
 | FR-109-AC-5 | An actual fallible supplied-worklist reservation denial reports its measured request and native unit; checked-size overflow has its own classification. Neither becomes a traversal limit, declaration-storage failure or invalid value. Retry after removing the denial yields the same membership outcome. | Test |
 | FR-109-AC-6 | Every reachable logical event and shared helper has one initiating phase/budget owner. Membership leaves the evaluator's meter and charge sequence unchanged, and conversion-triggered helper work is never also charged as membership. No failure is labelled evaluated FunctionCall. | Test |
-| FR-109-AC-7 | Each claimed supported helper path has a source-backed input bound, finite comparison/arithmetic and temporary-storage bound, cancellation response boundary and fallible storage route where needed. Unqualified Decimal and future union paths remain implementation dependencies; logical-event totals alone do not establish those helper premises. | Inspection |
+| FR-109-AC-7 | Each claimed supported helper path has a source-backed input bound, finite comparison/arithmetic and temporary-storage bound, cancellation response boundary and fallible storage route where needed. Decimal caller qualification establishes admitted `B >= max(bits(c), bits(lo), bits(hi))` and `S >=` the actual alignment shift and uses the authoritative fallible kernel helper; a future union path remains an implementation dependency until its owning shape and walk are available. Logical-event totals alone do not establish helper premises. | Inspection |
+| FR-109-AC-8 | An integrated Decimal membership call at its owning value-visit event preserves one cumulative supplied budget and original cancellation handle. With source-backed `B,S`, reachable inclusive membership, nonmembership, N/N-1 and cancellation retain the owning phase/locus without a fifth helper event, per-limb debit, evaluator charge or partial admission. A separate QSV projection test passes constructed typed kernel capacity and allocation failures through the same production error mapping and checks their distinct supplied-admission causes and rooted locus; actual kernel failure mechanisms are verified by exact-kernel TC-920, not claimed reachable through the public QSV call. A caller lacking either admitted bound does not claim Decimal support or choose a numeric default. | Test |
 
 ## Dependencies
 
@@ -138,18 +139,21 @@ caller/admission input bound and the helper operation it constrains.
   projection and QSL-675 sequencing. Any needed phase-carrier amendment
   remains pending; no wire/transport declaration is created here.
 - QSV's existing `TypeEnvironment::admits` is bool-only; its authored-declaration
-  work budget is distinct from the supplied traversal contract. Decimal helper
-  qualification is allocated to IR-718 SPEC and IR-719 implementation in the
-  authoritative exact-kernel owner. Both remain prerequisites for claiming
-  this Decimal path; the pending design does not introduce a fifth helper-entry
-  event or select a default. A reviewed public union declaration/member API
-  remains another implementation prerequisite, not a claim of current support.
+  work budget is distinct from the supplied traversal contract. The exact-kernel
+  [FR-372](ix://agent-ix/quire-exact/FR-372) fallible Decimal helper is available;
+  IR-719 still owns QSV caller qualification, including admitted `B,S`, typed
+  cause/locus projection and integrated controls. The caller introduces no fifth
+  helper-entry event or numeric default. A reviewed public union
+  declaration/member API remains another implementation prerequisite, not a
+  claim of current support.
 - QSL-681 owns the paired authoritative carrier amendment and consumer phase
   contract. Implementation awaits their merge and confirmation of the resulting
   public behavior; this requirement does not assume those amendments are delivered.
 
 ## Status
 
-SPEC DRAFT; implementation and every acceptance test are PLANNED/UNRUN.
+SPEC DRAFT; the fallible exact-kernel Decimal helper is implemented, while the
+QSV Decimal supplied-admission caller and its integrated acceptance test are
+PLANNED/UNRUN.
 No numerical default is selected by this QSV requirement. Research predictions
 are not qualified defaults, event-table evidence or runtime acceptance results.

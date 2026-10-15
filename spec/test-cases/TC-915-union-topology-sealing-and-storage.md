@@ -27,8 +27,8 @@ reservation seam; do not substitute a budget denial for an allocation denial.
 3. Deny actual Union registry, member-type and recursion traversal reservations
    independently. Deny each of the member-index, forward-join and inverse-join
    destinations during sealing. Assert the measured request's native unit,
-   unchanged descriptors/indexes/joins, and complete deterministic retry using
-   the same caller budget. Deny a refusal-name byte reservation separately.
+   unchanged descriptors/indexes/joins, and complete deterministic retry with
+   the same input. Deny a refusal-name byte reservation separately.
 4. Retain all existing 5,000-member/1,000-Option and 10,000-value small-stack
    tests and independently decomposed N/N-1 counters. Retain released capacity,
    native-leaf, quantity, typed-cause and both Record/Tuple prior-stop controls.
@@ -42,7 +42,9 @@ These are SV source controls, not QSL run, codec or canonical minting evidence.
 
 ## Status
 
-Implemented. The controls run in tests/union_registry.rs and
-tests/union_staging.rs and in the unit tests of src/declaration.rs. TC-907's
-protected Union obligation remains open under IR-713 until the complete QSL-500
-delivery.
+Implemented except the controls that need Union value membership. Those are
+tracked in the pull request under "waits for the union arms in admits_walk_core"
+and run once the typed-event admission walk accepts union values. The other
+controls run in tests/union_registry.rs, tests/union_staging.rs and the unit
+tests of src/declaration.rs. TC-907's protected Union obligation remains open
+under IR-713 until the complete QSL-500 delivery.

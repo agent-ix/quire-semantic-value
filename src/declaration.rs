@@ -79,6 +79,13 @@ use quire_exact::EnumShape;
 use quire_exact::NodeKey;
 use quire_exact::{compare_text, evaluate_decimal, Identifier, UnionMember, UnionValue, VariantId};
 
+use crate::supplied_membership::{
+    InvalidMembershipCause, MembershipLocus, MembershipPart, MembershipPathArena,
+    SuppliedAdmissionError, SuppliedMembershipBudget,
+};
+
+mod membership;
+
 /// One object-type field's identity: the object type that declares it and
 /// its declared name (QSpec FR-151 field redefinition names its target this way).
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -103,6 +110,70 @@ mod storage_reservation_tests {
         fn permit(&self, request: StorageRequest) -> bool {
             self.seen.set(Some(request));
             false
+        }
+    }
+
+    /// Trace: FR-108-AC-1, FR-108-AC-3
+    #[trace("TC-907", "FR-108-AC-1", "FR-108-AC-3")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies a checked declaration key without minting one in production"
+    )]
+    #[test]
+    fn registry_denial_retains_reservation_and_retry_admits() {
+        let declarations = || {
+            [CompositeDeclaration::new(
+                NodeKey::from_digest([1; 32]),
+                "R",
+                CompositeShape::Tuple(Vec::new()),
+            )]
+        };
+        let deny = DenyFirst {
+            seen: Cell::new(None),
+        };
+        let denied = TypeEnvironment::bounded_with_reservations(
+            declarations(),
+            [],
+            TypeEnvironmentLimits::default(),
+            None,
+            &deny,
+        );
+        let request = deny.seen.get().expect("registry made a reservation");
+        assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+        assert_eq!(
+            request,
+            StorageRequest::new(1, StorageUnit::AdditionalElements)
+        );
+        let admitted = TypeEnvironment::new(declarations(), []).expect("retry admits");
+        assert_eq!(admitted.composites().count(), 1);
+    }
+
+    /// Trace: FR-108-AC-2
+    #[trace("TC-907", "FR-108-AC-2")]
+    #[test]
+    fn size_overflow_is_distinct_from_allocator_denial() {
+        let mut values: Vec<u8> = Vec::new();
+        assert_eq!(
+            reserve_elements(&mut values, usize::MAX, &GlobalReservations),
+            Err(StorageFailure::Capacity(StorageRequest::new(
+                usize::MAX,
+                StorageUnit::AdditionalElements,
+            )))
+        );
+    }
+
+    struct DenyBytes {
+        seen: Cell<Option<StorageRequest>>,
+    }
+
+    impl ReservationPolicy for DenyBytes {
+        fn permit(&self, request: StorageRequest) -> bool {
+            if request.unit() == StorageUnit::Bytes {
+                self.seen.set(Some(request));
+                false
+            } else {
+                true
+            }
         }
     }
 
@@ -185,12 +256,11 @@ mod storage_reservation_tests {
                 calls: Cell::new(0),
                 denied: Cell::new(None),
             };
-            let mut work = WorkBudget::new(100, None);
-            let result = TypeEnvironment::admit_with_reservations(
+            let result = TypeEnvironment::bounded_with_reservations(
                 [union_topology()],
                 [],
-                0,
-                &mut work,
+                TypeEnvironmentLimits::default(),
+                None,
                 &denial,
             );
             let requested = denial
@@ -202,16 +272,8 @@ mod storage_reservation_tests {
                 StorageRequest::new(1, StorageUnit::AdditionalElements)
             );
             assert_eq!(result, Err(EnvironmentFailure::Allocation(requested)));
-            let retry = TypeEnvironment::admit_with_reservations(
-                [union_topology()],
-                [],
-                0,
-                &mut work,
-                &GlobalReservations,
-            )
-            .expect("same input admits after denial with the same cumulative caller budget");
-            let fresh = TypeEnvironment::new([union_topology()], []).unwrap();
-            assert_eq!(retry, fresh);
+            let retry = TypeEnvironment::new([union_topology()], [])
+                .expect("same input admits after denial");
             assert_eq!(retry.union_key(union_key(1)), None);
             assert_eq!(retry.union_handle(union_key(40)), None);
         }
@@ -222,9 +284,7 @@ mod storage_reservation_tests {
     #[test]
     fn each_union_seal_destination_denies_before_any_binding_is_published() {
         for (next, expected_amount) in [(1, 2), (2, 1), (3, 1)] {
-            let mut work = WorkBudget::new(100, None);
-            let mut environment =
-                TypeEnvironment::bounded_with_budget([union_topology()], [], 0, &mut work).unwrap();
+            let mut environment = TypeEnvironment::new([union_topology()], []).unwrap();
             let before = environment.clone();
             let denial = DenyUnionPhase {
                 selected: StoragePhase::KeyJoin,
@@ -233,12 +293,10 @@ mod storage_reservation_tests {
                 calls: Cell::new(0),
                 denied: Cell::new(None),
             };
-            let spent = work.spent();
             let result = environment.seal_union_with_reservations(
                 union_key(1),
                 union_key(40),
                 union_bindings(),
-                &mut work,
                 &denial,
             );
             let requested = denial
@@ -250,7 +308,6 @@ mod storage_reservation_tests {
                 StorageRequest::new(expected_amount, StorageUnit::AdditionalElements)
             );
             assert_eq!(result, Err(EnvironmentFailure::Allocation(requested)));
-            assert_eq!(work.spent(), spent + 2);
             assert_eq!(environment, before);
             assert_eq!(environment.union_key(union_key(1)), None);
             assert_eq!(environment.union_handle(union_key(40)), None);
@@ -261,16 +318,11 @@ mod storage_reservation_tests {
             };
             assert!(members.iter().all(|member| member.member().is_none()));
             environment
-                .seal_union_verified(union_key(1), union_key(40), union_bindings(), &mut work)
+                .seal_union_verified(union_key(1), union_key(40), union_bindings())
                 .unwrap();
             let mut fresh = before;
             fresh
-                .seal_union_verified(
-                    union_key(1),
-                    union_key(40),
-                    union_bindings(),
-                    &mut WorkBudget::new(2, None),
-                )
+                .seal_union_verified(union_key(1), union_key(40), union_bindings())
                 .unwrap();
             assert_eq!(environment, fresh);
             assert_eq!(environment.union_key(union_key(1)), Some(union_key(40)));
@@ -295,13 +347,7 @@ mod storage_reservation_tests {
             )]
         };
         assert_eq!(
-            environment.seal_union_with_reservations(
-                union_key(1),
-                union_key(40),
-                bad(),
-                &mut WorkBudget::new(10, None),
-                &denial,
-            ),
+            environment.seal_union_with_reservations(union_key(1), union_key(40), bad(), &denial,),
             Err(EnvironmentFailure::Allocation(StorageRequest::new(
                 4,
                 StorageUnit::Bytes
@@ -313,82 +359,13 @@ mod storage_reservation_tests {
         );
         assert_eq!(environment, before);
         assert_eq!(
-            environment.seal_union_verified(
-                union_key(1),
-                union_key(40),
-                bad(),
-                &mut WorkBudget::new(10, None),
-            ),
+            environment.seal_union_verified(union_key(1), union_key(40), bad()),
             Err(EnvironmentFailure::Refused(InvalidDeclaration {
                 declaration: "Tree".into(),
                 cause: DeclarationCause::Type(IllTypedCause::TypeMismatch),
             }))
         );
         assert_eq!(environment, before);
-    }
-
-    /// Trace: FR-108-AC-1, FR-108-AC-3
-    #[trace("TC-907", "FR-108-AC-1", "FR-108-AC-3")]
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "the fixture supplies a checked declaration key without minting one in production"
-    )]
-    #[test]
-    fn registry_denial_retains_reservation_and_retry_admits() {
-        let declarations = || {
-            [CompositeDeclaration::new(
-                NodeKey::from_digest([1; 32]),
-                "R",
-                CompositeShape::Tuple(Vec::new()),
-            )]
-        };
-        let deny = DenyFirst {
-            seen: Cell::new(None),
-        };
-        let denied = TypeEnvironment::bounded_with_reservations(
-            declarations(),
-            [],
-            TypeEnvironmentLimits::default(),
-            None,
-            &deny,
-        );
-        let request = deny.seen.get().expect("registry made a reservation");
-        assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
-        assert_eq!(
-            request,
-            StorageRequest::new(1, StorageUnit::AdditionalElements)
-        );
-        let admitted = TypeEnvironment::new(declarations(), []).expect("retry admits");
-        assert_eq!(admitted.composites().count(), 1);
-    }
-
-    /// Trace: FR-108-AC-2
-    #[trace("TC-907", "FR-108-AC-2")]
-    #[test]
-    fn size_overflow_is_distinct_from_allocator_denial() {
-        let mut values: Vec<u8> = Vec::new();
-        assert_eq!(
-            reserve_elements(&mut values, usize::MAX, &GlobalReservations),
-            Err(EnvironmentFailure::Capacity(StorageRequest::new(
-                usize::MAX,
-                StorageUnit::AdditionalElements,
-            )))
-        );
-    }
-
-    struct DenyBytes {
-        seen: Cell<Option<StorageRequest>>,
-    }
-
-    impl ReservationPolicy for DenyBytes {
-        fn permit(&self, request: StorageRequest) -> bool {
-            if request.unit() == StorageUnit::Bytes {
-                self.seen.set(Some(request));
-                false
-            } else {
-                true
-            }
-        }
     }
 
     /// Trace: FR-108-AC-1, FR-108-AC-2, FR-108-AC-4
@@ -838,8 +815,22 @@ pub enum ConstructionCause {
     },
     /// A value that is not a member of the declared type.
     TypeMismatch,
+    /// A representable admission worklist reservation was denied, so
+    /// membership was not decided.
+    StorageDenied(StorageRequest),
+    /// Admission worklist size arithmetic overflowed, so membership was not
+    /// decided.
+    StorageCapacity(StorageRequest),
 }
 
+impl From<StorageFailure> for ConstructionCause {
+    fn from(failure: StorageFailure) -> Self {
+        match failure {
+            StorageFailure::Allocation(request) => Self::StorageDenied(request),
+            StorageFailure::Capacity(request) => Self::StorageCapacity(request),
+        }
+    }
+}
 /// A typed construction refusal at its originating component.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, thiserror::Error)]
 #[error("construction refused at {component:?}: {cause:?}")]
@@ -864,31 +855,25 @@ fn refuse<T>(component: Component, cause: ConstructionCause) -> Result<T, Constr
 /// repeated name. This module's own `TypeEnvironment::evaluate_record` uses
 /// it to match supplied `FieldExpression`s to declared fields the same way
 /// [`fill_slots`] matches supplied `FieldValue`s.
-fn match_names_walk<'n, F: AsRef<FieldDeclaration>, D: Clone + IntoIterator<Item = F>, T, E>(
+fn match_names<F: AsRef<FieldDeclaration>, D: Clone + IntoIterator<Item = F>, T>(
     declared: D,
-    supplied: Vec<(&'n str, T)>,
-    charge: &mut impl FnMut(usize) -> Result<(), E>,
-) -> Result<Result<BTreeMap<&'n str, T>, ConstructionRefusal>, E> {
+    supplied: Vec<(&str, T)>,
+) -> Result<BTreeMap<&str, T>, ConstructionRefusal> {
     let mut by_name = BTreeMap::new();
     for (name, entry) in supplied {
-        charge(1)?;
         let component = || Component::Field(name.to_owned());
-        let mut found = false;
-        for field in declared.clone() {
-            charge(1)?;
-            if field.as_ref().name == name {
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            return Ok(refuse(component(), ConstructionCause::UndeclaredField));
+        if !declared
+            .clone()
+            .into_iter()
+            .any(|field| field.as_ref().name == name)
+        {
+            return refuse(component(), ConstructionCause::UndeclaredField);
         }
         if by_name.insert(name, entry).is_some() {
-            return Ok(refuse(component(), ConstructionCause::DuplicateField));
+            return refuse(component(), ConstructionCause::DuplicateField);
         }
     }
-    Ok(Ok(by_name))
+    Ok(by_name)
 }
 
 /// Declaration-ordered slots of a record or object from supplied fields. An
@@ -896,28 +881,12 @@ fn match_names_walk<'n, F: AsRef<FieldDeclaration>, D: Clone + IntoIterator<Item
 /// ([`TypeEnvironment::attributes`]), so an inherited field has a slot. A
 /// present value must be admitted by its field's type under `types`'
 /// conformance ([`TypeEnvironment::admits`]).
-/// Name-check, order and admit slots under the caller's cumulative budget.
-/// Work stops are the outer result; construction refusals keep their typed cause.
 pub fn fill_slots<F: AsRef<FieldDeclaration>, D: Clone + IntoIterator<Item = F>>(
     types: &TypeEnvironment,
     declared: D,
     supplied: Vec<(&str, FieldValue)>,
-    budget: &mut WorkBudget,
-) -> Result<Result<Box<[FieldValue]>, ConstructionRefusal>, EnvironmentLimit> {
-    fill_slots_walk(types, declared, supplied, &mut |units| budget.charge(units))
-}
-
-pub(crate) fn fill_slots_walk<F: AsRef<FieldDeclaration>, D: Clone + IntoIterator<Item = F>, E>(
-    types: &TypeEnvironment,
-    declared: D,
-    supplied: Vec<(&str, FieldValue)>,
-    charge: &mut impl FnMut(usize) -> Result<(), E>,
-) -> Result<Result<Box<[FieldValue]>, ConstructionRefusal>, E> {
-    let mut by_name = match match_names_walk(declared.clone(), supplied, charge)? {
-        Ok(names) => names,
-        Err(refusal) => return Ok(Err(refusal)),
-    };
-    charge(declared.clone().into_iter().count())?;
+) -> Result<Box<[FieldValue]>, ConstructionRefusal> {
+    let mut by_name = match_names(declared.clone(), supplied)?;
     let mut slots = Vec::with_capacity(declared.clone().into_iter().count());
     for field in declared {
         let field = field.as_ref();
@@ -927,21 +896,23 @@ pub(crate) fn fill_slots_walk<F: AsRef<FieldDeclaration>, D: Clone + IntoIterato
             .unwrap_or(FieldValue::Absent);
         match (&slot, field.presence) {
             (FieldValue::Absent, Presence::Required) => {
-                return Ok(refuse(component(), ConstructionCause::MissingField))
+                return refuse(component(), ConstructionCause::MissingField)
             }
             (FieldValue::Null, Presence::Required) => {
-                return Ok(refuse(component(), ConstructionCause::NullForRequiredField))
+                return refuse(component(), ConstructionCause::NullForRequiredField)
             }
-            (FieldValue::Present(value), _)
-                if !types.admits_walk(&field.value_type, value, charge)? =>
-            {
-                return Ok(refuse(component(), ConstructionCause::TypeMismatch))
+            (FieldValue::Present(value), _) => {
+                match types.admits_checked(&field.value_type, value) {
+                    Ok(true) => {}
+                    Ok(false) => return refuse(component(), ConstructionCause::TypeMismatch),
+                    Err(failure) => return refuse(component(), failure.into()),
+                }
             }
-            (FieldValue::Present(_) | FieldValue::Absent | FieldValue::Null, _) => {}
+            (FieldValue::Absent | FieldValue::Null, _) => {}
         }
         slots.push(slot);
     }
-    Ok(Ok(slots.into_boxed_slice()))
+    Ok(slots.into_boxed_slice())
 }
 
 /// Build a composite value of `declaration` from already name-checked
@@ -1166,6 +1137,295 @@ struct EffectiveStorage {
     slots: Vec<AttributeSlot>,
 }
 
+/// Model-assembly admission awaiting the caller's completed conformance verdict.
+/// Dropping this value abandons admission. Only [`Self::complete`] can produce
+/// a public environment; its declaration and attribute storage stays private.
+pub struct PendingTypeEnvironment {
+    environment: TypeEnvironment,
+    storage: EffectiveStorage,
+    budget: WorkBudget,
+    needs_widening_check: bool,
+}
+
+/// One field declared directly by an object type while model admission is pending.
+pub struct PendingDeclaredField<'a> {
+    /// The actual declaration identity.
+    pub field: FieldRef,
+    /// Its declared value type.
+    pub value_type: &'a ValueType,
+    /// Its declared presence.
+    pub presence: Presence,
+}
+
+/// A source-backed projection through one immediate parent while admission is pending.
+pub struct PendingParentField<'a, S, O> {
+    /// The field selected from the immediate parent's effective view.
+    pub field: FieldRef,
+    /// That parent's declared value type.
+    pub value_type: &'a ValueType,
+    /// That parent's declared presence.
+    pub presence: Presence,
+    /// The caller's original child source occurrence.
+    pub source: S,
+    /// The caller's original observation identity.
+    pub observation: O,
+}
+
+/// Why a pending immediate-parent field projection cannot be used.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PendingFieldFailure {
+    /// The child names no admitted model object type.
+    UnknownChild(EffectiveId),
+    /// The declaration owner names no admitted model object type.
+    UnknownObjectType(EffectiveId),
+    /// The selected parent is not an immediate parent of the child.
+    NotImmediateParent {
+        /// The child whose direct supertype was requested.
+        child: EffectiveId,
+        /// The requested parent.
+        parent: EffectiveId,
+    },
+    /// The parent has no field with that name.
+    UnknownField,
+    /// The selected immediate parent's private lineage contains no such target.
+    UnknownTarget(FieldRef),
+    /// More than one parent slot stands for the target.
+    AmbiguousTarget(FieldRef),
+    /// The pending admission's original work or cancellation limit was reached.
+    Limit(EnvironmentLimit),
+    /// A reservation needed to preserve the actual field identity failed.
+    Storage(EnvironmentFailure),
+}
+
+impl PendingTypeEnvironment {
+    /// Work units spent by structural admission and restricted pending reads.
+    pub fn spent(&self) -> u64 {
+        self.budget.spent
+    }
+
+    /// The admitted composite declaration, without effective attributes.
+    pub fn composite(
+        &mut self,
+        key: NodeKey,
+    ) -> Result<Option<&CompositeDeclaration>, PendingFieldFailure> {
+        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+        Ok(self.environment.composites.get(&key))
+    }
+
+    /// Admitted composite declarations in key order.
+    pub fn composites(
+        &mut self,
+    ) -> Result<impl Iterator<Item = &CompositeDeclaration>, PendingFieldFailure> {
+        self.budget
+            .charge(self.environment.composites.len().saturating_add(1))
+            .map_err(PendingFieldFailure::Limit)?;
+        Ok(self.environment.composites.values())
+    }
+
+    /// The admitted object declaration, without a completed attribute view.
+    pub fn object_type(
+        &mut self,
+        key: EffectiveId,
+    ) -> Result<Option<&ObjectTypeDeclaration>, PendingFieldFailure> {
+        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+        Ok(self.environment.object_types.get(&key))
+    }
+
+    /// Admitted object declarations in key order.
+    pub fn object_types(
+        &mut self,
+    ) -> Result<impl Iterator<Item = &ObjectTypeDeclaration>, PendingFieldFailure> {
+        self.budget
+            .charge(self.environment.object_types.len().saturating_add(1))
+            .map_err(PendingFieldFailure::Limit)?;
+        Ok(self.environment.object_types.values())
+    }
+
+    /// Whether the admitted ancestry makes `sub` a subtype of `sup`.
+    pub fn conforms(
+        &mut self,
+        sub: EffectiveId,
+        sup: EffectiveId,
+    ) -> Result<bool, PendingFieldFailure> {
+        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+        Ok(self.environment.conforms(sub, sup))
+    }
+
+    /// Read only a field declared directly by `owner`. Inherited and
+    /// effective attribute lookup remains unavailable while pending.
+    pub fn declared_field(
+        &mut self,
+        owner: EffectiveId,
+        name: &str,
+    ) -> Result<PendingDeclaredField<'_>, PendingFieldFailure> {
+        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+        let declaration = self
+            .environment
+            .object_types
+            .get(&owner)
+            .ok_or(PendingFieldFailure::UnknownObjectType(owner))?;
+        let mut found = None;
+        for field in &declaration.attributes {
+            self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+            if field.name() == name {
+                found = Some(field);
+                break;
+            }
+        }
+        let field = found.ok_or(PendingFieldFailure::UnknownField)?;
+        Ok(PendingDeclaredField {
+            field: FieldRef {
+                owner,
+                name: try_clone_str(field.name(), &GlobalReservations)
+                    .map_err(PendingFieldFailure::Storage)?,
+            },
+            value_type: field.value_type(),
+            presence: field.presence(),
+        })
+    }
+
+    /// Read one source-backed redefined field through an immediate parent. The source
+    /// occurrence and observation are returned unchanged to the caller's
+    /// checked-fact graph; no completed environment or fact is created here.
+    pub fn parent_field<S, O>(
+        &mut self,
+        child: EffectiveId,
+        parent: EffectiveId,
+        target: &FieldRef,
+        source: S,
+        observation: O,
+    ) -> Result<PendingParentField<'_, S, O>, PendingFieldFailure> {
+        self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+        let child_type = self
+            .environment
+            .object_types
+            .get(&child)
+            .ok_or(PendingFieldFailure::UnknownChild(child))?;
+        let mut direct_parent = false;
+        for supertype in &child_type.supertypes {
+            self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+            if *supertype == parent {
+                direct_parent = true;
+                break;
+            }
+        }
+        if !direct_parent {
+            return Err(PendingFieldFailure::NotImmediateParent { child, parent });
+        }
+        let unknown = || {
+            try_clone_field_ref(target, &GlobalReservations)
+                .map(PendingFieldFailure::UnknownTarget)
+                .map_err(PendingFieldFailure::Storage)
+        };
+        let mut target_position = None;
+        for (position, (owner, field_index)) in self.environment.field_keys.iter().enumerate() {
+            self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+            if *owner == target.owner
+                && self
+                    .environment
+                    .object_types
+                    .get(owner)
+                    .and_then(|declaration| declaration.attributes.get(*field_index))
+                    .is_some_and(|field| field.name() == target.name)
+            {
+                target_position = Some(position);
+                break;
+            }
+        }
+        let Some(target_position) = target_position else {
+            return Err(unknown()?);
+        };
+        let slots = self
+            .storage
+            .index
+            .get(&parent)
+            .ok_or(PendingFieldFailure::NotImmediateParent { child, parent })?;
+        let mut selected = None;
+        for &index in slots {
+            self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
+            let Some(slot) = self.storage.slots.get(index) else {
+                continue;
+            };
+            self.budget
+                .charge(slot.members.len())
+                .map_err(PendingFieldFailure::Limit)?;
+            if slot.members.binary_search(&target_position).is_err() {
+                continue;
+            }
+            if selected.is_some() {
+                return Err(PendingFieldFailure::AmbiguousTarget(
+                    try_clone_field_ref(target, &GlobalReservations)
+                        .map_err(PendingFieldFailure::Storage)?,
+                ));
+            }
+            let Some(declaration) = self.environment.object_types.get(&slot.owner) else {
+                continue;
+            };
+            let Some(field) = declaration.attributes.get(slot.field_index) else {
+                continue;
+            };
+            selected = Some((slot.owner, field));
+        }
+        let Some((owner, field)) = selected else {
+            return Err(unknown()?);
+        };
+        let identity = FieldRef {
+            owner,
+            name: try_clone_str(field.name(), &GlobalReservations)
+                .map_err(PendingFieldFailure::Storage)?,
+        };
+        Ok(PendingParentField {
+            field: identity,
+            value_type: field.value_type(),
+            presence: field.presence(),
+            source,
+            observation,
+        })
+    }
+
+    /// Complete QSV's value-type safety and storage checks after the caller's
+    /// conformance verdict. An error consumes the pending admission, so no
+    /// partially admitted environment can escape.
+    pub fn complete(self) -> Admission<TypeEnvironment> {
+        self.complete_with_reservations(&GlobalReservations)
+    }
+
+    fn complete_with_reservations<R: ReservationPolicy>(
+        mut self,
+        reserve: &R,
+    ) -> Admission<TypeEnvironment> {
+        // The same cancel handle remains live across the pending interval.
+        if self.needs_widening_check {
+            self.budget.charge(0).map_err(EnvironmentFailure::Limit)?;
+        } else {
+            reserve.phase(StoragePhase::KeyJoin);
+        }
+        let table = FieldTable::new(&self.environment.object_types, reserve)?;
+        if self.needs_widening_check {
+            for (owner, indices) in &self.storage.index {
+                let Some(declaration) = self.environment.object_types.get(owner) else {
+                    continue;
+                };
+                for &index in indices {
+                    if let Some(widened) =
+                        self.environment
+                            .widened(index, &self.storage.slots, &table, reserve)?
+                    {
+                        return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                            declaration: try_clone_str(declaration.name(), reserve)?,
+                            cause: DeclarationCause::RedefinitionWidens(widened),
+                        }));
+                    }
+                }
+            }
+        }
+        self.environment.effective = self.storage.index;
+        self.environment.attribute_slots = self.storage.slots;
+        self.environment.admission_work_units = self.budget.spent;
+        Ok(self.environment)
+    }
+}
+
 impl<'a> EffectiveAttribute<'a> {
     /// The object type that declares this field.
     pub fn owner(&self) -> EffectiveId {
@@ -1268,8 +1528,7 @@ pub struct TypeEnvironmentLimits {
     /// object-type or composite conformance walk may follow, an edge count
     /// over the walk's closure and never a chain depth.
     pub ancestor_steps: u64,
-    /// Cumulative work units admission may spend retaining union members and
-    /// walking their payload type links, building the object/composite
+    /// Cumulative work units admission may spend building the object/composite
     /// ancestor closure and flattening every object type's attributes. One unit is
     /// one ancestor or attribute copied into a type's set, or one field a
     /// lineage names. Running out is an
@@ -1286,34 +1545,31 @@ impl Default for TypeEnvironmentLimits {
     }
 }
 
-/// Caller-owned authored admission work meter. Supplied-phase qualification is separate.
-/// Cancellation is polled before every charged step. Allocation failure is not
-/// represented by this meter or by its named work limit.
-pub struct WorkBudget<'a> {
+/// The admission work meter: charges fail once `limit` units are spent.
+struct WorkBudget {
     spent: u64,
     limit: u64,
-    cancel: Option<&'a quire_exact::Cancel>,
+    cancel: Option<quire_exact::Cancel>,
 }
 
-impl<'a> WorkBudget<'a> {
-    /// Start a configured work budget with the caller's cancellation handle.
-    pub fn new(limit: u64, cancel: Option<&'a quire_exact::Cancel>) -> Self {
+impl WorkBudget {
+    fn new(limit: u64, cancel: Option<&quire_exact::Cancel>) -> Self {
         Self {
             spent: 0,
             limit,
-            cancel,
+            cancel: cancel.cloned(),
         }
     }
 
     /// Charge `units`, or the [`EnvironmentLimitKind::WorkUnits`] limit (QSL FR-082)
     /// once the budget would be passed, naming the cumulative total the
     /// refused charge would have reached.
-    pub fn charge(&mut self, units: usize) -> Result<(), EnvironmentLimit> {
+    fn charge(&mut self, units: usize) -> Result<(), EnvironmentLimit> {
         let units = u64::try_from(units).unwrap_or(u64::MAX);
         // A cancelled handle (QSL FR-276) denies the charge as an exhausted
         // budget does; the caller that owns the handle reports the
         // cancellation.
-        let cancelled = self.cancel.is_some_and(quire_exact::Cancel::poll);
+        let cancelled = self.cancel.as_ref().is_some_and(quire_exact::Cancel::poll);
         match self.spent.checked_add(units) {
             Some(spent) if spent <= self.limit && !cancelled => {
                 self.spent = spent;
@@ -1325,11 +1581,6 @@ impl<'a> WorkBudget<'a> {
                 u128::from(self.spent) + u128::from(units),
             )),
         }
-    }
-
-    /// Work already admitted by this budget, excluding any refused charge.
-    pub fn spent(&self) -> u64 {
-        self.spent
     }
 }
 
@@ -1510,29 +1761,48 @@ impl ReservationPolicy for GlobalReservations {
     }
 }
 
+/// A reservation that produced no storage: the two classifications every
+/// checked reservation distinguishes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StorageFailure {
+    /// A representable reservation was denied.
+    Allocation(StorageRequest),
+    /// Reservation size arithmetic or representation overflowed.
+    Capacity(StorageRequest),
+}
+
+impl From<StorageFailure> for EnvironmentFailure {
+    fn from(failure: StorageFailure) -> Self {
+        match failure {
+            StorageFailure::Allocation(request) => Self::Allocation(request),
+            StorageFailure::Capacity(request) => Self::Capacity(request),
+        }
+    }
+}
+
 fn reserve_elements<T, R: ReservationPolicy>(
     values: &mut Vec<T>,
     additional: usize,
     policy: &R,
-) -> Admission<()> {
+) -> Result<(), StorageFailure> {
     let request = StorageRequest::new(additional, StorageUnit::AdditionalElements);
     let required = values
         .len()
         .checked_add(additional)
-        .ok_or(EnvironmentFailure::Capacity(request))?;
-    let layout = Layout::array::<T>(required).map_err(|_| EnvironmentFailure::Capacity(request))?;
+        .ok_or(StorageFailure::Capacity(request))?;
+    let layout = Layout::array::<T>(required).map_err(|_| StorageFailure::Capacity(request))?;
     if layout.size() > isize::MAX as usize {
-        return Err(EnvironmentFailure::Capacity(request));
+        return Err(StorageFailure::Capacity(request));
     }
     if required <= values.capacity() {
         return Ok(());
     }
     if !policy.permit(request) {
-        return Err(EnvironmentFailure::Allocation(request));
+        return Err(StorageFailure::Allocation(request));
     }
     values
         .try_reserve_exact(additional)
-        .map_err(|_| EnvironmentFailure::Allocation(request))
+        .map_err(|_| StorageFailure::Allocation(request))
 }
 
 fn try_push<T, R: ReservationPolicy>(values: &mut Vec<T>, value: T, policy: &R) -> Admission<()> {
@@ -1765,9 +2035,9 @@ pub enum DeclarationCause {
     },
 }
 
-/// One checked package's closed, admitted record, tuple, union and object-type
+/// One checked package's closed, admitted record, tuple and object-type
 /// declarations.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct TypeEnvironment {
     composites: OrderedIndex<NodeKey, CompositeDeclaration>,
     /// Each composite declaration's proper ancestors, computed once after
@@ -1794,7 +2064,26 @@ pub struct TypeEnvironment {
     union_keys: OrderedIndex<NodeKey, NodeKey>,
     /// The inverse join, used only for sealed unions; Record/Tuple keys stay intact.
     union_handles: OrderedIndex<NodeKey, NodeKey>,
+    /// Admission work is observed separately from semantic equality.
+    admission_work_units: u64,
 }
+
+impl PartialEq for TypeEnvironment {
+    fn eq(&self, other: &Self) -> bool {
+        self.composites == other.composites
+            && self.composite_ancestry == other.composite_ancestry
+            && self.object_types == other.object_types
+            && self.ancestry == other.ancestry
+            && self.effective == other.effective
+            && self.attribute_slots == other.attribute_slots
+            && self.field_keys == other.field_keys
+            && self.units == other.units
+            && self.union_keys == other.union_keys
+            && self.union_handles == other.union_handles
+    }
+}
+
+impl Eq for TypeEnvironment {}
 
 /// One containment edge of the recursion rule.
 #[derive(Clone, Copy)]
@@ -1805,120 +2094,9 @@ struct Edge {
 }
 
 impl TypeEnvironment {
-    /// Construct a sealed union value for a registry-resolved member, admitting its
-    /// payload against the member's positions under the caller's cumulative budget.
-    /// Work stops are separate from construction refusals.
-    pub fn union(
-        &self,
-        declaration: NodeKey,
-        variant: VariantId,
-        payload: Vec<Value>,
-        budget: &mut WorkBudget,
-    ) -> Result<Result<Value, ConstructionRefusal>, EnvironmentLimit> {
-        self.union_walk(declaration, variant, payload, &mut |units| {
-            budget.charge(units)
-        })
-    }
-
-    fn union_walk<E>(
-        &self,
-        declaration: NodeKey,
-        variant: VariantId,
-        payload: Vec<Value>,
-        charge: &mut impl FnMut(usize) -> Result<(), E>,
-    ) -> Result<Result<Value, ConstructionRefusal>, E> {
-        charge(1)?;
-        let member = match self.union_positions(declaration, variant, payload.len()) {
-            Ok(member) => member,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        charge(member.positions.len())?;
-        for (position, (ty, value)) in member.positions.iter().zip(&payload).enumerate() {
-            if !self.admits_walk(ty, value, charge)? {
-                return Ok(refuse(
-                    Component::Position(position),
-                    ConstructionCause::TypeMismatch,
-                ));
-            }
-        }
-        let Some(binding) = member.member() else {
-            return Ok(refuse(Component::Value, ConstructionCause::TypeMismatch));
-        };
-        Ok(Ok(UnionValue::from_admitted(binding.clone(), payload)))
-    }
-
-    /// Evaluate payload positions in order, propagating the first stopped outcome,
-    /// then retain the completed union once under the existing composite schedule.
-    /// Admission charges the caller's cumulative budget; a prior runtime stop
-    /// bypasses further admission charges.
-    pub fn evaluate_union(
-        &self,
-        declaration: NodeKey,
-        variant: VariantId,
-        payload: Vec<Deferred<'_>>,
-        meter: &mut Meter,
-        budget: &mut WorkBudget,
-    ) -> Result<Result<Outcome<Value>, ConstructionRefusal>, EnvironmentLimit> {
-        self.evaluate_union_walk(declaration, variant, payload, meter, &mut |units| {
-            budget.charge(units)
-        })
-    }
-
-    fn evaluate_union_walk<E>(
-        &self,
-        declaration: NodeKey,
-        variant: VariantId,
-        payload: Vec<Deferred<'_>>,
-        meter: &mut Meter,
-        charge: &mut impl FnMut(usize) -> Result<(), E>,
-    ) -> Result<Result<Outcome<Value>, ConstructionRefusal>, E> {
-        charge(1)?;
-        let member = match self.union_positions(declaration, variant, payload.len()) {
-            Ok(member) => member,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        let Some(binding) = member.member() else {
-            return Ok(refuse(Component::Value, ConstructionCause::TypeMismatch));
-        };
-        charge(member.positions.len())?;
-        let mut values = Vec::with_capacity(member.positions.len());
-        for (ty, expression) in member.positions.iter().zip(payload) {
-            let value = match outcome_into_stop(expression(meter)) {
-                Ok(value) => value,
-                Err(stop) => return Ok(Ok(outcome_from_stop(Err(stop)))),
-            };
-            if !self.admits_walk(ty, &value, charge)? {
-                return Ok(Ok(outcome_from_stop(Err(invariant(
-                    CheckedInvariantCause::DeferredResultNotAdmitted,
-                )))));
-            }
-            values.push(value);
-        }
-        Ok(Ok(retain_composite(
-            UnionValue::from_admitted(binding.clone(), values),
-            meter,
-        )))
-    }
-
-    fn union_positions(
-        &self,
-        declaration: NodeKey,
-        variant: VariantId,
-        supplied: usize,
-    ) -> Result<&UnionMemberDeclaration, ConstructionRefusal> {
-        let Some((_, member)) = self.union_member(declaration, variant) else {
-            return refuse(Component::Value, ConstructionCause::TypeMismatch);
-        };
-        if member.positions.len() != supplied {
-            return refuse(
-                Component::Value,
-                ConstructionCause::WrongArity {
-                    declared: member.positions.len(),
-                    supplied,
-                },
-            );
-        }
-        Ok(member)
+    /// Work units spent admitting the completed environment.
+    pub fn spent(&self) -> u64 {
+        self.admission_work_units
     }
 
     /// Admit `composites` and `object_types` as one closed environment,
@@ -1971,19 +2149,22 @@ impl TypeEnvironment {
         )
     }
 
-    /// Admit topology using the caller's cumulative authored-declaration budget.
-    pub fn bounded_with_budget(
+    /// Begin admission for QSL's model assembly under the same limits and
+    /// cancellation handle as direct admission. The caller must finish its
+    /// complete conformance verdict before calling [`PendingTypeEnvironment::complete`].
+    pub fn stage_model_with_cancel(
         composites: impl IntoIterator<Item = CompositeDeclaration>,
         object_types: impl IntoIterator<Item = ObjectTypeDeclaration>,
-        ancestor_steps: u64,
-        budget: &mut WorkBudget,
-    ) -> Admission<Self> {
-        Self::admit_with_reservations(
+        limits: TypeEnvironmentLimits,
+        cancel: &quire_exact::Cancel,
+    ) -> Admission<PendingTypeEnvironment> {
+        Self::prepare(
             composites,
             object_types,
-            ancestor_steps,
-            budget,
+            limits,
+            Some(cancel),
             &GlobalReservations,
+            false,
         )
     }
 
@@ -1994,24 +2175,20 @@ impl TypeEnvironment {
         cancel: Option<&quire_exact::Cancel>,
         reserve: &R,
     ) -> Admission<Self> {
-        let mut budget = WorkBudget::new(limits.work_units, cancel);
-        Self::admit_with_reservations(
-            composites,
-            object_types,
-            limits.ancestor_steps,
-            &mut budget,
-            reserve,
-        )
+        Self::prepare(composites, object_types, limits, cancel, reserve, true)?
+            .complete_with_reservations(reserve)
     }
 
-    fn admit_with_reservations<R: ReservationPolicy>(
+    fn prepare<R: ReservationPolicy>(
         composites: impl IntoIterator<Item = CompositeDeclaration>,
         object_types: impl IntoIterator<Item = ObjectTypeDeclaration>,
-        ancestor_steps: u64,
-        budget: &mut WorkBudget,
+        limits: TypeEnvironmentLimits,
+        cancel: Option<&quire_exact::Cancel>,
         reserve: &R,
-    ) -> Admission<Self> {
+        check_widening: bool,
+    ) -> Admission<PendingTypeEnvironment> {
         let mut environment = Self::default();
+        let mut budget = WorkBudget::new(limits.work_units, cancel);
         reserve.phase(StoragePhase::Registry);
         for declaration in composites {
             let refuse = |cause| -> Admission<EnvironmentFailure> {
@@ -2139,35 +2316,39 @@ impl TypeEnvironment {
                 .try_insert(declaration.key, declaration, reserve)?;
         }
         reserve.phase(StoragePhase::MemberTypes);
-        environment.check_member_types(budget, reserve)?;
+        environment.check_member_types(&mut budget, reserve)?;
         reserve.phase(StoragePhase::Traversal);
-        environment.check_recursion(RecursionEdges::Unnamed, budget, reserve)?;
-        environment.check_recursion(RecursionEdges::NonEscaping, budget, reserve)?;
-        environment.check_composite_supertypes(budget, reserve)?;
+        environment.check_recursion(RecursionEdges::Unnamed, &mut budget, reserve)?;
+        environment.check_recursion(RecursionEdges::NonEscaping, &mut budget, reserve)?;
+        environment.check_composite_supertypes(&mut budget, reserve)?;
         environment.composite_ancestry =
-            environment.compute_composite_ancestors(budget, reserve)?;
-        environment.check_supertypes(budget, reserve)?;
+            environment.compute_composite_ancestors(&mut budget, reserve)?;
+        environment.check_supertypes(&mut budget, reserve)?;
         reserve.phase(StoragePhase::Ancestors);
-        environment.ancestry = environment.compute_ancestors(budget, reserve)?;
+        environment.ancestry = environment.compute_ancestors(&mut budget, reserve)?;
         environment
-            .check_ancestor_steps(ancestor_steps)
+            .check_ancestor_steps(limits.ancestor_steps)
             .map_err(EnvironmentFailure::Limit)?;
         environment
-            .check_composite_ancestor_steps(ancestor_steps)
+            .check_composite_ancestor_steps(limits.ancestor_steps)
             .map_err(EnvironmentFailure::Limit)?;
         reserve.phase(StoragePhase::FieldIndex);
         let table = FieldTable::new(&environment.object_types, reserve)?;
         environment.check_redefinitions(&table, reserve)?;
         reserve.phase(StoragePhase::Sealing);
-        let storage = environment.compute_effective(&table, budget, reserve)?;
-        environment.effective = storage.index;
-        environment.attribute_slots = storage.slots;
+        let storage =
+            environment.compute_effective(&table, &mut budget, reserve, check_widening)?;
         reserve.phase(StoragePhase::KeyJoin);
         reserve_elements(&mut environment.field_keys, table.fields.len(), reserve)?;
         for (owner, _, _, index) in &table.fields {
             environment.field_keys.push((*owner, *index));
         }
-        Ok(environment)
+        Ok(PendingTypeEnvironment {
+            environment,
+            storage,
+            budget,
+            needs_widening_check: !check_widening,
+        })
     }
 
     /// The object type's effective attribute set, in slot order: its own
@@ -2230,13 +2411,13 @@ impl TypeEnvironment {
         &self.units
     }
 
-    /// The admitted record, tuple or union declaration with this key.
+    /// The admitted record or tuple declaration with this key.
     pub fn composite(&self, key: NodeKey) -> Option<&CompositeDeclaration> {
         let handle = self.union_handles.get(&key).copied().unwrap_or(key);
         self.composites.get(&handle)
     }
 
-    /// Every admitted record, tuple and union declaration in key order.
+    /// Every admitted record and tuple declaration in key order.
     pub fn composites(&self) -> impl Iterator<Item = &CompositeDeclaration> {
         self.composites.values()
     }
@@ -2286,18 +2467,16 @@ impl TypeEnvironment {
     /// already resolved union. The caller must verify the final key against its
     /// settled canonical type node, and each binding against that node and the
     /// exact declared identifier. This method hashes nothing.
-    /// Failed validation leaves the resolved registry unchanged. Bindings must
-    /// cover every member once, in declaration order; resealing is refused.
-    /// Each member step charges one work unit of the caller's cumulative budget
-    /// before any mutation.
+    /// Failed validation or reservation leaves the resolved registry unchanged.
+    /// Bindings must cover every member once, in declaration order; resealing
+    /// is refused.
     pub fn seal_union_verified(
         &mut self,
         handle: NodeKey,
         final_key: NodeKey,
         bindings: Vec<UnionMember>,
-        budget: &mut WorkBudget,
     ) -> Admission<()> {
-        self.seal_union_with_reservations(handle, final_key, bindings, budget, &GlobalReservations)
+        self.seal_union_with_reservations(handle, final_key, bindings, &GlobalReservations)
     }
 
     fn seal_union_with_reservations<R: ReservationPolicy>(
@@ -2305,12 +2484,8 @@ impl TypeEnvironment {
         handle: NodeKey,
         final_key: NodeKey,
         bindings: Vec<UnionMember>,
-        budget: &mut WorkBudget,
         reserve: &R,
     ) -> Admission<()> {
-        // Poll cancellation even for an empty member list, without changing
-        // the existing per-member N/N-1 accounting.
-        budget.charge(0).map_err(EnvironmentFailure::Limit)?;
         let Some(declaration) = self.composites.get(&handle) else {
             return Err(EnvironmentFailure::Refused(InvalidDeclaration {
                 declaration: String::new(),
@@ -2338,7 +2513,6 @@ impl TypeEnvironment {
         reserve.phase(StoragePhase::Sealing);
         let mut keys: OrderedIndex<VariantId, ()> = OrderedIndex::default();
         for (member, binding) in members.iter().zip(&bindings) {
-            budget.charge(1).map_err(EnvironmentFailure::Limit)?;
             if member.member().is_some()
                 || binding.declaration() != final_key
                 || binding.identifier() != member.identifier()
@@ -2380,27 +2554,12 @@ impl TypeEnvironment {
         Ok(())
     }
 
-    /// Compare resolved types using the explicit sealed union handle/key join,
-    /// charging each compared pair to the caller's budget. Option and collection
-    /// nesting is iterative; Record/Tuple identity is unchanged.
-    pub fn same_type(
-        &self,
-        left: &ValueType,
-        right: &ValueType,
-        budget: &mut WorkBudget,
-    ) -> Result<bool, EnvironmentLimit> {
-        self.same_type_walk(left, right, &mut |units| budget.charge(units))
-    }
-
-    fn same_type_walk<E>(
-        &self,
-        left: &ValueType,
-        right: &ValueType,
-        charge: &mut impl FnMut(usize) -> Result<(), E>,
-    ) -> Result<bool, E> {
+    /// Compare resolved types using the explicit sealed union handle/key join.
+    /// Option and collection nesting is iterative; Record/Tuple identity is
+    /// unchanged.
+    pub fn same_type(&self, left: &ValueType, right: &ValueType) -> bool {
         let (mut left, mut right) = (left, right);
         loop {
-            charge(1)?;
             match (left, right) {
                 (ValueType::Option(a), ValueType::Option(b)) => {
                     left = a;
@@ -2408,61 +2567,28 @@ impl TypeEnvironment {
                 }
                 (ValueType::Collection(a), ValueType::Collection(b)) => {
                     if a.kind() != b.kind() || a.bound() != b.bound() {
-                        return Ok(false);
+                        return false;
                     }
                     left = a.element();
                     right = b.element();
                 }
                 (ValueType::Composite(a), ValueType::Composite(b)) => {
-                    return Ok(self.union_handles.get(a).unwrap_or(a)
-                        == self.union_handles.get(b).unwrap_or(b));
+                    return self.union_handles.get(a).unwrap_or(a)
+                        == self.union_handles.get(b).unwrap_or(b);
                 }
-                (
-                    ValueType::Boolean
-                    | ValueType::Integer
-                    | ValueType::Int(_)
-                    | ValueType::Rational(_)
-                    | ValueType::Decimal(_)
-                    | ValueType::Float(_)
-                    | ValueType::Quantity(_)
-                    | ValueType::Text(_)
-                    | ValueType::Uuid
-                    | ValueType::Timestamp
-                    | ValueType::String
-                    | ValueType::Enum(_)
-                    | ValueType::Composite(_)
-                    | ValueType::Reference(_)
-                    | ValueType::Option(_)
-                    | ValueType::Collection(_)
-                    | ValueType::Population(_),
-                    _,
-                ) => return Ok(left == right),
+                _ => return left == right,
             }
         }
     }
 
     /// Resolve union handles in a runtime type through verified final-key joins,
-    /// rebuilding each Option and collection wrapper iteratively under the
-    /// caller's cumulative budget and preserving its kind and bounds. An unsealed
-    /// union leaf is `Ok(None)`, never a resource stop; other declaration keys
-    /// stay unchanged.
-    pub fn runtime_type(
-        &self,
-        value_type: &ValueType,
-        budget: &mut WorkBudget,
-    ) -> Result<Option<ValueType>, EnvironmentLimit> {
-        self.runtime_type_walk(value_type, &mut |units| budget.charge(units))
-    }
-
-    fn runtime_type_walk<E>(
-        &self,
-        value_type: &ValueType,
-        charge: &mut impl FnMut(usize) -> Result<(), E>,
-    ) -> Result<Option<ValueType>, E> {
+    /// rebuilding each Option and collection wrapper iteratively and preserving
+    /// its kind and bounds. An unsealed union leaf is `None`; other declaration
+    /// keys stay unchanged.
+    pub fn runtime_type(&self, value_type: &ValueType) -> Option<ValueType> {
         let mut link = value_type;
         let mut wrappers = Vec::new();
         loop {
-            charge(1)?;
             match link {
                 ValueType::Option(payload) => {
                     wrappers.push(link);
@@ -2472,58 +2598,24 @@ impl TypeEnvironment {
                     wrappers.push(link);
                     link = collection.element();
                 }
-                ValueType::Boolean
-                | ValueType::Integer
-                | ValueType::Int(_)
-                | ValueType::Rational(_)
-                | ValueType::Decimal(_)
-                | ValueType::Float(_)
-                | ValueType::Quantity(_)
-                | ValueType::Text(_)
-                | ValueType::Uuid
-                | ValueType::Timestamp
-                | ValueType::String
-                | ValueType::Enum(_)
-                | ValueType::Composite(_)
-                | ValueType::Reference(_)
-                | ValueType::Population(_) => break,
+                _ => break,
             }
         }
         let mut resolved = match link {
             ValueType::Composite(key) => {
-                let Some(declaration) = self.composite(*key) else {
-                    return Ok(None);
-                };
+                let declaration = self.composite(*key)?;
                 match declaration.shape() {
                     CompositeShape::Union(_) => {
-                        let Some(final_key) = self.union_key(declaration.key()) else {
-                            return Ok(None);
-                        };
-                        ValueType::Composite(final_key)
+                        ValueType::Composite(self.union_key(declaration.key())?)
                     }
                     CompositeShape::Record(_) | CompositeShape::Tuple(_) => {
                         ValueType::Composite(*key)
                     }
                 }
             }
-            ValueType::Boolean
-            | ValueType::Integer
-            | ValueType::Int(_)
-            | ValueType::Rational(_)
-            | ValueType::Decimal(_)
-            | ValueType::Float(_)
-            | ValueType::Quantity(_)
-            | ValueType::Text(_)
-            | ValueType::Uuid
-            | ValueType::Timestamp
-            | ValueType::String
-            | ValueType::Enum(_)
-            | ValueType::Reference(_)
-            | ValueType::Population(_) => link.clone(),
-            ValueType::Option(_) | ValueType::Collection(_) => return Ok(None),
+            other => other.clone(),
         };
         while let Some(wrapper) = wrappers.pop() {
-            charge(1)?;
             resolved = match wrapper {
                 ValueType::Option(_) => ValueType::option(resolved),
                 ValueType::Collection(collection) => {
@@ -2533,24 +2625,10 @@ impl TypeEnvironment {
                         collection.bound(),
                     ))
                 }
-                ValueType::Boolean
-                | ValueType::Integer
-                | ValueType::Int(_)
-                | ValueType::Rational(_)
-                | ValueType::Decimal(_)
-                | ValueType::Float(_)
-                | ValueType::Quantity(_)
-                | ValueType::Text(_)
-                | ValueType::Uuid
-                | ValueType::Timestamp
-                | ValueType::String
-                | ValueType::Enum(_)
-                | ValueType::Composite(_)
-                | ValueType::Reference(_)
-                | ValueType::Population(_) => return Ok(None),
+                _ => return None,
             };
         }
-        Ok(Some(resolved))
+        Some(resolved)
     }
 
     /// Resolve a member only after sealing, by internal handle or final key.
@@ -2573,196 +2651,181 @@ impl TypeEnvironment {
         Some((position, members.get(position)?))
     }
 
-    /// Resolve an authored member name to its topology, before or after sealing,
-    /// with one charge per inspected descriptor.
-    pub fn union_member_named<'a>(
-        &'a self,
-        declaration: NodeKey,
-        name: &str,
-        budget: &mut WorkBudget,
-    ) -> Result<Option<(usize, &'a UnionMemberDeclaration)>, EnvironmentLimit> {
-        self.union_member_named_walk(declaration, name, &mut |units| budget.charge(units))
-    }
-
-    fn union_member_named_walk<E>(
+    /// Resolve an authored member name to its topology, before or after sealing.
+    pub fn union_member_named(
         &self,
         declaration: NodeKey,
         name: &str,
-        charge: &mut impl FnMut(usize) -> Result<(), E>,
-    ) -> Result<Option<(usize, &UnionMemberDeclaration)>, E> {
+    ) -> Option<(usize, &UnionMemberDeclaration)> {
         let Some(CompositeShape::Union(members)) = self.shape(declaration) else {
-            return Ok(None);
+            return None;
         };
-        for (position, member) in members.iter().enumerate() {
-            charge(1)?;
-            if member.identifier().as_str() == name {
-                return Ok(Some((position, member)));
-            }
-        }
-        Ok(None)
+        members
+            .iter()
+            .enumerate()
+            .find(|(_, member)| member.identifier().as_str() == name)
     }
 
-    /// Whether `value_type` admits `value` under this environment: a
-    /// `Reference<T>` by `conforms`, a composite by `composite_conforms` (the walk
-    /// stops at a composite), a sealed union value by its carried member and
-    /// positions, and every other leaf by the exact kernel `ValueType::admits`.
-    /// Iterative; one work unit per value visited, including each shared
-    /// occurrence, and per type-link pair compared, against the caller's budget.
-    /// A reached ceiling is returned by name; reference target closure is checked
-    /// separately.
+    /// Whether `value_type` admits `value` under this environment's
+    /// conformance, looking inside `Option` payloads and collection
+    /// elements (FR-113 items 8 to 11).
+    ///
+    /// The walk is an explicit worklist. A composite is admitted by
+    /// [`Self::composite_conforms`] and the walk stops there: its own members
+    /// were admitted against its own declaration. A `Reference<T>` is admitted
+    /// when the reference's object type [`Self::conforms`] to `T`. Every other
+    /// leaf, and the recorded payload or element type of every `Option` and
+    /// collection, is the exact kernel [`ValueType::admits`], so admission is
+    /// never covariant over a type constructor. The answer carries no cause
+    /// and charges no work: the callers that hold the value own its
+    /// accounting. A refused reservation is an error, never `false`; the
+    /// cause-carrying, event-by-event form is `admits_walk`.
     pub fn admits(
         &self,
         value_type: &ValueType,
         value: &Value,
-        budget: &mut WorkBudget,
-    ) -> Result<bool, EnvironmentLimit> {
-        self.admits_walk(value_type, value, &mut |units| budget.charge(units))
+    ) -> Result<bool, EnvironmentFailure> {
+        Ok(self.admits_checked(value_type, value)?)
     }
 
-    fn admits_walk<E>(
+    /// Check one supplied value with the caller's cumulative admission budget
+    /// and original cancellation handle. Reuse `budget` and `arena` for later
+    /// arguments in the same invocation, rooting each at its argument index.
+    /// Successful membership is distinct from an invalid value or a stop.
+    pub fn admit_supplied<Cause: From<InvalidMembershipCause>>(
+        &self,
+        expected: &ValueType,
+        value: &Value,
+        arena: &mut MembershipPathArena,
+        at: MembershipLocus,
+        budget: &mut SuppliedMembershipBudget,
+        cancel: &quire_exact::Cancel,
+    ) -> Result<(), SuppliedAdmissionError<Cause>> {
+        self.admit_supplied_with(
+            expected,
+            value,
+            arena,
+            at,
+            budget,
+            cancel,
+            &GlobalReservations,
+        )
+    }
+
+    fn admit_supplied_with<Cause: From<InvalidMembershipCause>>(
+        &self,
+        expected: &ValueType,
+        value: &Value,
+        arena: &mut MembershipPathArena,
+        at: MembershipLocus,
+        budget: &mut SuppliedMembershipBudget,
+        cancel: &quire_exact::Cancel,
+        reservation: &impl ReservationPolicy,
+    ) -> Result<(), SuppliedAdmissionError<Cause>> {
+        self.admits_walk_observed(
+            expected,
+            value,
+            arena,
+            at,
+            &mut |boundary| match boundary {
+                membership::MembershipBoundary::Event(event, locus) => {
+                    budget.charge(event, locus, cancel)
+                }
+                membership::MembershipBoundary::AfterHelper(event, locus) => {
+                    budget.check_cancel(event, locus, cancel)
+                }
+                membership::MembershipBoundary::RequiresQualification(family, event, locus) => {
+                    budget.check_cancel(event, locus, cancel)?;
+                    Err(SuppliedAdmissionError::UnsupportedHelper { family, locus })
+                }
+            },
+            reservation,
+        )
+    }
+
+    /// [`Self::admits`] for the evaluator callers, whose kernel `Stop` has no
+    /// storage-failure channel (a typed one needs a storage variant in
+    /// `quire-exact`'s `Stop` or `CheckedInvariantCause`). A failed worklist
+    /// reservation is a real allocator failure here, and it aborts as the
+    /// infallible worklist growth did before the seam. It is never reported as
+    /// a value that is not admitted.
+    fn admits_or_abort(&self, value_type: &ValueType, value: &Value) -> bool {
+        match self.admits_checked(value_type, value) {
+            Ok(admitted) => admitted,
+            Err(StorageFailure::Allocation(request) | StorageFailure::Capacity(request)) => {
+                let layout =
+                    Layout::array::<usize>(request.amount()).unwrap_or(Layout::new::<usize>());
+                alloc::alloc::handle_alloc_error(layout)
+            }
+        }
+    }
+
+    /// [`Self::admits`] reporting only the storage classifications its
+    /// reservations can produce, for callers that map them to their own
+    /// refusal.
+    fn admits_checked(
         &self,
         value_type: &ValueType,
         value: &Value,
-        charge: &mut impl FnMut(usize) -> Result<(), E>,
-    ) -> Result<bool, E> {
-        if self.type_refusal_walk(value_type, true, charge)?.is_some() {
-            return Ok(false);
-        }
-        charge(1)?;
-        let mut pending = vec![(value_type, value)];
-        let mut first = true;
-        while let Some((ty, value)) = pending.pop() {
-            if !first {
-                charge(1)?;
+    ) -> Result<bool, StorageFailure> {
+        let mut arena = MembershipPathArena::scoped();
+        let at = MembershipLocus {
+            path: arena.root(0),
+            part: MembershipPart::Value,
+        };
+        match self.admits_walk::<InvalidMembershipCause>(
+            value_type,
+            value,
+            &mut arena,
+            at,
+            &mut |_, _| Ok(()),
+            &GlobalReservations,
+        ) {
+            Ok(()) => Ok(true),
+            Err(SuppliedAdmissionError::Invalid { .. }) => Ok(false),
+            Err(SuppliedAdmissionError::Allocation { request, .. }) => {
+                Err(StorageFailure::Allocation(request))
             }
-            first = false;
-            match (ty, value) {
-                (ValueType::Composite(key), Value::Union(union)) => {
-                    let handle = self.union_handles.get(key).copied().unwrap_or(*key);
-                    if self.union_key(handle) != Some(union.declaration()) {
-                        return Ok(false);
-                    }
-                    let Some((_, member)) = self.union_member(*key, union.variant()) else {
-                        return Ok(false);
-                    };
-                    if Some(union.member()) != member.member()
-                        || union.payload().len() != member.positions.len()
-                    {
-                        return Ok(false);
-                    }
-                    charge(union.payload().len())?;
-                    pending.extend(member.positions.iter().zip(union.payload()).rev());
-                }
-                (ValueType::Composite(key), Value::Composite(value)) => {
-                    // FR-113 items 9 and 11: conformance by identity or declared
-                    // supertype admits the value and the walk stops there; its
-                    // members were admitted against its own declaration. A
-                    // union declaration is admitted only by a union value.
-                    if !self.composite_conforms(value.declaration(), *key)
-                        || matches!(self.shape(*key), Some(CompositeShape::Union(_)))
-                    {
-                        return Ok(false);
-                    }
-                    charge(1)?;
-                }
-                (ValueType::Reference(declared), Value::Reference(reference)) => {
-                    charge(1)?;
-                    if !self.object_types.contains_key(declared)
-                        || !self.object_types.contains_key(&reference.object_type())
-                        || !self.conforms(reference.object_type(), *declared)
-                    {
-                        return Ok(false);
-                    }
-                }
-                (ValueType::Option(payload), Value::Option(option)) => {
-                    if !self.same_type_walk(option.payload_type(), payload, charge)? {
-                        return Ok(false);
-                    }
-                    if let Some(value) = option.payload() {
-                        charge(1)?;
-                        pending.push((payload, value));
-                    }
-                }
-                (ValueType::Collection(declared), Value::Collection(collection)) => {
-                    let actual = collection.collection_type();
-                    if actual.kind() != declared.kind()
-                        || actual.bound() != declared.bound()
-                        || !self.same_type_walk(actual.element(), declared.element(), charge)?
-                    {
-                        return Ok(false);
-                    }
-                    if let Some(bound) = declared.bound() {
-                        let count = u64::try_from(collection.elements().len()).unwrap_or(u64::MAX);
-                        if bound.violation(count).is_some() {
-                            return Ok(false);
-                        }
-                    }
-                    charge(collection.elements().len())?;
-                    pending.extend(
-                        collection
-                            .elements()
-                            .iter()
-                            .rev()
-                            .map(|value| (declared.element(), value)),
-                    );
-                }
-                (
-                    ValueType::Boolean
-                    | ValueType::Integer
-                    | ValueType::Int(_)
-                    | ValueType::Rational(_)
-                    | ValueType::Decimal(_)
-                    | ValueType::Float(_)
-                    | ValueType::Quantity(_)
-                    | ValueType::Text(_)
-                    | ValueType::Uuid
-                    | ValueType::Timestamp
-                    | ValueType::String
-                    | ValueType::Enum(_)
-                    | ValueType::Composite(_)
-                    | ValueType::Reference(_)
-                    | ValueType::Option(_)
-                    | ValueType::Collection(_)
-                    | ValueType::Population(_),
-                    _,
-                ) => {
-                    if !ty.admits(value) {
-                        return Ok(false);
-                    }
-                }
+            Err(SuppliedAdmissionError::Capacity { request, .. }) => {
+                Err(StorageFailure::Capacity(request))
             }
+            // `admits_walk` invokes the callback only for event requests;
+            // this call passes `|_, _| Ok(())`, and its wrapper ignores every
+            // qualification boundary. It cannot construct any of these three
+            // supplied-only stops. This arm only exhausts the shared type.
+            Err(
+                SuppliedAdmissionError::Limit { .. }
+                | SuppliedAdmissionError::Cancelled { .. }
+                | SuppliedAdmissionError::UnsupportedHelper { .. },
+            ) => Err(StorageFailure::Capacity(StorageRequest::new(
+                0,
+                StorageUnit::AdditionalElements,
+            ))),
         }
-        Ok(true)
     }
 
-    /// Whether `value_type` contains `Float32` or `Float64` at any depth, through
-    /// every record, tuple and union member declaration, including unused union
-    /// alternatives. Every visited type and scheduled member position is charged
-    /// to the caller's budget; recursive declaration keys are visited once.
-    pub fn contains_ieee(
-        &self,
-        value_type: &ValueType,
-        budget: &mut WorkBudget,
-    ) -> Result<bool, EnvironmentLimit> {
-        self.contains_ieee_walk(value_type, &mut |units| budget.charge(units))
+    /// Check a type named outside a declaration (a parameter or result type):
+    /// every named declaration exists, every `Reference<T>` names a model
+    /// object type, and no set, bag or ordered set has an IEEE-bearing element
+    /// type.
+    pub fn check_type(&self, value_type: &ValueType) -> Result<(), IllTyped> {
+        match self.type_refusal(value_type) {
+            None => Ok(()),
+            Some(DeclarationCause::Type(cause)) => Err(IllTyped { cause }),
+            Some(_) => Err(IllTyped {
+                cause: IllTypedCause::TypeMismatch,
+            }),
+        }
     }
 
-    fn contains_ieee_walk<E>(
-        &self,
-        value_type: &ValueType,
-        charge: &mut impl FnMut(usize) -> Result<(), E>,
-    ) -> Result<bool, E> {
+    /// Whether `value_type` contains `Float32` or `Float64` at any depth,
+    /// through record and tuple declarations included.
+    pub fn contains_ieee(&self, value_type: &ValueType) -> bool {
         let mut visited = BTreeSet::new();
-        charge(1)?;
         let mut pending = vec![value_type];
-        let mut first = true;
         while let Some(value_type) = pending.pop() {
-            if !first {
-                charge(1)?;
-            }
-            first = false;
             match value_type {
-                ValueType::Float(_) => return Ok(true),
+                ValueType::Float(_) => return true,
                 ValueType::Option(payload) => pending.push(payload),
                 ValueType::Collection(collection) => pending.push(collection.element()),
                 ValueType::Composite(key) => {
@@ -2771,17 +2834,13 @@ impl TypeEnvironment {
                     }
                     match self.composite(*key).map(|declaration| &declaration.shape) {
                         Some(CompositeShape::Record(fields)) => {
-                            charge(fields.len())?;
                             pending.extend(fields.iter().map(FieldDeclaration::value_type));
                         }
-                        Some(CompositeShape::Tuple(positions)) => {
-                            charge(positions.len())?;
-                            pending.extend(positions);
-                        }
+                        Some(CompositeShape::Tuple(positions)) => pending.extend(positions),
+                        // Every member is inspected, including alternatives no
+                        // value ever selects.
                         Some(CompositeShape::Union(members)) => {
                             for member in members {
-                                charge(1)?;
-                                charge(member.positions.len())?;
                                 pending.extend(&member.positions);
                             }
                         }
@@ -2803,56 +2862,23 @@ impl TypeEnvironment {
                 | ValueType::Population(_) => {}
             }
         }
-        Ok(false)
+        false
     }
 
-    /// Check a type named outside a declaration (a parameter or result type):
-    /// every named declaration exists, every `Reference<T>` names a model object
-    /// type, and no set, bag or ordered set has an IEEE-bearing element type. Work
-    /// stops are not converted into ill-typed refusals; the inner result keeps the
-    /// typed cause.
-    pub fn check_type(
-        &self,
-        value_type: &ValueType,
-        budget: &mut WorkBudget,
-    ) -> Result<Result<(), IllTyped>, EnvironmentLimit> {
-        Ok(
-            match self.type_refusal_walk(value_type, false, &mut |units| budget.charge(units))? {
-                None => Ok(()),
-                Some(DeclarationCause::Type(cause)) => Err(IllTyped { cause }),
-                Some(_) => Err(IllTyped {
-                    cause: IllTypedCause::TypeMismatch,
-                }),
-            },
-        )
-    }
-
-    fn type_refusal_walk<E>(
-        &self,
-        value_type: &ValueType,
-        unknown_composite_ok: bool,
-        charge: &mut impl FnMut(usize) -> Result<(), E>,
-    ) -> Result<Option<DeclarationCause>, E> {
-        charge(1)?;
+    /// The first refusal of one type's named declarations and element types.
+    fn type_refusal(&self, value_type: &ValueType) -> Option<DeclarationCause> {
         let mut pending = vec![value_type];
-        let mut first = true;
         while let Some(value_type) = pending.pop() {
-            if !first {
-                charge(1)?;
-            }
-            first = false;
             match value_type {
-                ValueType::Composite(key)
-                    if !unknown_composite_ok && self.composite(*key).is_none() =>
-                {
-                    return Ok(Some(DeclarationCause::UnknownDeclaration(*key)));
+                ValueType::Composite(key) if self.composite(*key).is_none() => {
+                    return Some(DeclarationCause::UnknownDeclaration(*key));
                 }
                 // QSpec FR-143: `T` in `Reference<T>` must name a model object
                 // type; any other target is `type-mismatch`. The key is an
                 // effective identity, so an admitted record or
                 // tuple (keyed by `NodeKey`) can never satisfy it either.
                 ValueType::Reference(key) if !self.object_types.contains_key(key) => {
-                    return Ok(Some(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
+                    return Some(DeclarationCause::Type(IllTypedCause::TypeMismatch));
                 }
                 // QSpec FR-153 names a population binding only as the direct
                 // operand of `allInstances`/`lookup` (checked by
@@ -2867,18 +2893,14 @@ impl TypeEnvironment {
                 // refuses it here, never admitting a binding into a context
                 // QSpec FR-153 never gives it Outputs for.
                 ValueType::Population(_) => {
-                    return Ok(Some(DeclarationCause::Type(
-                        IllTypedCause::OperatorIneligible,
-                    )));
+                    return Some(DeclarationCause::Type(IllTypedCause::OperatorIneligible));
                 }
                 ValueType::Option(payload) => pending.push(payload),
                 ValueType::Collection(collection) => {
                     if collection.kind() != CollectionKind::Sequence
-                        && self.contains_ieee_walk(collection.element(), charge)?
+                        && self.contains_ieee(collection.element())
                     {
-                        return Ok(Some(DeclarationCause::Type(
-                            IllTypedCause::OperatorIneligible,
-                        )));
+                        return Some(DeclarationCause::Type(IllTypedCause::OperatorIneligible));
                     }
                     pending.push(collection.element());
                 }
@@ -2898,7 +2920,7 @@ impl TypeEnvironment {
                 | ValueType::Reference(_) => {}
             }
         }
-        Ok(None)
+        None
     }
 
     fn contains_ieee_admission<R: ReservationPolicy>(
@@ -3736,7 +3758,7 @@ impl TypeEnvironment {
         let found = attribute.members.iter().find(|member| {
             table.field(**member).is_some_and(|redefined| {
                 (field.presence == Presence::Optional && redefined.presence == Presence::Required)
-                    || !Self::narrows(&field.value_type, &redefined.value_type)
+                    || !self.narrows(&field.value_type, &redefined.value_type)
             })
         });
         match found {
@@ -3747,18 +3769,17 @@ impl TypeEnvironment {
 
     /// Whether every value `narrower` admits, `wider` admits *and*
     /// evaluation's `ValueType::admits` accepts a value of `narrower` where
-    /// `wider` is declared: the same type, or an `Int` interval within
-    /// `Integer` or within a wider `Int` interval. A reference field is
-    /// redefined only with the identical reference type, since `admits`
-    /// matches a reference's object type exactly. Any other pair is refused,
-    /// never guessed.
-    fn narrows(narrower: &ValueType, wider: &ValueType) -> bool {
+    /// `wider` is declared: the same type, an `Int` interval within
+    /// `Integer` or a wider interval, or a reference to a subtype of the
+    /// parent reference's object type. Other pairs are refused.
+    fn narrows(&self, narrower: &ValueType, wider: &ValueType) -> bool {
         match (narrower, wider) {
             (narrower, wider) if narrower == wider => true,
             (ValueType::Int(_), ValueType::Integer) => true,
             (ValueType::Int(inner), ValueType::Int(outer)) => {
                 outer.contains(inner.lower()) && outer.contains(inner.upper())
             }
+            (ValueType::Reference(sub), ValueType::Reference(sup)) => self.conforms(*sub, *sup),
             _ => false,
         }
     }
@@ -3787,10 +3808,11 @@ impl TypeEnvironment {
         table: &FieldTable<'_>,
         budget: &mut WorkBudget,
         reserve: &R,
+        check_widening: bool,
     ) -> Admission<EffectiveStorage> {
         let mut effective: OrderedIndex<EffectiveId, Vec<usize>> = OrderedIndex::default();
         let mut slots = Vec::new();
-        let mut scratch = Scratch::new(table.len(), table.name_count(), reserve)?;
+        let mut scratch = Scratch::new(table.len(), table.name_count(), reserve, check_widening)?;
         for (root, declaration) in &self.object_types {
             if effective.contains_key(root) {
                 continue;
@@ -4016,7 +4038,7 @@ impl TypeEnvironment {
         // An attribute a supertype already admitted unchanged was checked
         // there; only this type's own and merged attributes can widen.
         for (&attribute, &fresh) in attributes.iter().zip(&checked) {
-            if fresh {
+            if fresh && scratch.check_widening {
                 if let Some(widened) = self.widened(attribute, slots, table, reserve)? {
                     return Err(DeclarationCause::RedefinitionWidens(widened).into());
                 }
@@ -4044,77 +4066,143 @@ impl TypeEnvironment {
         Ok(attributes)
     }
 
-    /// Construct declared record slots under the caller's cumulative work budget.
+    /// Construct a record from its supplied fields. An omitted `?` field is
+    /// `absent`.
     pub fn record(
         &self,
         declaration: NodeKey,
         fields: Vec<(&str, FieldValue)>,
-        budget: &mut WorkBudget,
-    ) -> Result<Result<Value, ConstructionRefusal>, EnvironmentLimit> {
+    ) -> Result<Value, ConstructionRefusal> {
         let Some(CompositeShape::Record(declared)) = self.shape(declaration) else {
-            return Ok(refuse(
-                Component::Value,
-                ConstructionCause::UnknownDeclaration,
-            ));
+            return refuse(Component::Value, ConstructionCause::UnknownDeclaration);
         };
-        Ok(fill_slots(self, declared, fields, budget)?.map(|slots| composite(declaration, slots)))
+        let slots = fill_slots(self, declared, fields)?;
+        Ok(composite(declaration, slots))
     }
 
-    /// Construct the exact declared tuple arity under the same caller budget.
+    /// Construct a tuple of exactly its declared arity.
     pub fn tuple(
         &self,
         declaration: NodeKey,
         positions: Vec<Value>,
-        budget: &mut WorkBudget,
-    ) -> Result<Result<Value, ConstructionRefusal>, EnvironmentLimit> {
-        let declared = match self.tuple_positions(declaration, positions.len()) {
-            Ok(declared) => declared,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        budget.charge(positions.len())?;
-        for (position, (ty, value)) in declared.iter().zip(&positions).enumerate() {
-            if !self.admits(ty, value, budget)? {
-                return Ok(refuse(
-                    Component::Position(position),
-                    ConstructionCause::TypeMismatch,
-                ));
+    ) -> Result<Value, ConstructionRefusal> {
+        let declared = self.tuple_positions(declaration, positions.len())?;
+        for (position, (value_type, value)) in declared.iter().zip(&positions).enumerate() {
+            match self.admits_checked(value_type, value) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return refuse(
+                        Component::Position(position),
+                        ConstructionCause::TypeMismatch,
+                    )
+                }
+                Err(failure) => return refuse(Component::Position(position), failure.into()),
             }
         }
         let slots = positions.into_iter().map(FieldValue::Present).collect();
-        Ok(Ok(composite(declaration, slots)))
+        Ok(composite(declaration, slots))
     }
 
-    /// Validate fields before callbacks; preserve declaration order and the first
-    /// stopped outcome. Admission work and semantic retention use distinct meters.
+    /// Construct a sealed union value for a registry-resolved member, admitting
+    /// each payload position against the member's declared type. An unsealed
+    /// union grants no construction.
+    pub fn union(
+        &self,
+        declaration: NodeKey,
+        variant: VariantId,
+        payload: Vec<Value>,
+    ) -> Result<Value, ConstructionRefusal> {
+        let member = self.union_positions(declaration, variant, payload.len())?;
+        for (position, (value_type, value)) in member.positions.iter().zip(&payload).enumerate() {
+            match self.admits_checked(value_type, value) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return refuse(
+                        Component::Position(position),
+                        ConstructionCause::TypeMismatch,
+                    )
+                }
+                Err(failure) => return refuse(Component::Position(position), failure.into()),
+            }
+        }
+        let Some(binding) = member.member() else {
+            return refuse(Component::Value, ConstructionCause::TypeMismatch);
+        };
+        Ok(UnionValue::from_admitted(binding.clone(), payload))
+    }
+
+    /// Evaluate payload positions in order, propagating the first stopped outcome,
+    /// then retain the completed union once under the existing composite schedule.
+    pub fn evaluate_union(
+        &self,
+        declaration: NodeKey,
+        variant: VariantId,
+        payload: Vec<Deferred<'_>>,
+        meter: &mut Meter,
+    ) -> Result<Outcome<Value>, ConstructionRefusal> {
+        let member = self.union_positions(declaration, variant, payload.len())?;
+        let Some(binding) = member.member() else {
+            return refuse(Component::Value, ConstructionCause::TypeMismatch);
+        };
+        let mut values = Vec::with_capacity(member.positions.len());
+        for (value_type, expression) in member.positions.iter().zip(payload) {
+            match admitted(self, value_type, expression(meter)) {
+                Ok(value) => values.push(value),
+                Err(stop) => return Ok(outcome_from_stop(Err(stop))),
+            }
+        }
+        Ok(retain_composite(
+            UnionValue::from_admitted(binding.clone(), values),
+            meter,
+        ))
+    }
+
+    fn union_positions(
+        &self,
+        declaration: NodeKey,
+        variant: VariantId,
+        supplied: usize,
+    ) -> Result<&UnionMemberDeclaration, ConstructionRefusal> {
+        let Some((_, member)) = self.union_member(declaration, variant) else {
+            return refuse(Component::Value, ConstructionCause::TypeMismatch);
+        };
+        if member.positions.len() != supplied {
+            return refuse(
+                Component::Value,
+                ConstructionCause::WrongArity {
+                    declared: member.positions.len(),
+                    supplied,
+                },
+            );
+        }
+        Ok(member)
+    }
+
+    /// Evaluate a record value expression. Every construction refusal is
+    /// decided before any field expression runs. Field expressions then run in
+    /// declaration order, whatever the source order; the first one that does
+    /// not complete becomes the outcome and no later one runs. A completed
+    /// record charges `composite.result-retain`.
     pub fn evaluate_record(
         &self,
         declaration: NodeKey,
         fields: Vec<(&str, FieldExpression<'_>)>,
         meter: &mut Meter,
-        budget: &mut WorkBudget,
-    ) -> Result<Result<Outcome<Value>, ConstructionRefusal>, EnvironmentLimit> {
+    ) -> Result<Outcome<Value>, ConstructionRefusal> {
         let Some(CompositeShape::Record(declared)) = self.shape(declaration) else {
-            return Ok(refuse(
-                Component::Value,
-                ConstructionCause::UnknownDeclaration,
-            ));
+            return refuse(Component::Value, ConstructionCause::UnknownDeclaration);
         };
-        let mut supplied =
-            match match_names_walk(declared, fields, &mut |units| budget.charge(units))? {
-                Ok(supplied) => supplied,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
-        budget.charge(declared.len())?;
+        let mut supplied = match_names(declared, fields)?;
         let mut plan = Vec::with_capacity(declared.len());
         for field in declared {
             let expression = supplied.remove(field.name());
             let component = || Component::Field(field.name().to_owned());
             match (&expression, field.presence()) {
                 (None, Presence::Required) => {
-                    return Ok(refuse(component(), ConstructionCause::MissingField))
+                    return refuse(component(), ConstructionCause::MissingField)
                 }
                 (Some(FieldExpression::Null), Presence::Required) => {
-                    return Ok(refuse(component(), ConstructionCause::NullForRequiredField))
+                    return refuse(component(), ConstructionCause::NullForRequiredField)
                 }
                 (None | Some(FieldExpression::Null | FieldExpression::Evaluate(_)), _) => {}
             }
@@ -4126,59 +4214,41 @@ impl TypeEnvironment {
                 None => FieldValue::Absent,
                 Some(FieldExpression::Null) => FieldValue::Null,
                 Some(FieldExpression::Evaluate(expression)) => {
-                    // Preserve a prior runtime stop before any subsequent type
-                    // walk or admission charge (both released SR1341 fixes).
-                    let value = match outcome_into_stop(expression(meter)) {
-                        Ok(value) => value,
-                        Err(stop) => return Ok(Ok(outcome_from_stop(Err(stop)))),
-                    };
-                    if !self.admits(field.value_type(), &value, budget)? {
-                        return Ok(Ok(outcome_from_stop(Err(invariant(
-                            CheckedInvariantCause::DeferredResultNotAdmitted,
-                        )))));
+                    match admitted(self, field.value_type(), expression(meter)) {
+                        Ok(value) => FieldValue::Present(value),
+                        Err(stop) => return Ok(outcome_from_stop(Err(stop))),
                     }
-                    FieldValue::Present(value)
                 }
             };
             slots.push(slot);
         }
-        Ok(Ok(retain_composite(
+        Ok(retain_composite(
             composite(declaration, slots.into_boxed_slice()),
             meter,
-        )))
+        ))
     }
 
-    /// Evaluate exact tuple positions in order with the first-stop rule and the
-    /// existing composite retention charge, sharing the caller admission budget.
+    /// Evaluate a tuple call `T(e, ...)`: the arity is checked first, then the
+    /// arguments run in position order under the first-stopped rule, then a
+    /// completed tuple charges `composite.result-retain`.
     pub fn evaluate_tuple(
         &self,
         declaration: NodeKey,
         positions: Vec<Deferred<'_>>,
         meter: &mut Meter,
-        budget: &mut WorkBudget,
-    ) -> Result<Result<Outcome<Value>, ConstructionRefusal>, EnvironmentLimit> {
-        let declared = match self.tuple_positions(declaration, positions.len()) {
-            Ok(declared) => declared,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        budget.charge(declared.len())?;
+    ) -> Result<Outcome<Value>, ConstructionRefusal> {
+        let declared = self.tuple_positions(declaration, positions.len())?;
         let mut slots = Vec::with_capacity(declared.len());
         for (value_type, expression) in declared.iter().zip(positions) {
-            let value = match outcome_into_stop(expression(meter)) {
-                Ok(value) => value,
-                Err(stop) => return Ok(Ok(outcome_from_stop(Err(stop)))),
-            };
-            if !self.admits(value_type, &value, budget)? {
-                return Ok(Ok(outcome_from_stop(Err(invariant(
-                    CheckedInvariantCause::DeferredResultNotAdmitted,
-                )))));
+            match admitted(self, value_type, expression(meter)) {
+                Ok(value) => slots.push(FieldValue::Present(value)),
+                Err(stop) => return Ok(outcome_from_stop(Err(stop))),
             }
-            slots.push(FieldValue::Present(value));
         }
-        Ok(Ok(retain_composite(
+        Ok(retain_composite(
             composite(declaration, slots.into_boxed_slice()),
             meter,
-        )))
+        ))
     }
 
     fn tuple_positions(
@@ -4423,6 +4493,7 @@ impl<'e> FieldTable<'e> {
 /// to the next type clears every mark at once.
 struct Scratch {
     epoch: u64,
+    check_widening: bool,
     /// By field position: the candidate holding that field as its identity.
     identities: Vec<(u64, usize)>,
     /// By field position: the first candidate whose lineage names it.
@@ -4432,7 +4503,12 @@ struct Scratch {
 }
 
 impl Scratch {
-    fn new<R: ReservationPolicy>(fields: usize, names: usize, reserve: &R) -> Admission<Self> {
+    fn new<R: ReservationPolicy>(
+        fields: usize,
+        names: usize,
+        reserve: &R,
+        check_widening: bool,
+    ) -> Admission<Self> {
         let mut identities = Vec::new();
         reserve_elements(&mut identities, fields, reserve)?;
         identities.resize(fields, (0, 0));
@@ -4444,6 +4520,7 @@ impl Scratch {
         marks.resize(names, 0);
         Ok(Self {
             epoch: 0,
+            check_widening,
             identities,
             holders,
             names: marks,
@@ -4584,18 +4661,13 @@ fn duplicate_name<'a, R: ReservationPolicy>(
 /// The completed value of a deferred expression, which a checked program
 /// guarantees is a member of `value_type`. Its only callers are
 /// `evaluate_record`/`evaluate_tuple` below.
-#[cfg(test)]
 fn admitted(
     types: &TypeEnvironment,
     value_type: &ValueType,
     outcome: Outcome<Value>,
 ) -> Result<Value, Stop> {
     let value = outcome_into_stop(outcome)?;
-    let mut budget = WorkBudget::new(DEFAULT_WORK_UNITS, None);
-    if types
-        .admits(value_type, &value, &mut budget)
-        .expect("fixture admission work completes")
-    {
+    if types.admits_or_abort(value_type, &value) {
         Ok(value)
     } else {
         Err(invariant(CheckedInvariantCause::DeferredResultNotAdmitted))
@@ -4699,33 +4771,27 @@ impl TypeEnvironment {
     /// argument every caller -- including every non-enum test -- would
     /// otherwise need to thread through. An empty index is correct for any
     /// caller that never checks an enum equality.
-    /// [`Self::check_equality`] against one checking stage's units, which
-    /// add the compound units its expressions formed. `enum_members` gives
-    /// the member index of one compared enum shape: exactly its own
-    /// members. a checker's scope answers it from a table built
-    /// once per shape, so an equality does not copy its enum.
-    /// Check equality using the same cumulative SV budget as topology/admission.
-    /// The outer result retains resource stops; the inner result retains IR712
-    /// typed causes. Runtime comparison still uses its actual kernel meter.
     pub fn check_equality(
         &self,
         operator: EqualityOperator,
         left: EqualityOperand,
         right: EqualityOperand,
         enum_members: &EnumMemberIndex,
-        budget: &mut WorkBudget,
-    ) -> Result<Result<CheckedEquality, IllTyped>, EnvironmentLimit> {
+    ) -> Result<CheckedEquality, IllTyped> {
         self.check_equality_in(
             &UnitScope::new(&self.units),
             operator,
             left,
             right,
             &|shape: &EnumShape| enum_members.filtered(shape.variants()),
-            budget,
         )
     }
 
-    /// Budgeted equality checking against the caller's actual stage unit scope.
+    /// [`Self::check_equality`] against one checking stage's units, which
+    /// add the compound units its expressions formed. `enum_members` gives
+    /// the member index of one compared enum shape: exactly its own
+    /// members. a checker's scope answers it from a table built
+    /// once per shape, so an equality does not copy its enum.
     pub fn check_equality_in(
         &self,
         units: &UnitScope<'_>,
@@ -4733,26 +4799,11 @@ impl TypeEnvironment {
         left: EqualityOperand,
         right: EqualityOperand,
         enum_members: &dyn Fn(&EnumShape) -> EnumMemberIndex,
-        budget: &mut WorkBudget,
-    ) -> Result<Result<CheckedEquality, IllTyped>, EnvironmentLimit> {
-        self.check_equality_walk(units, operator, left, right, enum_members, &mut |units| {
-            budget.charge(units)
-        })
-    }
-
-    fn check_equality_walk<E>(
-        &self,
-        units: &UnitScope<'_>,
-        operator: EqualityOperator,
-        left: EqualityOperand,
-        right: EqualityOperand,
-        enum_members: &dyn Fn(&EnumShape) -> EnumMemberIndex,
-        charge: &mut impl FnMut(usize) -> Result<(), E>,
-    ) -> Result<Result<CheckedEquality, IllTyped>, E> {
-        let ill_typed = |cause| Ok(Err(IllTyped { cause }));
+    ) -> Result<CheckedEquality, IllTyped> {
+        let ill_typed = |cause| Err(IllTyped { cause });
         for operand in [&left, &right] {
-            for ty in core::iter::once(&operand.source).chain(operand.target.iter()) {
-                if let Some(cause) = self.type_refusal_walk(ty, false, charge)? {
+            for value_type in core::iter::once(&operand.source).chain(operand.target.iter()) {
+                if let Some(cause) = self.type_refusal(value_type) {
                     return ill_typed(match cause {
                         DeclarationCause::Type(cause) => cause,
                         _ => IllTypedCause::TypeMismatch,
@@ -4760,25 +4811,16 @@ impl TypeEnvironment {
                 }
             }
         }
-        let mut runtime_operand = |operand: EqualityOperand| -> Result<Option<EqualityOperand>, E> {
-            let Some(source) = self.runtime_type_walk(&operand.source, charge)? else {
-                return Ok(None);
-            };
-            let target = match operand.target {
-                Some(target) => {
-                    let Some(target) = self.runtime_type_walk(&target, charge)? else {
-                        return Ok(None);
-                    };
-                    Some(target)
-                }
-                None => None,
-            };
-            Ok(Some(EqualityOperand { source, target }))
+        let resolve = |operand: EqualityOperand| -> Option<EqualityOperand> {
+            Some(EqualityOperand {
+                source: self.runtime_type(&operand.source)?,
+                target: match operand.target {
+                    Some(target) => Some(self.runtime_type(&target)?),
+                    None => None,
+                },
+            })
         };
-        let Some(left) = runtime_operand(left)? else {
-            return ill_typed(IllTypedCause::TypeMismatch);
-        };
-        let Some(right) = runtime_operand(right)? else {
+        let (Some(left), Some(right)) = (resolve(left), resolve(right)) else {
             return ill_typed(IllTypedCause::TypeMismatch);
         };
         for operand in [&left, &right] {
@@ -4805,9 +4847,7 @@ impl TypeEnvironment {
             }
         }
         let (left_type, right_type) = (left.comparison_type(), right.comparison_type());
-        if self.contains_ieee_walk(left_type, charge)?
-            || self.contains_ieee_walk(right_type, charge)?
-        {
+        if self.contains_ieee(left_type) || self.contains_ieee(right_type) {
             return ill_typed(IllTypedCause::OperatorIneligible);
         }
         let schedule = match (left_type, right_type) {
@@ -4850,7 +4890,7 @@ impl TypeEnvironment {
             {
                 EqualitySchedule::Plan
             }
-            (l, r) if self.same_type_walk(l, r, charge)? => EqualitySchedule::Plan,
+            (l, r) if self.same_type(l, r) => EqualitySchedule::Plan,
             _ => return ill_typed(IllTypedCause::TypeMismatch),
         };
         // Retain only the compared enum declaration's own
@@ -4862,14 +4902,14 @@ impl TypeEnvironment {
             (EqualitySchedule::Enum, ValueType::Enum(shape)) => enum_members(shape),
             _ => EnumMemberIndex::default(),
         };
-        Ok(Ok(CheckedEquality {
+        Ok(CheckedEquality {
             operator,
             left,
             right,
             schedule,
             units: resolved,
             enum_members,
-        }))
+        })
     }
 }
 
@@ -5069,15 +5109,8 @@ mod native_type_tests {
             Integer::one(),
         ));
         for value_type in [ValueType::Uuid, ValueType::Timestamp] {
-            assert_eq!(
-                types
-                    .check_type(&value_type, &mut WorkBudget::new(DEFAULT_WORK_UNITS, None))
-                    .expect("fixture admission work completes"),
-                Ok(())
-            );
-            assert!(!types
-                .contains_ieee(&value_type, &mut WorkBudget::new(DEFAULT_WORK_UNITS, None))
-                .expect("fixture admission work completes"));
+            assert_eq!(types.check_type(&value_type), Ok(()));
+            assert!(!types.contains_ieee(&value_type));
             assert!(!admits_equality_conversion(
                 &bounded_integer,
                 &value_type,
@@ -5085,47 +5118,23 @@ mod native_type_tests {
             ));
         }
         assert!(types
-            .admits(
-                &ValueType::Uuid,
-                &uuid,
-                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)
-            )
-            .expect("fixture admission work completes"));
+            .admits(&ValueType::Uuid, &uuid)
+            .expect("admission reserves storage"));
         assert!(types
-            .admits(
-                &ValueType::Timestamp,
-                &timestamp,
-                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)
-            )
-            .expect("fixture admission work completes"));
+            .admits(&ValueType::Timestamp, &timestamp)
+            .expect("admission reserves storage"));
         assert!(!types
-            .admits(
-                &ValueType::Uuid,
-                &timestamp,
-                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)
-            )
-            .expect("fixture admission work completes"));
+            .admits(&ValueType::Uuid, &timestamp)
+            .expect("admission reserves storage"));
         assert!(!types
-            .admits(
-                &ValueType::Timestamp,
-                &uuid,
-                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)
-            )
-            .expect("fixture admission work completes"));
+            .admits(&ValueType::Timestamp, &uuid)
+            .expect("admission reserves storage"));
         assert!(!types
-            .admits(
-                &ValueType::Uuid,
-                &Value::Integer(Integer::one()),
-                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)
-            )
-            .expect("fixture admission work completes"));
+            .admits(&ValueType::Uuid, &Value::Integer(Integer::one()))
+            .expect("admission reserves storage"));
         assert!(!types
-            .admits(
-                &ValueType::Timestamp,
-                &Value::Integer(Integer::one()),
-                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)
-            )
-            .expect("fixture admission work completes"));
+            .admits(&ValueType::Timestamp, &Value::Integer(Integer::one()))
+            .expect("admission reserves storage"));
     }
 
     /// Native String has exact scalar-sequence equality and never inherits Text normalization.
@@ -5137,16 +5146,24 @@ mod native_type_tests {
         let decomposed = Value::String("e\u{301}".into());
         let equal_copy = Value::String("e\u{301}".into());
 
-        assert_eq!(types.check_type_u(&ValueType::String), Ok(()));
-        assert!(!types.contains_ieee_u(&ValueType::String));
-        assert!(types.admits_u(&ValueType::String, &decomposed));
-        assert!(!types.admits_u(&ValueType::String, &composed_as_text()));
-        assert!(!types.admits_u(&ValueType::Text(text_type()), &decomposed));
-        assert!(types.admits_u(&ValueType::String, &equal_copy));
+        assert_eq!(types.check_type(&ValueType::String), Ok(()));
+        assert!(!types.contains_ieee(&ValueType::String));
+        assert!(types
+            .admits(&ValueType::String, &decomposed)
+            .expect("admission reserves storage"));
+        assert!(!types
+            .admits(&ValueType::String, &composed_as_text())
+            .expect("admission reserves storage"));
+        assert!(!types
+            .admits(&ValueType::Text(text_type()), &decomposed)
+            .expect("admission reserves storage"));
+        assert!(types
+            .admits(&ValueType::String, &equal_copy)
+            .expect("admission reserves storage"));
 
         let enum_members = EnumMemberIndex::default();
         let equality = types
-            .check_equality_u(
+            .check_equality(
                 EqualityOperator::Equal,
                 EqualityOperand::typed(ValueType::String),
                 EqualityOperand::typed(ValueType::String),
@@ -5211,7 +5228,7 @@ mod native_type_tests {
         .expect("record with a native String member is admitted");
 
         let value = types
-            .record_u(
+            .record(
                 record,
                 vec![("label", FieldValue::Present(Value::String("hello".into())))],
             )
@@ -5224,7 +5241,9 @@ mod native_type_tests {
             composite.slots(),
             [FieldValue::Present(Value::String(text))] if text.as_str() == "hello"
         ));
-        assert!(types.admits_u(&ValueType::Composite(record), &value));
+        assert!(types
+            .admits(&ValueType::Composite(record), &value)
+            .expect("admission reserves storage"));
     }
 
     /// A union value is never admitted at a record or tuple composite type,
@@ -5286,15 +5305,19 @@ mod native_type_tests {
         };
         for key in [record, tuple] {
             let value = union_at(key);
-            assert!(!types.admits_u(&ValueType::Composite(key), &value));
-            assert!(!types.admits_u(
-                &ValueType::option(ValueType::Composite(key)),
-                &quire_exact::OptionValue::present(ValueType::Composite(key), value.clone())
-                    .expect("option payload type matches")
-            ));
+            assert!(!types
+                .admits(&ValueType::Composite(key), &value)
+                .expect("admission reserves storage"));
+            assert!(!types
+                .admits(
+                    &ValueType::option(ValueType::Composite(key)),
+                    &quire_exact::OptionValue::present(ValueType::Composite(key), value.clone())
+                        .expect("option payload type matches")
+                )
+                .expect("admission reserves storage"));
         }
         let refusal = types
-            .record_u(
+            .record(
                 holder,
                 vec![("member", FieldValue::Present(union_at(record)))],
             )
@@ -5302,7 +5325,7 @@ mod native_type_tests {
         assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
         assert_eq!(refusal.component, Component::Field("member".into()));
         let refusal = types
-            .tuple_u(pair, vec![union_at(tuple)])
+            .tuple(pair, vec![union_at(tuple)])
             .expect_err("a union is not a Pair tuple");
         assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
         assert_eq!(refusal.component, Component::Position(0));
@@ -5365,7 +5388,7 @@ mod native_type_tests {
         )
         .expect("acyclic composite ancestry admits");
         let value = types
-            .record_u(
+            .record(
                 child,
                 vec![("label", FieldValue::Present(Value::String("child".into())))],
             )
@@ -5375,13 +5398,21 @@ mod native_type_tests {
         assert!(types.composite_conforms(child, intermediate));
         assert!(types.composite_conforms(child, parent));
         assert!(!types.composite_conforms(parent, child));
-        assert!(types.admits_u(&ValueType::Composite(parent), &value));
-        assert!(types.admits_u(&ValueType::Composite(child), &value));
-        assert!(!types.admits_u(&ValueType::Composite(child), &record_value(&types, parent)));
-        assert!(!types.admits_u(
-            &ValueType::Composite(parent),
-            &record_value(&types, unrelated)
-        ));
+        assert!(types
+            .admits(&ValueType::Composite(parent), &value)
+            .expect("admission reserves storage"));
+        assert!(types
+            .admits(&ValueType::Composite(child), &value)
+            .expect("admission reserves storage"));
+        assert!(!types
+            .admits(&ValueType::Composite(child), &record_value(&types, parent))
+            .expect("admission reserves storage"));
+        assert!(!types
+            .admits(
+                &ValueType::Composite(parent),
+                &record_value(&types, unrelated)
+            )
+            .expect("admission reserves storage"));
         let Value::Composite(composite) = &value else {
             panic!("record construction returns a composite value");
         };
@@ -5481,7 +5512,7 @@ mod native_type_tests {
 
     fn record_value(types: &TypeEnvironment, declaration: NodeKey) -> Value {
         types
-            .record_u(
+            .record(
                 declaration,
                 vec![("label", FieldValue::Present(Value::String("same".into())))],
             )
@@ -5534,11 +5565,7 @@ pub fn operand_value(
     // compares only the identity triple, so the kind check is sufficient.
     let admitted = match (&operand.source, value) {
         (ValueType::Reference(_), value) => matches!(value, Value::Reference(_)),
-        (source, value) => types
-            .admits_walk(source, value, &mut |_| {
-                Ok::<(), core::convert::Infallible>(())
-            })
-            .unwrap_or_else(|never| match never {}),
+        (source, value) => types.admits_or_abort(source, value),
     };
     if !admitted {
         return Err(invariant(
@@ -5848,13 +5875,7 @@ mod checked_invariant_tests {
         let good =
             FieldExpression::Evaluate(Box::new(|_| Outcome::Completed(Value::Boolean(true))));
         let result = environment
-            .evaluate_record(
-                record,
-                vec![("flag", good)],
-                &mut meter(),
-                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None),
-            )
-            .expect("fixture admission work completes")
+            .evaluate_record(record, vec![("flag", good)], &mut meter())
             .unwrap();
         assert!(matches!(
             result,
@@ -5866,14 +5887,7 @@ mod checked_invariant_tests {
             Outcome::Completed(Value::Integer(Integer::one()))
         }));
         assert!(matches!(
-            environment
-                .evaluate_record(
-                    record,
-                    vec![("flag", bad)],
-                    &mut meter(),
-                    &mut WorkBudget::new(DEFAULT_WORK_UNITS, None)
-                )
-                .expect("fixture admission work completes"),
+            environment.evaluate_record(record, vec![("flag", bad)], &mut meter()),
             Ok(Outcome::Refused(Refusal::CheckedInvariant {
                 cause: CheckedInvariantCause::DeferredResultNotAdmitted
             }))
@@ -5884,9 +5898,7 @@ mod checked_invariant_tests {
                 tuple,
                 vec![Box::new(|_| Outcome::Completed(Value::Boolean(true)))],
                 &mut meter(),
-                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None),
             )
-            .expect("fixture admission work completes")
             .unwrap();
         assert!(matches!(
             result,
@@ -5905,9 +5917,7 @@ mod checked_invariant_tests {
                 tuple,
                 vec![Box::new(|_| Outcome::Refused(prior.clone()))],
                 &mut meter(),
-                &mut WorkBudget::new(DEFAULT_WORK_UNITS, None),
             )
-            .expect("fixture admission work completes")
             .unwrap();
         assert!(matches!(result, Outcome::Refused(actual) if actual == prior));
     }
@@ -6302,6 +6312,963 @@ mod work_budget_tests {
 }
 
 #[cfg(test)]
+mod staged_admission_tests {
+    use super::*;
+    use ix_trace_rs::trace;
+    use quire_exact::{ObjectId, ObjectReference, UniverseId};
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "fixtures supply model-minted effective identities"
+    )]
+    fn id(n: u8) -> EffectiveId {
+        EffectiveId::from_digest([n; 32])
+    }
+
+    fn parent_child(child_type: ValueType, parent_type: ValueType) -> Vec<ObjectTypeDeclaration> {
+        vec![
+            ObjectTypeDeclaration::new(
+                id(1),
+                "Parent",
+                vec![FieldDeclaration::new("f", parent_type, Presence::Required)],
+            ),
+            ObjectTypeDeclaration::new(
+                id(2),
+                "Child",
+                vec![FieldDeclaration::new("f", child_type, Presence::Required)
+                    .with_redefines(FieldRef::new(id(1), "f"))],
+            )
+            .with_supertypes(vec![id(1)]),
+        ]
+    }
+
+    /// A QSL refusal can abandon a structurally valid widening without QSV
+    /// reporting it; completion still refuses the same unsafe field.
+    #[trace("TC-909", "FR-110-AC-1", "FR-110-AC-4")]
+    #[test]
+    fn pending_widening_is_private_until_completion() {
+        let cancel = quire_exact::Cancel::new();
+        let declarations = || parent_child(ValueType::Boolean, ValueType::Integer);
+        let pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations(),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits");
+        drop(pending);
+        assert!(matches!(
+            TypeEnvironment::new([], declarations()),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::RedefinitionWidens(_),
+                ..
+            }))
+        ));
+        let pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations(),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits");
+        assert!(matches!(
+            pending.complete(),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::RedefinitionWidens(_),
+                ..
+            }))
+        ));
+    }
+
+    /// All direct entry points retain the same safety checks and completed
+    /// effective view while the staged entry point is available.
+    #[trace("TC-909", "FR-110-AC-4")]
+    #[test]
+    fn direct_admission_entry_points_retain_refusals_and_effective_fields() {
+        type Entry =
+            fn(Vec<ObjectTypeDeclaration>, &quire_exact::Cancel) -> Admission<TypeEnvironment>;
+        let entries: [(&str, Entry); 3] = [
+            ("new", |types, _| TypeEnvironment::new([], types)),
+            ("bounded", |types, _| {
+                TypeEnvironment::bounded([], types, TypeEnvironmentLimits::default())
+            }),
+            ("bounded_with_cancel", |types, cancel| {
+                TypeEnvironment::bounded_with_cancel(
+                    [],
+                    types,
+                    TypeEnvironmentLimits::default(),
+                    cancel,
+                )
+            }),
+        ];
+        let cancel = quire_exact::Cancel::new();
+        let invalid_target = || {
+            vec![
+                ObjectTypeDeclaration::new(id(1), "Parent", vec![]),
+                ObjectTypeDeclaration::new(
+                    id(2),
+                    "Child",
+                    vec![
+                        FieldDeclaration::new("f", ValueType::Integer, Presence::Required)
+                            .with_redefines(FieldRef::new(id(1), "missing")),
+                    ],
+                )
+                .with_supertypes(vec![id(1)]),
+            ]
+        };
+        let conflict = || {
+            vec![
+                ObjectTypeDeclaration::new(
+                    id(1),
+                    "Root",
+                    vec![FieldDeclaration::new(
+                        "f",
+                        ValueType::Integer,
+                        Presence::Required,
+                    )],
+                ),
+                ObjectTypeDeclaration::new(
+                    id(2),
+                    "Left",
+                    vec![
+                        FieldDeclaration::new("f", ValueType::Integer, Presence::Required)
+                            .with_redefines(FieldRef::new(id(1), "f")),
+                    ],
+                )
+                .with_supertypes(vec![id(1)]),
+                ObjectTypeDeclaration::new(
+                    id(3),
+                    "Right",
+                    vec![
+                        FieldDeclaration::new("f", ValueType::Integer, Presence::Required)
+                            .with_redefines(FieldRef::new(id(1), "f")),
+                    ],
+                )
+                .with_supertypes(vec![id(1)]),
+                ObjectTypeDeclaration::new(id(4), "Join", vec![])
+                    .with_supertypes(vec![id(2), id(3)]),
+            ]
+        };
+        let duplicate = || {
+            vec![
+                ObjectTypeDeclaration::new(
+                    id(1),
+                    "Left",
+                    vec![FieldDeclaration::new(
+                        "f",
+                        ValueType::Integer,
+                        Presence::Required,
+                    )],
+                ),
+                ObjectTypeDeclaration::new(
+                    id(2),
+                    "Right",
+                    vec![FieldDeclaration::new(
+                        "f",
+                        ValueType::Integer,
+                        Presence::Required,
+                    )],
+                ),
+                ObjectTypeDeclaration::new(id(3), "Join", vec![])
+                    .with_supertypes(vec![id(1), id(2)]),
+            ]
+        };
+        for (name, entry) in entries {
+            assert!(
+                matches!(
+                    entry(invalid_target(), &cancel),
+                    Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        cause: DeclarationCause::RedefinitionTarget(_),
+                        ..
+                    }))
+                ),
+                "{name} must reject an invalid target"
+            );
+            assert!(
+                matches!(
+                    entry(conflict(), &cancel),
+                    Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        cause: DeclarationCause::RedefinitionConflict(_),
+                        ..
+                    }))
+                ),
+                "{name} must reject an undominated conflict"
+            );
+            assert!(
+                matches!(
+                    entry(duplicate(), &cancel),
+                    Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        cause: DeclarationCause::DuplicateMember(member), ..
+                    })) if member == "f"
+                ),
+                "{name} must reject a duplicate effective name"
+            );
+            assert!(
+                matches!(
+                    entry(
+                        parent_child(ValueType::Boolean, ValueType::Integer),
+                        &cancel
+                    ),
+                    Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        cause: DeclarationCause::RedefinitionWidens(_),
+                        ..
+                    }))
+                ),
+                "{name} must reject widening"
+            );
+            let admitted = entry(
+                parent_child(ValueType::Integer, ValueType::Integer),
+                &cancel,
+            )
+            .expect("valid redefinition admits");
+            let field = admitted.attribute(id(2), "f").expect("effective field");
+            assert_eq!(field.identity(), FieldRef::new(id(2), "f"), "{name}");
+            assert!(field.stands_for(&FieldRef::new(id(1), "f")), "{name}");
+        }
+    }
+
+    /// The pending view keeps the parent's type and the caller's child source.
+    #[trace("TC-909", "FR-110-AC-3", "FR-110-AC-5")]
+    #[test]
+    fn pending_parent_projection_preserves_source_and_charges_budget() {
+        let cancel = quire_exact::Cancel::new();
+        let declarations = parent_child(ValueType::Integer, ValueType::Integer);
+        let direct = TypeEnvironment::new([], declarations.clone()).expect("strict admits");
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations,
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits");
+        assert_eq!(pending.spent(), direct.spent());
+        assert_eq!(
+            pending
+                .object_types()
+                .expect("budget permits iteration")
+                .count(),
+            2
+        );
+        assert!(pending
+            .object_type(id(2))
+            .expect("budget permits lookup")
+            .is_some());
+        assert!(pending
+            .conforms(id(2), id(1))
+            .expect("budget permits ancestry read"));
+        let declared = pending.declared_field(id(2), "f").expect("own field");
+        assert_eq!(declared.field, FieldRef::new(id(2), "f"));
+        assert_eq!(declared.value_type, &ValueType::Integer);
+        assert_eq!(declared.presence, Presence::Required);
+        assert!(matches!(
+            pending.declared_field(id(2), "missing"),
+            Err(PendingFieldFailure::UnknownField)
+        ));
+        let spent = pending.spent();
+        let projected = pending
+            .parent_field(
+                id(2),
+                id(1),
+                &FieldRef::new(id(1), "f"),
+                "child.self.f",
+                17_u32,
+            )
+            .expect("parent field resolves");
+        assert_eq!(projected.field, FieldRef::new(id(1), "f"));
+        assert_eq!(projected.value_type, &ValueType::Integer);
+        assert_eq!(projected.presence, Presence::Required);
+        assert_eq!(projected.source, "child.self.f");
+        assert_eq!(projected.observation, 17);
+        assert!(pending.spent() > spent);
+        assert!(matches!(
+            pending.parent_field(id(9), id(1), &FieldRef::new(id(1), "f"), "bad.child", 19),
+            Err(PendingFieldFailure::UnknownChild(key)) if key == id(9)
+        ));
+        assert!(matches!(
+            pending.parent_field(id(2), id(2), &FieldRef::new(id(1), "f"), "bad.parent", 20),
+            Err(PendingFieldFailure::NotImmediateParent { child, parent })
+                if child == id(2) && parent == id(2)
+        ));
+        assert!(matches!(
+            pending.parent_field(id(2), id(1), &FieldRef::new(id(1), "missing"), "child.self.missing", 18),
+            Err(PendingFieldFailure::UnknownTarget(target)) if target == FieldRef::new(id(1), "missing")
+        ));
+        let completed = pending.complete().expect("completion admits");
+        assert!(completed.spent() > direct.spent());
+        assert_eq!(completed, direct);
+        let expected = direct.attribute(id(2), "f").expect("direct slot");
+        let actual = completed.attribute(id(2), "f").expect("staged slot");
+        assert_eq!(actual.identity(), expected.identity());
+        assert_eq!(actual.field().value_type(), expected.field().value_type());
+        assert!(actual.stands_for(&FieldRef::new(id(1), "f")));
+        let other_cancel = quire_exact::Cancel::new();
+        let pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            TypeEnvironmentLimits::default(),
+            &other_cancel,
+        )
+        .expect("structure admits before cancellation");
+        other_cancel.cancel(quire_exact::CancelCause::Requested);
+        assert!(matches!(
+            pending.complete(),
+            Err(EnvironmentFailure::Limit(found)) if found.kind() == EnvironmentLimitKind::WorkUnits
+        ));
+        assert_eq!(
+            other_cancel.tripped(),
+            Some(quire_exact::CancelCause::Requested)
+        );
+        let original = quire_exact::Cancel::new();
+        let shared = original.clone();
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            TypeEnvironmentLimits::default(),
+            &original,
+        )
+        .expect("structure admits");
+        drop(original);
+        shared.cancel(quire_exact::CancelCause::Requested);
+        assert!(matches!(
+            pending.declared_field(id(2), "f"),
+            Err(PendingFieldFailure::Limit(found)) if found.kind() == EnvironmentLimitKind::WorkUnits
+        ));
+        assert_eq!(shared.tripped(), Some(quire_exact::CancelCause::Requested));
+    }
+
+    /// Pending declaration reads expose only a type's own field, not an
+    /// inherited effective attribute or an evaluator entry point.
+    #[trace("TC-909", "FR-110-AC-5", "FR-110-AC-6")]
+    #[test]
+    fn pending_declared_field_does_not_resolve_inheritance() {
+        let cancel = quire_exact::Cancel::new();
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            [
+                ObjectTypeDeclaration::new(
+                    id(1),
+                    "Parent",
+                    vec![FieldDeclaration::new(
+                        "inherited",
+                        ValueType::Boolean,
+                        Presence::Required,
+                    )],
+                ),
+                ObjectTypeDeclaration::new(
+                    id(2),
+                    "Child",
+                    vec![FieldDeclaration::new(
+                        "own",
+                        ValueType::Integer,
+                        Presence::Optional,
+                    )],
+                )
+                .with_supertypes(vec![id(1)]),
+            ],
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("declarations admit");
+        let own = pending
+            .declared_field(id(2), "own")
+            .expect("own declaration");
+        assert_eq!(own.field, FieldRef::new(id(2), "own"));
+        assert_eq!(own.presence, Presence::Optional);
+        assert!(matches!(
+            pending.declared_field(id(2), "inherited"),
+            Err(PendingFieldFailure::UnknownField)
+        ));
+        assert!(matches!(
+            pending.declared_field(id(9), "own"),
+            Err(PendingFieldFailure::UnknownObjectType(key)) if key == id(9)
+        ));
+        assert_eq!(
+            pending
+                .object_type(id(2))
+                .expect("budget permits lookup")
+                .expect("child")
+                .attributes()
+                .len(),
+            1
+        );
+    }
+
+    /// Every restricted declaration read shares the admission meter and
+    /// observes cancellation, including reads that expose an iterator.
+    #[trace("TC-909", "FR-110-AC-2", "FR-110-AC-3", "FR-110-AC-5")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test supplies a checked composite identity"
+    )]
+    #[test]
+    fn pending_declaration_reads_charge_and_observe_cancellation() {
+        let cancel = quire_exact::Cancel::new();
+        let declarations = parent_child(ValueType::Integer, ValueType::Integer);
+        let baseline = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations.clone(),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits")
+        .spent();
+        let limits = TypeEnvironmentLimits {
+            work_units: baseline + 1,
+            ..TypeEnvironmentLimits::default()
+        };
+        let mut pending =
+            TypeEnvironment::stage_model_with_cancel([], declarations, limits, &cancel)
+                .expect("structure fits exactly before pending reads");
+        assert!(pending
+            .object_type(id(2))
+            .expect("first read fits")
+            .is_some());
+        assert_eq!(pending.spent(), baseline + 1);
+        assert!(matches!(
+            pending.conforms(id(2), id(1)),
+            Err(PendingFieldFailure::Limit(limit))
+                if limit.kind() == EnvironmentLimitKind::WorkUnits
+                    && limit.configured_bound() == baseline + 1
+                    && limit.actual() == u128::from(baseline + 2)
+        ));
+        assert_eq!(pending.spent(), baseline + 1);
+
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits");
+        let before = pending.spent();
+        assert_eq!(pending.object_types().expect("iteration fits").count(), 2);
+        assert_eq!(pending.spent(), before + 3);
+        cancel.cancel(quire_exact::CancelCause::Requested);
+        assert!(matches!(
+            pending.composite(NodeKey::from_digest([1; 32])),
+            Err(PendingFieldFailure::Limit(_))
+        ));
+        assert!(matches!(
+            pending.composites(),
+            Err(PendingFieldFailure::Limit(_))
+        ));
+        assert!(matches!(
+            pending.object_type(id(2)),
+            Err(PendingFieldFailure::Limit(_))
+        ));
+        assert!(matches!(
+            pending.object_types(),
+            Err(PendingFieldFailure::Limit(_))
+        ));
+        assert!(matches!(
+            pending.conforms(id(2), id(1)),
+            Err(PendingFieldFailure::Limit(_))
+        ));
+        assert_eq!(pending.spent(), before + 3);
+    }
+
+    /// A pending lineage lookup spends for the traversal, so repeated lookups
+    /// cannot scan a large field table under a one-unit allowance.
+    #[trace("TC-909", "FR-110-AC-2", "FR-110-AC-5")]
+    #[test]
+    fn pending_parent_field_charges_each_scanned_entry() {
+        let cancel = quire_exact::Cancel::new();
+        let declarations = parent_child(ValueType::Integer, ValueType::Integer);
+        let baseline = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations.clone(),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits")
+        .spent();
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations,
+            TypeEnvironmentLimits {
+                work_units: baseline + 2,
+                ..TypeEnvironmentLimits::default()
+            },
+            &cancel,
+        )
+        .expect("staging leaves two units");
+        assert!(matches!(
+            pending.parent_field(id(2), id(1), &FieldRef::new(id(1), "f"), "source", 1_u8),
+            Err(PendingFieldFailure::Limit(limit))
+                if limit.kind() == EnvironmentLimitKind::WorkUnits
+                    && limit.configured_bound() == baseline + 2
+                    && limit.actual() == u128::from(baseline + 3)
+        ));
+        assert_eq!(pending.spent(), baseline + 2);
+    }
+
+    /// Each selected immediate parent resolves one proper-ancestor target
+    /// through its own private slot lineage.
+    #[trace("TC-909", "FR-110-AC-3", "FR-110-AC-5")]
+    #[test]
+    fn proper_ancestor_target_uses_selected_immediate_parent_slot() {
+        let cancel = quire_exact::Cancel::new();
+        let target = FieldRef::new(id(1), "x");
+        let types = vec![
+            ObjectTypeDeclaration::new(
+                id(1),
+                "A",
+                vec![FieldDeclaration::new(
+                    "x",
+                    ValueType::Integer,
+                    Presence::Required,
+                )],
+            ),
+            ObjectTypeDeclaration::new(
+                id(2),
+                "B1",
+                vec![
+                    FieldDeclaration::new("y", ValueType::Integer, Presence::Required)
+                        .with_redefines(target.clone()),
+                ],
+            )
+            .with_supertypes(vec![id(1)]),
+            ObjectTypeDeclaration::new(
+                id(3),
+                "B2",
+                vec![
+                    FieldDeclaration::new("z", ValueType::Integer, Presence::Required)
+                        .with_redefines(target.clone()),
+                ],
+            )
+            .with_supertypes(vec![id(1)]),
+            ObjectTypeDeclaration::new(
+                id(4),
+                "C",
+                vec![
+                    FieldDeclaration::new("w", ValueType::Integer, Presence::Required)
+                        .with_redefines(target.clone()),
+                ],
+            )
+            .with_supertypes(vec![id(2), id(3)]),
+        ];
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            types,
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("C dominates both parent redefinitions");
+        let initial = pending.spent();
+        let left = pending
+            .parent_field(id(4), id(2), &target, "C.self.w", 1_u8)
+            .expect("B1 lineage resolves");
+        assert_eq!(left.field, FieldRef::new(id(2), "y"));
+        assert_eq!(left.value_type, &ValueType::Integer);
+        assert_eq!(left.presence, Presence::Required);
+        assert_eq!(left.source, "C.self.w");
+        assert_eq!(left.observation, 1);
+        let right = pending
+            .parent_field(id(4), id(3), &target, "C.self.w", 2_u8)
+            .expect("B2 lineage resolves");
+        assert_eq!(right.field, FieldRef::new(id(3), "z"));
+        assert_eq!(right.source, "C.self.w");
+        assert_eq!(right.observation, 2);
+        assert!(pending.spent() > initial + 2);
+        assert!(matches!(
+            pending.parent_field(id(4), id(1), &target, "C.self.w", 3_u8),
+            Err(PendingFieldFailure::NotImmediateParent { child, parent })
+                if child == id(4) && parent == id(1)
+        ));
+        assert!(matches!(
+            pending.parent_field(id(4), id(2), &FieldRef::new(id(3), "z"), "C.self.w", 4_u8),
+            Err(PendingFieldFailure::UnknownTarget(missing)) if missing == FieldRef::new(id(3), "z")
+        ));
+        let completed = pending.complete().expect("safe slots complete");
+        assert_eq!(
+            completed.attribute(id(4), "w").expect("C slot").identity(),
+            FieldRef::new(id(4), "w")
+        );
+    }
+
+    /// The parent projection must not substitute the child's narrowed type
+    /// or required presence for the selected parent's declaration.
+    #[trace("TC-909", "FR-110-AC-5")]
+    #[test]
+    fn pending_parent_projection_retains_distinct_parent_type_and_presence() {
+        let cancel = quire_exact::Cancel::new();
+        let target = FieldRef::new(id(1), "f");
+        let declarations = [
+            ObjectTypeDeclaration::new(
+                id(1),
+                "Parent",
+                vec![FieldDeclaration::new(
+                    "f",
+                    ValueType::Reference(id(3)),
+                    Presence::Optional,
+                )],
+            ),
+            ObjectTypeDeclaration::new(
+                id(2),
+                "Child",
+                vec![
+                    FieldDeclaration::new("f", ValueType::Reference(id(4)), Presence::Required)
+                        .with_redefines(target.clone()),
+                ],
+            )
+            .with_supertypes(vec![id(1)]),
+            ObjectTypeDeclaration::new(id(3), "Target", vec![]),
+            ObjectTypeDeclaration::new(id(4), "Subtype", vec![]).with_supertypes(vec![id(3)]),
+        ];
+        let mut pending = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations,
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("narrowed declaration is structurally valid");
+        let child = pending
+            .declared_field(id(2), "f")
+            .expect("child declaration");
+        assert_eq!(child.value_type, &ValueType::Reference(id(4)));
+        assert_eq!(child.presence, Presence::Required);
+        let projected = pending
+            .parent_field(id(2), id(1), &target, "C.self.f", 41_u8)
+            .expect("parent lineage resolves");
+        assert_eq!(projected.field, target);
+        assert_eq!(projected.value_type, &ValueType::Reference(id(3)));
+        assert_eq!(projected.presence, Presence::Optional);
+        assert_eq!(projected.source, "C.self.f");
+        assert_eq!(projected.observation, 41);
+    }
+
+    /// The same structural and resource refusals precede the caller verdict.
+    #[trace("TC-909", "FR-110-AC-2", "FR-110-AC-6")]
+    #[test]
+    fn staged_structural_and_resource_failures_keep_typed_causes() {
+        let cancel = quire_exact::Cancel::new();
+        let unknown_member = [ObjectTypeDeclaration::new(
+            id(1),
+            "UnknownMember",
+            vec![FieldDeclaration::new(
+                "f",
+                ValueType::Reference(id(9)),
+                Presence::Required,
+            )],
+        )];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [],
+                unknown_member,
+                TypeEnvironmentLimits::default(),
+                &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::Type(IllTypedCause::TypeMismatch),
+                ..
+            }))
+        ));
+        let missing_supertype =
+            [ObjectTypeDeclaration::new(id(1), "Missing", vec![]).with_supertypes(vec![id(9)])];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [], missing_supertype, TypeEnvironmentLimits::default(), &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::UnknownObjectType(key), ..
+            })) if key == id(9)
+        ));
+        let supertype_cycle = [
+            ObjectTypeDeclaration::new(id(1), "A", vec![]).with_supertypes(vec![id(2)]),
+            ObjectTypeDeclaration::new(id(2), "B", vec![]).with_supertypes(vec![id(1)]),
+        ];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [], supertype_cycle, TypeEnvironmentLimits::default(), &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::GeneralizationCycle { cycle }, ..
+            })) if cycle.len() == 3 && cycle.first() == cycle.last()
+        ));
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "test supplies checked composite identities"
+        )]
+        let composite_key = NodeKey::from_digest([17; 32]);
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "test supplies checked composite identities"
+        )]
+        let other_composite_key = NodeKey::from_digest([18; 32]);
+        let composite_cycle = [
+            CompositeDeclaration::new(composite_key, "A", CompositeShape::Tuple(vec![]))
+                .with_supertypes(vec![other_composite_key]),
+            CompositeDeclaration::new(other_composite_key, "B", CompositeShape::Tuple(vec![]))
+                .with_supertypes(vec![composite_key]),
+        ];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                composite_cycle, [], TypeEnvironmentLimits::default(), &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::CompositeGeneralizationCycle { cycle }, ..
+            })) if cycle.len() == 3 && cycle.first() == cycle.last()
+        ));
+        let bad_target = vec![
+            ObjectTypeDeclaration::new(
+                id(2),
+                "Child",
+                vec![
+                    FieldDeclaration::new("f", ValueType::Integer, Presence::Required)
+                        .with_redefines(FieldRef::new(id(1), "missing")),
+                ],
+            )
+            .with_supertypes(vec![id(1)]),
+            ObjectTypeDeclaration::new(id(1), "Parent", vec![]),
+        ];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [],
+                bad_target,
+                TypeEnvironmentLimits::default(),
+                &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::RedefinitionTarget(_),
+                ..
+            }))
+        ));
+        let mut unrelated = parent_child(ValueType::Reference(id(5)), ValueType::Reference(id(3)));
+        unrelated.push(ObjectTypeDeclaration::new(id(3), "Target", vec![]));
+        unrelated.push(ObjectTypeDeclaration::new(id(5), "Other", vec![]));
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [],
+                unrelated,
+                TypeEnvironmentLimits::default(),
+                &cancel
+            )
+            .expect("unrelated structure admits")
+            .complete(),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::RedefinitionWidens(_),
+                ..
+            }))
+        ));
+        let limit = TypeEnvironmentLimits {
+            ancestor_steps: 0,
+            ..TypeEnvironmentLimits::default()
+        };
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel([], parent_child(ValueType::Integer, ValueType::Integer), limit, &cancel),
+            Err(EnvironmentFailure::Limit(found)) if found.kind() == EnvironmentLimitKind::AncestorSteps
+        ));
+        let one_edge = TypeEnvironmentLimits {
+            ancestor_steps: 1,
+            ..TypeEnvironmentLimits::default()
+        };
+        assert!(TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            one_edge,
+            &cancel
+        )
+        .is_ok());
+        let conflict = vec![
+            ObjectTypeDeclaration::new(
+                id(1),
+                "Root",
+                vec![FieldDeclaration::new(
+                    "f",
+                    ValueType::Integer,
+                    Presence::Required,
+                )],
+            ),
+            ObjectTypeDeclaration::new(
+                id(2),
+                "Left",
+                vec![
+                    FieldDeclaration::new("f", ValueType::Integer, Presence::Required)
+                        .with_redefines(FieldRef::new(id(1), "f")),
+                ],
+            )
+            .with_supertypes(vec![id(1)]),
+            ObjectTypeDeclaration::new(
+                id(3),
+                "Right",
+                vec![
+                    FieldDeclaration::new("f", ValueType::Integer, Presence::Required)
+                        .with_redefines(FieldRef::new(id(1), "f")),
+                ],
+            )
+            .with_supertypes(vec![id(1)]),
+            ObjectTypeDeclaration::new(id(4), "Join", vec![]).with_supertypes(vec![id(2), id(3)]),
+        ];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [],
+                conflict,
+                TypeEnvironmentLimits::default(),
+                &cancel
+            ),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::RedefinitionConflict(_),
+                ..
+            }))
+        ));
+        let duplicate = vec![
+            ObjectTypeDeclaration::new(
+                id(1),
+                "Left",
+                vec![FieldDeclaration::new(
+                    "f",
+                    ValueType::Integer,
+                    Presence::Required,
+                )],
+            ),
+            ObjectTypeDeclaration::new(
+                id(2),
+                "Right",
+                vec![FieldDeclaration::new(
+                    "f",
+                    ValueType::Integer,
+                    Presence::Required,
+                )],
+            ),
+            ObjectTypeDeclaration::new(id(3), "Join", vec![]).with_supertypes(vec![id(1), id(2)]),
+        ];
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel([], duplicate, TypeEnvironmentLimits::default(), &cancel),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::DuplicateMember(name), ..
+            })) if name == "f"
+        ));
+        let limit = TypeEnvironmentLimits {
+            work_units: 0,
+            ..TypeEnvironmentLimits::default()
+        };
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel([], parent_child(ValueType::Integer, ValueType::Integer), limit, &cancel),
+            Err(EnvironmentFailure::Limit(found)) if found.kind() == EnvironmentLimitKind::WorkUnits && found.configured_bound() == 0 && found.actual() > 0
+        ));
+        let baseline_spent = TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("staging admits")
+        .spent();
+        assert!(TypeEnvironment::stage_model_with_cancel(
+            [],
+            parent_child(ValueType::Integer, ValueType::Integer),
+            TypeEnvironmentLimits {
+                work_units: baseline_spent,
+                ..TypeEnvironmentLimits::default()
+            },
+            &cancel,
+        )
+        .is_ok());
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [], parent_child(ValueType::Integer, ValueType::Integer),
+                TypeEnvironmentLimits { work_units: baseline_spent - 1, ..TypeEnvironmentLimits::default() },
+                &cancel,
+            ),
+            Err(EnvironmentFailure::Limit(found))
+                if found.kind() == EnvironmentLimitKind::WorkUnits
+                    && found.configured_bound() == baseline_spent - 1
+                    && found.actual() == u128::from(baseline_spent)
+        ));
+        let cancelled = quire_exact::Cancel::new();
+        cancelled.cancel(quire_exact::CancelCause::Requested);
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel([], parent_child(ValueType::Integer, ValueType::Integer), TypeEnvironmentLimits::default(), &cancelled),
+            Err(EnvironmentFailure::Limit(found)) if found.kind() == EnvironmentLimitKind::WorkUnits
+        ));
+        assert_eq!(
+            cancelled.tripped(),
+            Some(quire_exact::CancelCause::Requested)
+        );
+    }
+
+    /// A proper reference subtype is safe for the completed parent slot.
+    #[trace("TC-909", "FR-110-AC-7")]
+    #[test]
+    fn reference_redefinition_accepts_only_subtype_and_preserves_identity() {
+        let cancel = quire_exact::Cancel::new();
+        let declarations = || {
+            let mut types = parent_child(ValueType::Reference(id(4)), ValueType::Reference(id(3)));
+            types.push(ObjectTypeDeclaration::new(id(3), "Target", vec![]));
+            types.push(
+                ObjectTypeDeclaration::new(id(4), "Subtype", vec![]).with_supertypes(vec![id(3)]),
+            );
+            types.push(ObjectTypeDeclaration::new(id(5), "Unrelated", vec![]));
+            types
+        };
+        let completed = TypeEnvironment::stage_model_with_cancel(
+            [],
+            declarations(),
+            TypeEnvironmentLimits::default(),
+            &cancel,
+        )
+        .expect("structure admits")
+        .complete()
+        .expect("subtype safety admits");
+        let reference = Value::Reference(ObjectReference::new(
+            UniverseId::from_digest([7; 32]),
+            id(4),
+            ObjectId::new("object").expect("identity"),
+        ));
+        let parent_field = completed.attribute(id(1), "f").expect("parent field");
+        let child_field = completed
+            .attribute(id(2), "f")
+            .expect("effective child field");
+        assert_eq!(
+            parent_field.field().value_type(),
+            &ValueType::Reference(id(3))
+        );
+        assert_eq!(
+            child_field.field().value_type(),
+            &ValueType::Reference(id(4))
+        );
+        assert!(child_field.stands_for(&FieldRef::new(id(1), "f")));
+        assert!(completed
+            .admits(parent_field.field().value_type(), &reference)
+            .expect("admission reserves storage"));
+        assert!(completed
+            .admits(child_field.field().value_type(), &reference)
+            .expect("admission reserves storage"));
+        let unrelated = Value::Reference(ObjectReference::new(
+            UniverseId::from_digest([7; 32]),
+            id(5),
+            ObjectId::new("other").expect("identity"),
+        ));
+        assert!(!completed
+            .admits(parent_field.field().value_type(), &unrelated)
+            .expect("admission reserves storage"));
+        let Value::Reference(actual) = reference else {
+            panic!("reference fixture")
+        };
+        assert_eq!(actual.object_type(), id(4));
+        let mut reversed = parent_child(ValueType::Reference(id(3)), ValueType::Reference(id(4)));
+        reversed.push(ObjectTypeDeclaration::new(id(3), "Target", vec![]));
+        reversed.push(
+            ObjectTypeDeclaration::new(id(4), "Subtype", vec![]).with_supertypes(vec![id(3)]),
+        );
+        assert!(matches!(
+            TypeEnvironment::stage_model_with_cancel(
+                [],
+                reversed,
+                TypeEnvironmentLimits::default(),
+                &cancel
+            )
+            .expect("reverse structure admits")
+            .complete(),
+            Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                cause: DeclarationCause::RedefinitionWidens(_),
+                ..
+            }))
+        ));
+    }
+}
+
+#[cfg(test)]
 mod ancestor_steps_tests {
     use alloc::format;
 
@@ -6393,6 +7360,7 @@ mod ancestor_steps_tests {
 )]
 mod nested_conformance_tests {
     use super::*;
+    use crate::supplied_membership::MembershipEvent;
     use ix_trace_rs::trace;
     use quire_exact::{
         form, from_admitted, CollectionKind, CollectionType, ObjectId, ObjectReference,
@@ -6499,7 +7467,7 @@ mod nested_conformance_tests {
     impl Fixture {
         fn value(&self, key: NodeKey, label: &str) -> Value {
             self.types
-                .record_u(
+                .record(
                     key,
                     vec![("label", FieldValue::Present(Value::String(label.into())))],
                 )
@@ -6550,7 +7518,8 @@ mod nested_conformance_tests {
         let present = option(parent.clone(), Some(child.clone()));
         assert!(fx
             .types
-            .admits_u(&ValueType::option(parent.clone()), &present));
+            .admits(&ValueType::option(parent.clone()), &present)
+            .expect("admission reserves storage"));
 
         for kind in collection_kinds() {
             let value = collection(
@@ -6559,11 +7528,22 @@ mod nested_conformance_tests {
                 vec![intermediate.clone(), child.clone()],
             );
             let declared = ValueType::collection(collection_type(kind, parent.clone()));
-            assert!(fx.types.admits_u(&declared, &value), "{kind:?} of P");
+            assert!(
+                fx.types
+                    .admits(&declared, &value)
+                    .expect("admission reserves storage"),
+                "{kind:?} of P"
+            );
         }
         // The top-level `C` at `P` and `M` already passes.
-        assert!(fx.types.admits_u(&parent, &child));
-        assert!(fx.types.admits_u(&ValueType::Composite(fx.m), &child));
+        assert!(fx
+            .types
+            .admits(&parent, &child)
+            .expect("admission reserves storage"));
+        assert!(fx
+            .types
+            .admits(&ValueType::Composite(fx.m), &child)
+            .expect("admission reserves storage"));
     }
 
     /// A nonconforming element or payload, a reversed slot and a
@@ -6583,12 +7563,15 @@ mod nested_conformance_tests {
         let option_of_unrelated = option(parent.clone(), Some(unrelated.clone()));
         assert!(!fx
             .types
-            .admits_u(&ValueType::option(parent.clone()), &option_of_unrelated));
+            .admits(&ValueType::option(parent.clone()), &option_of_unrelated)
+            .expect("admission reserves storage"));
         for kind in collection_kinds() {
             let value = collection(kind, parent.clone(), vec![unrelated.clone()]);
             let declared = ValueType::collection(collection_type(kind, parent.clone()));
             assert!(
-                !fx.types.admits_u(&declared, &value),
+                !fx.types
+                    .admits(&declared, &value)
+                    .expect("admission reserves storage"),
                 "{kind:?} of P holding U"
             );
         }
@@ -6596,12 +7579,17 @@ mod nested_conformance_tests {
         // A `P` inside a container recorded and declared at `C` or `M`.
         for slot in [&child_type, &intermediate_type] {
             let held = option(slot.clone(), Some(plain.clone()));
-            assert!(!fx.types.admits_u(&ValueType::option(slot.clone()), &held));
+            assert!(!fx
+                .types
+                .admits(&ValueType::option(slot.clone()), &held)
+                .expect("admission reserves storage"));
             for kind in collection_kinds() {
                 let value = collection(kind, slot.clone(), vec![plain.clone()]);
                 let declared = ValueType::collection(collection_type(kind, slot.clone()));
                 assert!(
-                    !fx.types.admits_u(&declared, &value),
+                    !fx.types
+                        .admits(&declared, &value)
+                        .expect("admission reserves storage"),
                     "{kind:?} of {slot:?}"
                 );
             }
@@ -6611,7 +7599,8 @@ mod nested_conformance_tests {
         let option_of_child = option(child_type.clone(), Some(child.clone()));
         assert!(!fx
             .types
-            .admits_u(&ValueType::option(parent.clone()), &option_of_child));
+            .admits(&ValueType::option(parent.clone()), &option_of_child)
+            .expect("admission reserves storage"));
         let sequence_of_child = collection(
             CollectionKind::Sequence,
             child_type.clone(),
@@ -6619,13 +7608,17 @@ mod nested_conformance_tests {
         );
         let sequence_of_parent =
             ValueType::collection(collection_type(CollectionKind::Sequence, parent.clone()));
-        assert!(!fx.types.admits_u(&sequence_of_parent, &sequence_of_child));
+        assert!(!fx
+            .types
+            .admits(&sequence_of_parent, &sequence_of_child)
+            .expect("admission reserves storage"));
         // A collection kind never converts to another.
         let set_of_child_in_parent =
             collection(CollectionKind::Set, parent.clone(), vec![child.clone()]);
         assert!(!fx
             .types
-            .admits_u(&sequence_of_parent, &set_of_child_in_parent));
+            .admits(&sequence_of_parent, &set_of_child_in_parent)
+            .expect("admission reserves storage"));
     }
 
     /// Nesting goes as deep as the value does, and one `U` among conforming
@@ -6650,13 +7643,19 @@ mod nested_conformance_tests {
         };
 
         let conforming = build(vec![fx.value(fx.c, "c"), fx.value(fx.p, "p")]);
-        assert!(fx.types.admits_u(&declared, &conforming));
+        assert!(fx
+            .types
+            .admits(&declared, &conforming)
+            .expect("admission reserves storage"));
         let mixed = build(vec![
             fx.value(fx.c, "c"),
             fx.value(fx.u, "u"),
             fx.value(fx.m, "m"),
         ]);
-        assert!(!fx.types.admits_u(&declared, &mixed));
+        assert!(!fx
+            .types
+            .admits(&declared, &mixed)
+            .expect("admission reserves storage"));
     }
 
     /// A member that completes to a conforming child is kept; a member that
@@ -6671,7 +7670,7 @@ mod nested_conformance_tests {
 
         let supplied = child.clone();
         let result = environment
-            .evaluate_record_u(
+            .evaluate_record(
                 record,
                 vec![(
                     "member",
@@ -6690,7 +7689,7 @@ mod nested_conformance_tests {
 
         let supplied = unrelated.clone();
         assert!(matches!(
-            environment.evaluate_record_u(
+            environment.evaluate_record(
                 record,
                 vec![(
                     "member",
@@ -6705,7 +7704,7 @@ mod nested_conformance_tests {
 
         let supplied = child.clone();
         let result = environment
-            .evaluate_tuple_u(
+            .evaluate_tuple(
                 tuple,
                 vec![Box::new(move |_| Outcome::Completed(supplied))],
                 &mut big_meter(),
@@ -6721,7 +7720,7 @@ mod nested_conformance_tests {
 
         let supplied = unrelated;
         assert!(matches!(
-            environment.evaluate_tuple_u(
+            environment.evaluate_tuple(
                 tuple,
                 vec![Box::new(move |_| Outcome::Completed(supplied))],
                 &mut big_meter(),
@@ -6745,7 +7744,7 @@ mod nested_conformance_tests {
         let child = fx.value(fx.c, "child");
 
         let refusal = environment
-            .record_u(
+            .record(
                 record,
                 vec![("member", FieldValue::Present(unrelated.clone()))],
             )
@@ -6755,7 +7754,7 @@ mod nested_conformance_tests {
 
         let nested = option(parent.clone(), Some(unrelated.clone()));
         let refusal = environment
-            .record_u(
+            .record(
                 record,
                 vec![
                     ("member", FieldValue::Present(child.clone())),
@@ -6768,7 +7767,7 @@ mod nested_conformance_tests {
 
         let kept = option(parent, Some(child.clone()));
         environment
-            .record_u(
+            .record(
                 record,
                 vec![
                     ("member", FieldValue::Present(child)),
@@ -6778,7 +7777,7 @@ mod nested_conformance_tests {
             .expect("conforming members construct");
 
         let refusal = environment
-            .tuple_u(tuple, vec![unrelated])
+            .tuple(tuple, vec![unrelated])
             .expect_err("a U at a P position is refused");
         assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
         assert_eq!(refusal.component, Component::Position(0));
@@ -6892,16 +7891,25 @@ mod nested_conformance_tests {
         // A conforming object type, and the identical one, are admitted.
         for object_type in [fx.child_object, fx.parent_object] {
             let held = option_at(&declared_parent, reference(object_type));
-            assert!(fx.types.admits_u(&option_type, &held), "{object_type:?}");
+            assert!(
+                fx.types
+                    .admits(&option_type, &held)
+                    .expect("admission reserves storage"),
+                "{object_type:?}"
+            );
         }
         // An unrelated object type and a supertype at a child slot are refused,
         // although the recorded payload type alone would admit them.
         let stranger = option_at(&declared_parent, reference(fx.stranger_object));
-        assert!(!fx.types.admits_u(&option_type, &stranger));
+        assert!(!fx
+            .types
+            .admits(&option_type, &stranger)
+            .expect("admission reserves storage"));
         let reversed = option_at(&declared_child, reference(fx.parent_object));
         assert!(!fx
             .types
-            .admits_u(&ValueType::option(declared_child.clone()), &reversed));
+            .admits(&ValueType::option(declared_child.clone()), &reversed)
+            .expect("admission reserves storage"));
         // Likewise for a collection element.
         let sequence_type = collection_type(CollectionKind::Sequence, declared_parent.clone());
         let declared = ValueType::collection(sequence_type);
@@ -6910,13 +7918,19 @@ mod nested_conformance_tests {
             declared_parent.clone(),
             vec![reference(fx.child_object)],
         );
-        assert!(fx.types.admits_u(&declared, &conforming));
+        assert!(fx
+            .types
+            .admits(&declared, &conforming)
+            .expect("admission reserves storage"));
         let unrelated = collection(
             CollectionKind::Sequence,
             declared_parent,
             vec![reference(fx.child_object), reference(fx.stranger_object)],
         );
-        assert!(!fx.types.admits_u(&declared, &unrelated));
+        assert!(!fx
+            .types
+            .admits(&declared, &unrelated)
+            .expect("admission reserves storage"));
     }
 
     /// `Set<P>` and `Bag<P>` holding a `C` and a `P` of equal shared fields
@@ -6942,110 +7956,105 @@ mod nested_conformance_tests {
             assert_eq!(held.elements().len(), 2, "{kind:?} keeps both");
             assert!(fx
                 .types
-                .admits_u(&ValueType::collection(collection_type), &formed));
+                .admits(&ValueType::collection(collection_type), &formed)
+                .expect("admission reserves storage"));
         }
     }
-}
+    /// Walk one occurrence, returning the failure's cause, part and the
+    /// descriptor-query events that fired.
+    fn walk_failure(
+        types: &TypeEnvironment,
+        expected: &ValueType,
+        value: &Value,
+    ) -> (
+        Result<(), SuppliedAdmissionError<InvalidMembershipCause>>,
+        MembershipPart,
+        Vec<MembershipEvent>,
+    ) {
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(0),
+            part: MembershipPart::Value,
+        };
+        let mut events = Vec::new();
+        let result = types.admits_walk::<InvalidMembershipCause>(
+            expected,
+            value,
+            &mut arena,
+            at,
+            &mut |event, _| {
+                events.push(event);
+                Ok(())
+            },
+            &GlobalReservations,
+        );
+        let part = match &result {
+            Err(SuppliedAdmissionError::Invalid { locus, .. }) => {
+                arena.resolve(*locus).expect("resolves").part()
+            }
+            _ => MembershipPart::Value,
+        };
+        (result, part, events)
+    }
 
-/// Unbounded-budget forms of the caller-budgeted APIs, for fixtures that do not
-/// exercise a limit.
-#[cfg(test)]
-trait Unlimited {
-    fn admits_u(&self, ty: &ValueType, value: &Value) -> bool;
-    fn check_type_u(&self, ty: &ValueType) -> Result<(), IllTyped>;
-    fn contains_ieee_u(&self, ty: &ValueType) -> bool;
-    fn record_u(
-        &self,
-        declaration: NodeKey,
-        fields: Vec<(&str, FieldValue)>,
-    ) -> Result<Value, ConstructionRefusal>;
-    fn tuple_u(
-        &self,
-        declaration: NodeKey,
-        positions: Vec<Value>,
-    ) -> Result<Value, ConstructionRefusal>;
-    fn check_equality_u(
-        &self,
-        operator: EqualityOperator,
-        left: EqualityOperand,
-        right: EqualityOperand,
-        enum_members: &EnumMemberIndex,
-    ) -> Result<CheckedEquality, IllTyped>;
-    fn evaluate_record_u(
-        &self,
-        declaration: NodeKey,
-        fields: Vec<(&str, FieldExpression<'_>)>,
-        meter: &mut Meter,
-    ) -> Result<Outcome<Value>, ConstructionRefusal>;
-    fn evaluate_tuple_u(
-        &self,
-        declaration: NodeKey,
-        positions: Vec<Deferred<'_>>,
-        meter: &mut Meter,
-    ) -> Result<Outcome<Value>, ConstructionRefusal>;
-}
-
-#[cfg(test)]
-fn unlimited() -> WorkBudget<'static> {
-    WorkBudget::new(DEFAULT_WORK_UNITS, None)
-}
-
-#[cfg(test)]
-impl Unlimited for TypeEnvironment {
-    fn admits_u(&self, ty: &ValueType, value: &Value) -> bool {
-        self.admits(ty, value, &mut unlimited())
-            .expect("unlimited work")
-    }
-    fn check_type_u(&self, ty: &ValueType) -> Result<(), IllTyped> {
-        self.check_type(ty, &mut unlimited())
-            .expect("unlimited work")
-    }
-    fn contains_ieee_u(&self, ty: &ValueType) -> bool {
-        self.contains_ieee(ty, &mut unlimited())
-            .expect("unlimited work")
-    }
-    fn record_u(
-        &self,
-        declaration: NodeKey,
-        fields: Vec<(&str, FieldValue)>,
-    ) -> Result<Value, ConstructionRefusal> {
-        self.record(declaration, fields, &mut unlimited())
-            .expect("unlimited work")
-    }
-    fn tuple_u(
-        &self,
-        declaration: NodeKey,
-        positions: Vec<Value>,
-    ) -> Result<Value, ConstructionRefusal> {
-        self.tuple(declaration, positions, &mut unlimited())
-            .expect("unlimited work")
-    }
-    fn check_equality_u(
-        &self,
-        operator: EqualityOperator,
-        left: EqualityOperand,
-        right: EqualityOperand,
-        enum_members: &EnumMemberIndex,
-    ) -> Result<CheckedEquality, IllTyped> {
-        self.check_equality(operator, left, right, enum_members, &mut unlimited())
-            .expect("unlimited work")
-    }
-    fn evaluate_record_u(
-        &self,
-        declaration: NodeKey,
-        fields: Vec<(&str, FieldExpression<'_>)>,
-        meter: &mut Meter,
-    ) -> Result<Outcome<Value>, ConstructionRefusal> {
-        self.evaluate_record(declaration, fields, meter, &mut unlimited())
-            .expect("unlimited work")
-    }
-    fn evaluate_tuple_u(
-        &self,
-        declaration: NodeKey,
-        positions: Vec<Deferred<'_>>,
-        meter: &mut Meter,
-    ) -> Result<Outcome<Value>, ConstructionRefusal> {
-        self.evaluate_tuple(declaration, positions, meter, &mut unlimited())
-            .expect("unlimited work")
+    /// Conformance failures and an unsupported union value each carry their
+    /// own typed cause, and a conformance check is preceded by a descriptor
+    /// query.
+    /// Trace: FR-109-AC-4
+    #[trace("TC-908", "FR-109-AC-4")]
+    #[test]
+    fn conformance_and_union_failures_have_distinct_causes() {
+        let fx = fixture();
+        let cause =
+            |result: &Result<(), SuppliedAdmissionError<InvalidMembershipCause>>| match result {
+                Err(SuppliedAdmissionError::Invalid { cause, .. }) => Some(*cause),
+                _ => None,
+            };
+        let (composite, part, events) = walk_failure(
+            &fx.types,
+            &ValueType::Composite(fx.p),
+            &fx.value(fx.u, "stranger"),
+        );
+        assert_eq!(
+            cause(&composite),
+            Some(InvalidMembershipCause::CompositeConformance)
+        );
+        assert_eq!(part, MembershipPart::Descriptor(0));
+        assert_eq!(
+            events,
+            [
+                MembershipEvent::ValueVisit,
+                MembershipEvent::DescriptorQuery
+            ]
+        );
+        let reference = Value::Reference(ObjectReference::new(
+            UniverseId::from_digest([74; 32]),
+            fx.stranger_object,
+            ObjectId::new("object").expect("non-empty identity"),
+        ));
+        let (reference, part, _) = walk_failure(
+            &fx.types,
+            &ValueType::Reference(fx.parent_object),
+            &reference,
+        );
+        assert_eq!(
+            cause(&reference),
+            Some(InvalidMembershipCause::ReferenceConformance)
+        );
+        assert_eq!(part, MembershipPart::Descriptor(0));
+        let union = quire_exact::UnionValue::from_admitted(
+            quire_exact::UnionMember::from_admitted(
+                fx.p,
+                NodeKey::from_digest([33; 32]),
+                quire_exact::Identifier::new("m").expect("identifier"),
+            ),
+            vec![Value::Integer(Integer::one())],
+        );
+        let (union, part, _) = walk_failure(&fx.types, &ValueType::Composite(fx.p), &union);
+        assert_eq!(
+            cause(&union),
+            Some(InvalidMembershipCause::UnsupportedUnion)
+        );
+        assert_eq!(part, MembershipPart::Value);
     }
 }
