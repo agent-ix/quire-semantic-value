@@ -22,18 +22,23 @@ carrier and QExact bounded retained-type equality helper are available.
    roots. Independently enumerate the expected `TypeLinkComparison` order and
    ordinal/path for each pair. Run with zero, N-1 and N cumulative units;
    observe helper entry and the first denied event/locus.
-2. With an authenticated B covering both types, compare equal and unequal
+2. With a configured B supplied by the caller, compare equal and unequal
    domains. For each of four Int and eight Rational endpoint positions, use
    exact-B and B+1-bit values while keeping domains valid. Assert equality or
-   typed size failure with side, endpoint, measured bits, B and rooted locus.
-   Include an oversized expected/right endpoint and a small actual/left
-   domain; a left-only bound mutant must fail.
+   typed size failure with expected/actual side, endpoint, measured bits, B
+   and rooted locus. Include simultaneous oversized expected and actual
+   endpoints to verify expected-first refusal, with numerator before
+   denominator and lower before upper. At B = 1, check zero-valued retained
+   endpoints complete as one-bit operands; at B = 0, check the first expected
+   zero endpoint returns the typed size stop. An actual-only bound mutant must
+   fail the expected-endpoint cases.
 3. Pre-cancel the original handle and cancel it on a late observed kernel limb
-   step. Assert original cause, rooted type-link locus and cumulative spend of
-   one event, with no following step or result. Exercise a genuinely reachable
+   step. Assert original cause, rooted type-link locus and cumulative spend
+   equal to the independently enumerated prior events plus this link's one
+   event, with no following step or result. Exercise a genuinely reachable
    kernel size conversion or allocation denial if one exists and inspect its
    typed request at the same locus. Observe that evaluator charges do not move.
-4. Repeat a paired numeric link without the authentic B carrier. Assert one
+4. Repeat a paired numeric link without a configured B at QSV's direct API. Assert one
    permitted type-link event then `UnsupportedHelper::NumericDomain`, with no
    equality work. Deny that event and cancel at its boundary separately to
    verify established work/cancellation precedence.
