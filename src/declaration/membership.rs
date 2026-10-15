@@ -38,6 +38,16 @@ pub(super) enum MembershipBoundary {
 
 type Callback<'f, Error> = dyn FnMut(MembershipBoundary) -> Result<(), Error> + 'f;
 
+type ValueNumericCallback<'f, Error> =
+    dyn FnMut(&ValueType, &Value, MembershipLocus) -> Result<Option<bool>, Error> + 'f;
+type TypeNumericCallback<'f, Error> =
+    dyn FnMut(&ValueType, &ValueType, MembershipLocus) -> Result<Option<bool>, Error> + 'f;
+
+struct NumericChecks<'f, Error> {
+    value: &'f mut ValueNumericCallback<'f, Error>,
+    type_link: &'f mut TypeNumericCallback<'f, Error>,
+}
+
 /// A pending occurrence: its expected type, the value, and its rooted path.
 type Pending<'a> = (&'a ValueType, &'a Value, PathToken);
 
@@ -146,11 +156,7 @@ fn same_type_walk<
     path: PathToken,
     first_ordinal: u64,
     on_boundary: &mut Callback<'_, Error>,
-    on_numeric_type: &mut impl FnMut(
-        &ValueType,
-        &ValueType,
-        MembershipLocus,
-    ) -> Result<Option<bool>, Error>,
+    on_numeric_type: &mut TypeNumericCallback<'_, Error>,
 ) -> Result<(), Error> {
     enum TypeStep<'a> {
         Continue(&'a ValueType, &'a ValueType),
@@ -255,69 +261,71 @@ impl TypeEnvironment {
                     Err(SuppliedAdmissionError::UnsupportedHelper { family, locus }.into())
                 }
             },
-            &mut |expected, value, locus| {
-                let admitted = match (expected, value) {
-                    (ValueType::Int(interval), Value::Integer(integer)) => {
-                        interval.try_contains_bounded(integer, magnitude_bits, cancel)
-                    }
-                    (ValueType::Rational(domain), Value::Rational(rational)) => {
-                        domain.try_contains_bounded(rational, magnitude_bits, cancel)
-                    }
-                    _ => return Ok(None),
-                };
-                admitted.map(Some).map_err(|failure| match failure {
-                    NumericMembershipFailure::UnsupportedSize {
-                        operand,
-                        measured_bits,
-                        limit_bits,
-                    } => BoundedSuppliedAdmissionError::NumericSize {
-                        operand,
-                        measured_bits,
-                        limit_bits,
-                        locus,
-                    },
-                    NumericMembershipFailure::Cancelled(cause) => {
-                        SuppliedAdmissionError::Cancelled {
-                            cause,
-                            spent: spent.get(),
-                            event: MembershipEvent::ValueVisit,
-                            locus,
+            &mut NumericChecks {
+                value: &mut |expected, value, locus| {
+                    let admitted = match (expected, value) {
+                        (ValueType::Int(interval), Value::Integer(integer)) => {
+                            interval.try_contains_bounded(integer, magnitude_bits, cancel)
                         }
-                        .into()
-                    }
-                })
-            },
-            &mut |expected, actual, locus| {
-                let equal = match (expected, actual) {
-                    (ValueType::Int(expected), ValueType::Int(actual)) => {
-                        expected.try_eq_bounded(actual, magnitude_bits, cancel)
-                    }
-                    (ValueType::Rational(expected), ValueType::Rational(actual)) => {
-                        expected.try_eq_bounded(actual, magnitude_bits, cancel)
-                    }
-                    _ => return Ok(None),
-                };
-                equal.map(Some).map_err(|failure| match failure {
-                    NumericTypeEqualityFailure::UnsupportedSize {
-                        position,
-                        measured_bits,
-                        limit_bits,
-                    } => BoundedSuppliedAdmissionError::NumericTypeSize {
-                        position,
-                        measured_bits,
-                        limit_bits,
-                        locus,
-                    },
-                    NumericTypeEqualityFailure::Cancelled(cause) => {
-                        SuppliedAdmissionError::Cancelled {
-                            cause,
-                            spent: spent.get(),
-                            event: MembershipEvent::TypeLinkComparison,
-                            locus,
+                        (ValueType::Rational(domain), Value::Rational(rational)) => {
+                            domain.try_contains_bounded(rational, magnitude_bits, cancel)
                         }
-                        .into()
-                    }
-                })
+                        _ => return Ok(None),
+                    };
+                    admitted.map(Some).map_err(|failure| match failure {
+                        NumericMembershipFailure::UnsupportedSize {
+                            operand,
+                            measured_bits,
+                            limit_bits,
+                        } => BoundedSuppliedAdmissionError::NumericSize {
+                            operand,
+                            measured_bits,
+                            limit_bits,
+                            locus,
+                        },
+                        NumericMembershipFailure::Cancelled(cause) => {
+                            SuppliedAdmissionError::Cancelled {
+                                cause,
+                                spent: spent.get(),
+                                event: MembershipEvent::ValueVisit,
+                                locus,
+                            }
+                            .into()
+                        }
+                    })
+                },
+                type_link: &mut |expected, actual, locus| {
+                    let equal = match (expected, actual) {
+                        (ValueType::Int(expected), ValueType::Int(actual)) => {
+                            expected.try_eq_bounded(actual, magnitude_bits, cancel)
+                        }
+                        (ValueType::Rational(expected), ValueType::Rational(actual)) => {
+                            expected.try_eq_bounded(actual, magnitude_bits, cancel)
+                        }
+                        _ => return Ok(None),
+                    };
+                    equal.map(Some).map_err(|failure| match failure {
+                        NumericTypeEqualityFailure::UnsupportedSize {
+                            position,
+                            measured_bits,
+                            limit_bits,
+                        } => BoundedSuppliedAdmissionError::NumericTypeSize {
+                            position,
+                            measured_bits,
+                            limit_bits,
+                            locus,
+                        },
+                        NumericTypeEqualityFailure::Cancelled(cause) => {
+                            SuppliedAdmissionError::Cancelled {
+                                cause,
+                                spent: spent.get(),
+                                event: MembershipEvent::TypeLinkComparison,
+                                locus,
+                            }
+                            .into()
+                        }
+                    })
+                },
             },
             &GlobalReservations,
         )
@@ -370,8 +378,10 @@ impl TypeEnvironment {
             arena,
             at,
             on_boundary,
-            &mut |_, _, _| Ok(None),
-            &mut |_, _, _| Ok(None),
+            &mut NumericChecks {
+                value: &mut |_, _, _| Ok(None),
+                type_link: &mut |_, _, _| Ok(None),
+            },
             reservation,
         )
     }
@@ -387,12 +397,7 @@ impl TypeEnvironment {
         arena: &mut MembershipPathArena,
         at: MembershipLocus,
         on_boundary: &mut impl FnMut(MembershipBoundary) -> Result<(), Error>,
-        on_numeric: &mut impl FnMut(&ValueType, &Value, MembershipLocus) -> Result<Option<bool>, Error>,
-        on_numeric_type: &mut impl FnMut(
-            &ValueType,
-            &ValueType,
-            MembershipLocus,
-        ) -> Result<Option<bool>, Error>,
+        numeric: &mut NumericChecks<'_, Error>,
         reservation: &impl ReservationPolicy,
     ) -> Result<(), Error> {
         if arena.resolve(at).is_none() {
@@ -416,8 +421,7 @@ impl TypeEnvironment {
                 path,
                 &mut frontier,
                 on_boundary,
-                on_numeric,
-                on_numeric_type,
+                numeric,
             )?;
         }
         Ok(())
@@ -434,12 +438,7 @@ impl TypeEnvironment {
         path: PathToken,
         frontier: &mut Frontier<'_, 'a, impl ReservationPolicy>,
         on_boundary: &mut Callback<'_, Error>,
-        on_numeric: &mut impl FnMut(&ValueType, &Value, MembershipLocus) -> Result<Option<bool>, Error>,
-        on_numeric_type: &mut impl FnMut(
-            &ValueType,
-            &ValueType,
-            MembershipLocus,
-        ) -> Result<Option<bool>, Error>,
+        numeric: &mut NumericChecks<'_, Error>,
     ) -> Result<(), Error> {
         let here = MembershipLocus {
             path,
@@ -507,7 +506,7 @@ impl TypeEnvironment {
                     path,
                     0,
                     on_boundary,
-                    on_numeric_type,
+                    numeric.type_link,
                 )?;
                 if let Some(present) = option.payload() {
                     frontier.reserve::<Cause, Error>(
@@ -549,7 +548,7 @@ impl TypeEnvironment {
                     path,
                     1,
                     on_boundary,
-                    on_numeric_type,
+                    numeric.type_link,
                 )?;
                 let elements = collection.elements();
                 if let Some(last) = elements.len().checked_sub(1) {
@@ -580,7 +579,7 @@ impl TypeEnvironment {
                         here,
                     ))?;
                 }
-                let numeric_admitted = on_numeric(expected, value, here)?;
+                let numeric_admitted = (numeric.value)(expected, value, here)?;
                 if numeric_admitted.is_none()
                     && matches!(
                         (expected, value),
@@ -2021,6 +2020,129 @@ mod tests {
         assert_eq!(budget.spent(), 2);
         assert_eq!(polls.load(Ordering::SeqCst), 10);
         assert_eq!(arena.resolve(link).expect("rooted link").argument(), 7);
+    }
+
+    /// The direct API keeps the numeric helper unqualified. The caller's
+    /// original cancellation and event denial retain their earlier priority.
+    /// Trace: FR-117-AC-3, FR-117-AC-4
+    #[trace("TC-917", "FR-117-AC-3", "FR-117-AC-4")]
+    #[test]
+    fn numeric_type_link_without_bound_preserves_event_precedence() {
+        let numeric = ValueType::Int(IntegerInterval::spanning(Integer::zero(), Integer::one()));
+        let value = OptionValue::from_admitted(numeric.clone(), None);
+        let expected = ValueType::option(numeric);
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let root = arena.root(12);
+        let at = MembershipLocus {
+            path: root,
+            part: Occurrence,
+        };
+        let link = MembershipLocus {
+            path: root,
+            part: TypeLink(0),
+        };
+
+        let mut denied = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut denied,
+                &Cancel::new(),
+            ),
+            Err(Stop::Limit {
+                ceiling: 1,
+                spent: 1,
+                requested: 1,
+                event: TypeLinkComparison,
+                locus: link,
+            })
+        );
+        assert_eq!(denied.spent(), 1);
+
+        let mut unqualified = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut unqualified,
+                &Cancel::new(),
+            ),
+            Err(Stop::UnsupportedHelper {
+                family: UnsupportedHelperFamily::NumericDomain,
+                locus: link,
+            })
+        );
+        assert_eq!(unqualified.spent(), 2);
+
+        let cancelled = Cancel::new();
+        cancelled.cancel(CancelCause::Requested);
+        let mut cancelled_budget = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut cancelled_budget,
+                &cancelled,
+            ),
+            Err(Stop::Cancelled {
+                cause: CancelCause::Requested,
+                spent: 0,
+                event: ValueVisit,
+                locus: at,
+            })
+        );
+        assert_eq!(cancelled_budget.spent(), 0);
+    }
+
+    /// A single caller budget and B apply across two argument roots, including
+    /// an equal rational type link on the second argument.
+    /// Trace: FR-117-AC-1, FR-117-AC-2
+    #[trace("TC-917", "FR-117-AC-1", "FR-117-AC-2")]
+    #[test]
+    fn bounded_numeric_type_links_share_budget_across_arguments() {
+        let integer = ValueType::Int(IntegerInterval::spanning(Integer::zero(), Integer::one()));
+        let rational = ValueType::Rational(
+            RationalDomain::new(
+                IntegerInterval::spanning(Integer::zero(), Integer::one()),
+                IntegerInterval::spanning(Integer::one(), Integer::one()),
+            )
+            .expect("positive denominator range"),
+        );
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let first = MembershipLocus {
+            path: arena.root(0),
+            part: Occurrence,
+        };
+        let second = MembershipLocus {
+            path: arena.root(1),
+            part: Occurrence,
+        };
+        let mut budget = SuppliedMembershipBudget::new(4);
+        let cancel = Cancel::new();
+        for (at, numeric) in [(first, integer), (second, rational)] {
+            let value = OptionValue::from_admitted(numeric.clone(), None);
+            assert_eq!(
+                environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                    &ValueType::option(numeric),
+                    &value,
+                    &mut arena,
+                    at,
+                    &mut budget,
+                    &cancel,
+                    1,
+                ),
+                Ok(())
+            );
+        }
+        assert_eq!(budget.spent(), 4);
+        assert_eq!(arena.resolve(second).expect("second root").argument(), 1);
     }
 
     /// Supplied numeric domains stop before unbounded BigInt comparisons,
