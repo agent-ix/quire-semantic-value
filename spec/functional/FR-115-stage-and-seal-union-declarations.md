@@ -85,9 +85,9 @@ QSL-503 owns actual run admission, references, conversion and no-charge evidence
 
 Declaration, sealing, member lookup, construction and graph/closure staging
 are implemented in this crate and covered by tests/union_registry.rs and
-tests/union_staging.rs. Union VALUE membership through the typed-event admission
-walk (FR-109) is not implemented here: that walk still refuses a union value as
-`UnsupportedUnion` until its union arms land, so the tests that need it are
-listed in the pull request under "waits for the union arms in admits_walk_core".
-Supplied-phase failure transport and caller migration are owned elsewhere
-(FR-109, QSL-681, QSL-502 to QSL-504). Independent review is pending.
+tests/union_staging.rs. Union VALUE membership uses FR-109's typed-event
+admission walk: a sealed final key, verified member binding, payload arity and
+positional payload visits are checked under one supplied budget. The Union
+membership tests in those files run in the default test lane. Supplied-phase
+failure transport and caller migration remain owned elsewhere (FR-109,
+QSL-681, QSL-502 to QSL-504).

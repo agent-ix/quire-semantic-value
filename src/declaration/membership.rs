@@ -20,7 +20,8 @@ use quire_exact::{
 };
 
 use super::{
-    reserve_elements, GlobalReservations, ReservationPolicy, StorageFailure, TypeEnvironment,
+    reserve_elements, CompositeShape, GlobalReservations, ReservationPolicy, StorageFailure,
+    TypeEnvironment,
 };
 use crate::supplied_membership::{
     BoundedSuppliedAdmissionError, DecimalMembershipOperand, InvalidMembershipCause,
@@ -188,6 +189,7 @@ fn same_type_walk<
     Cause: From<InvalidMembershipCause>,
     Error: From<SuppliedAdmissionError<Cause>>,
 >(
+    environment: &TypeEnvironment,
     left: &ValueType,
     right: &ValueType,
     path: PathToken,
@@ -246,6 +248,11 @@ fn same_type_walk<
             }
             _ if numeric_equal == Some(true) => TypeStep::Equal,
             _ if numeric_equal == Some(false) => TypeStep::Mismatch,
+            (ValueType::Composite(_), ValueType::Composite(_))
+                if environment.same_type(left, right) =>
+            {
+                TypeStep::Equal
+            }
             (left, right) if left == right => TypeStep::Equal,
             _ => TypeStep::Mismatch,
         };
@@ -404,7 +411,7 @@ impl TypeEnvironment {
     /// locus to `on_event` immediately before each logical action. The
     /// caller roots the walk (`at`) in `arena`.
     pub(super) fn admits_walk<'a, Cause: From<InvalidMembershipCause>>(
-        &self,
+        &'a self,
         expected: &'a ValueType,
         value: &'a Value,
         arena: &mut MembershipPathArena,
@@ -432,7 +439,7 @@ impl TypeEnvironment {
     /// Internal walk retaining both event requests and post-helper response
     /// boundaries for the caller-owned cancellation handle.
     pub(super) fn admits_walk_observed<'a, Cause: From<InvalidMembershipCause>>(
-        &self,
+        &'a self,
         expected: &'a ValueType,
         value: &'a Value,
         arena: &mut MembershipPathArena,
@@ -459,7 +466,7 @@ impl TypeEnvironment {
         Cause: From<InvalidMembershipCause>,
         Error: From<SuppliedAdmissionError<Cause>>,
     >(
-        &self,
+        &'a self,
         expected: &'a ValueType,
         value: &'a Value,
         arena: &mut MembershipPathArena,
@@ -500,7 +507,7 @@ impl TypeEnvironment {
         Cause: From<InvalidMembershipCause>,
         Error: From<SuppliedAdmissionError<Cause>>,
     >(
-        &self,
+        &'a self,
         expected: &'a ValueType,
         value: &'a Value,
         path: PathToken,
@@ -559,16 +566,58 @@ impl TypeEnvironment {
                     return Err(invalid(InvalidMembershipCause::Member, query).into());
                 }
             }
-            (ValueType::Composite(_), Value::Union(_)) => {
-                on_boundary(MembershipBoundary::RequiresQualification(
-                    UnsupportedHelperFamily::UnionPayloadDescriptor,
-                    MembershipEvent::ValueVisit,
-                    here,
+            (ValueType::Composite(declared), Value::Union(union)) => {
+                on_boundary(MembershipBoundary::Event(
+                    MembershipEvent::DescriptorQuery,
+                    query,
                 ))?;
-                return Err(invalid(InvalidMembershipCause::UnsupportedUnion, here).into());
+                let union_shape = matches!(self.shape(*declared), Some(CompositeShape::Union(_)));
+                let expected_handle = self.union_handle(*declared).unwrap_or(*declared);
+                let final_key = self.union_key(expected_handle);
+                let member = if final_key == Some(union.declaration()) {
+                    self.union_member(expected_handle, union.variant())
+                        .map(|(_, member)| member)
+                } else {
+                    None
+                };
+                let positions = member
+                    .filter(|member| member.member() == Some(union.member()))
+                    .map(|member| member.positions());
+                on_boundary(MembershipBoundary::AfterHelper(
+                    MembershipEvent::DescriptorQuery,
+                    query,
+                ))?;
+                if !union_shape {
+                    return Err(invalid(InvalidMembershipCause::UnsupportedUnion, here).into());
+                }
+                let Some(positions) = positions else {
+                    return Err(invalid(InvalidMembershipCause::Member, query).into());
+                };
+                if positions.len() != union.payload().len() {
+                    return Err(invalid(InvalidMembershipCause::Payload, query).into());
+                }
+                if let Some(last) = union.payload().len().checked_sub(1) {
+                    frontier.reserve::<Cause, Error>(
+                        union.payload().len(),
+                        path,
+                        PathStep::UnionPayload(last),
+                        on_boundary,
+                    )?;
+                }
+                for (position, (ty, payload)) in
+                    positions.iter().zip(union.payload()).enumerate().rev()
+                {
+                    frontier.schedule::<Cause, Error>(
+                        path,
+                        PathStep::UnionPayload(position),
+                        (ty, payload),
+                        on_boundary,
+                    )?;
+                }
             }
             (ValueType::Option(payload), Value::Option(option)) => {
                 same_type_walk::<Cause, Error>(
+                    self,
                     option.payload_type(),
                     payload,
                     path,
@@ -611,6 +660,7 @@ impl TypeEnvironment {
                     return Err(invalid(InvalidMembershipCause::Type, pair).into());
                 }
                 same_type_walk::<Cause, Error>(
+                    self,
                     actual.element(),
                     declared.element(),
                     path,
@@ -706,10 +756,10 @@ mod tests {
 
     use super::*;
     use crate::declaration::{
-        CompositeDeclaration, GlobalReservations, ObjectTypeDeclaration, StorageRequest,
-        StorageUnit,
+        CompositeDeclaration, CompositeShape, GlobalReservations, ObjectTypeDeclaration,
+        StorageRequest, StorageUnit, UnionMemberDeclaration,
     };
-    use crate::supplied_membership::{SuppliedMembershipBudget, UnsupportedHelperFamily};
+    use crate::supplied_membership::SuppliedMembershipBudget;
 
     type Stop = SuppliedAdmissionError<InvalidMembershipCause>;
 
@@ -1107,6 +1157,78 @@ mod tests {
         assert_eq!(policy.seen.get(), Some(request));
         assert_eq!(walked.describe(locus).0, Child(CollectionElement(2)));
         assert!(walked.seen().iter().all(|event| event.0 != ChildScheduling));
+    }
+
+    /// Union payload growth reports the actual worklist request at the first
+    /// scheduled position and leaves the shared arena available for a retry.
+    /// Trace: FR-109-AC-5, FR-115-AC-3
+    #[trace("TC-908", "TC-915", "FR-109-AC-5", "FR-115-AC-3")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "fixture supplies checked union identities without minting them in production"
+    )]
+    #[test]
+    fn union_payload_worklist_denial_is_typed_and_retry_succeeds() {
+        let declaration = NodeKey::from_digest([41; 32]);
+        let binding = UnionMember::from_admitted(
+            declaration,
+            NodeKey::from_digest([42; 32]),
+            Identifier::new("Pair").expect("identifier"),
+        );
+        let env = TypeEnvironment::new(
+            [CompositeDeclaration::new(
+                declaration,
+                "Pair",
+                CompositeShape::Union(vec![UnionMemberDeclaration::from_verified(
+                    binding.clone(),
+                    vec![ValueType::Integer, ValueType::Integer],
+                )]),
+            )],
+            [],
+        )
+        .expect("union declaration");
+        let expected = ValueType::Composite(declaration);
+        let value = UnionValue::from_admitted(binding, vec![integer(1), integer(2)]);
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(3),
+            part: Occurrence,
+        };
+        let policy = DenyAll {
+            seen: Cell::new(None),
+        };
+        let mut events = Vec::new();
+        let result = env.admits_walk::<InvalidMembershipCause>(
+            &expected,
+            &value,
+            &mut arena,
+            at,
+            &mut |event, _| {
+                events.push(event);
+                Ok(())
+            },
+            &policy,
+        );
+        let Err(Stop::Allocation { request, locus }) = result else {
+            panic!("expected union worklist allocation denial: {result:?}");
+        };
+        assert_eq!(Some(request), policy.seen.get());
+        assert_eq!(events, vec![ValueVisit, MembershipEvent::DescriptorQuery]);
+        let resolved = arena.resolve(locus).expect("rooted denial locus");
+        assert_eq!(resolved.argument(), 3);
+        assert_eq!(resolved.part(), Child(PathStep::UnionPayload(1)));
+        assert_eq!(resolved.steps_from_leaf().count(), 0);
+        assert_eq!(
+            env.admits_walk::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut |_, _| Ok(()),
+                &GlobalReservations,
+            ),
+            Ok(())
+        );
     }
 
     /// The actual pending-worklist reserve rejects size overflow before a
@@ -2772,16 +2894,15 @@ mod tests {
         assert!(polls.load(Ordering::SeqCst) >= 4);
     }
 
-    /// Union descriptor/payload admission remains a typed dependency, not an
-    /// invalid composite, until the owning public union contract is available.
-    /// Trace: FR-109-AC-7
-    #[trace("TC-908", "FR-109-AC-7")]
+    /// A union carrier cannot be admitted without a union declaration.
+    /// Trace: FR-109-AC-4
+    #[trace("TC-908", "FR-109-AC-4")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the fixture supplies checked composite identities without minting them in production"
     )]
     #[test]
-    fn supplied_api_reports_unqualified_union_before_payload_admission() {
+    fn supplied_api_refuses_union_without_a_union_declaration() {
         let declaration = NodeKey::from_digest([10; 32]);
         let member = NodeKey::from_digest([11; 32]);
         let value = UnionValue::from_admitted(
@@ -2807,12 +2928,12 @@ mod tests {
                 &mut budget,
                 &Cancel::new(),
             ),
-            Err(Stop::UnsupportedHelper {
-                family: UnsupportedHelperFamily::UnionPayloadDescriptor,
+            Err(Stop::Invalid {
+                cause: InvalidMembershipCause::UnsupportedUnion,
                 locus: at,
             })
         );
-        assert_eq!(budget.spent(), 1);
+        assert_eq!(budget.spent(), 2);
     }
 
     struct CancelAtReservation<'a> {
