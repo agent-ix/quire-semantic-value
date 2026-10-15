@@ -850,6 +850,61 @@ mod tests {
         )
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture checks its authored identities without minting them in production"
+    )]
+    fn assert_combined_shapes(environment: &TypeEnvironment) {
+        let record = NodeKey::from_digest([1; 32]);
+        let tuple = NodeKey::from_digest([2; 32]);
+        let union = NodeKey::from_digest([3; 32]);
+        let object = EffectiveId::from_digest([4; 32]);
+        assert_eq!(
+            environment
+                .composites()
+                .map(CompositeDeclaration::key)
+                .collect::<Vec<_>>(),
+            vec![record, tuple, union]
+        );
+        assert_eq!(
+            environment
+                .object_types()
+                .map(ObjectTypeDeclaration::key)
+                .collect::<Vec<_>>(),
+            vec![object]
+        );
+        assert_eq!(
+            environment.composite(record).unwrap().shape(),
+            &CompositeShape::Record(vec![FieldDeclaration::new(
+                "flag",
+                ValueType::Boolean,
+                Presence::Required,
+            )])
+        );
+        assert_eq!(
+            environment.composite(tuple).unwrap().shape(),
+            &CompositeShape::Tuple(vec![ValueType::Composite(record)])
+        );
+        assert_eq!(
+            environment.object_type(object).unwrap().attributes(),
+            &[FieldDeclaration::new(
+                "value",
+                ValueType::Composite(union),
+                Presence::Required,
+            )]
+        );
+        assert_eq!(environment.union_member_named(union, "Empty").unwrap().0, 0);
+        assert_eq!(environment.union_member_named(union, "Value").unwrap().0, 1);
+        assert_eq!(
+            environment
+                .attribute(object, "value")
+                .unwrap()
+                .field()
+                .value_type(),
+            &ValueType::Composite(union)
+        );
+    }
+
     struct DenyCombinedPhase {
         target: StoragePhase,
         current: Cell<Option<StoragePhase>>,
@@ -906,10 +961,9 @@ mod tests {
             assert_eq!(request.unit(), StorageUnit::AdditionalElements);
             assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
             let (composites, objects) = combined_declarations();
-            assert_eq!(
-                TypeEnvironment::new(composites, objects),
-                Ok(expected.clone())
-            );
+            let retried = TypeEnvironment::new(composites, objects).expect("retry admits");
+            assert_eq!(retried, expected);
+            assert_combined_shapes(&retried);
         }
 
         let handle = NodeKey::from_digest([3; 32]);
@@ -956,17 +1010,16 @@ mod tests {
                 .seal_union_verified(handle, final_key, bindings())
                 .expect("fresh seal succeeds");
             assert_eq!(environment, fresh);
+            assert_combined_shapes(&environment);
             assert_eq!(environment.union_key(handle), Some(final_key));
             assert_eq!(environment.union_handle(final_key), Some(handle));
-            assert!(environment
-                .union_member_named(handle, "Value")
-                .unwrap()
-                .1
-                .member()
-                .is_some());
-            assert!(environment
-                .attribute(EffectiveId::from_digest([4; 32]), "value")
-                .is_some());
+            let expected_bindings = bindings();
+            for (position, name) in [(0, "Empty"), (1, "Value")] {
+                let (actual_position, member) =
+                    environment.union_member_named(handle, name).unwrap();
+                assert_eq!(actual_position, position);
+                assert_eq!(member.member(), Some(&expected_bindings[position]));
+            }
         }
     }
 
