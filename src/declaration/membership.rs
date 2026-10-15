@@ -756,8 +756,9 @@ mod tests {
 
     use super::*;
     use crate::declaration::{
-        CompositeDeclaration, CompositeShape, GlobalReservations, ObjectTypeDeclaration,
-        StorageRequest, StorageUnit, UnionMemberDeclaration,
+        CompositeDeclaration, CompositeShape, EnvironmentFailure, FieldDeclaration,
+        GlobalReservations, ObjectTypeDeclaration, Presence, StoragePhase, StorageRequest,
+        StorageUnit, TypeEnvironmentLimits, UnionMemberDeclaration,
     };
     use crate::supplied_membership::SuppliedMembershipBudget;
 
@@ -798,6 +799,175 @@ mod tests {
             Vec::<ObjectTypeDeclaration>::new(),
         )
         .expect("an empty environment admits")
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked declaration identities without minting them in production"
+    )]
+    fn combined_declarations() -> (Vec<CompositeDeclaration>, Vec<ObjectTypeDeclaration>) {
+        let record = NodeKey::from_digest([1; 32]);
+        let tuple = NodeKey::from_digest([2; 32]);
+        let union = NodeKey::from_digest([3; 32]);
+        let object = EffectiveId::from_digest([4; 32]);
+        (
+            vec![
+                CompositeDeclaration::new(
+                    record,
+                    "Record",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "flag",
+                        ValueType::Boolean,
+                        Presence::Required,
+                    )]),
+                ),
+                CompositeDeclaration::new(
+                    tuple,
+                    "Tuple",
+                    CompositeShape::Tuple(vec![ValueType::Composite(record)]),
+                ),
+                CompositeDeclaration::new(
+                    union,
+                    "Union",
+                    CompositeShape::Union(vec![
+                        UnionMemberDeclaration::resolved(Identifier::new("Empty").unwrap(), vec![]),
+                        UnionMemberDeclaration::resolved(
+                            Identifier::new("Value").unwrap(),
+                            vec![ValueType::Composite(tuple)],
+                        ),
+                    ]),
+                ),
+            ],
+            vec![ObjectTypeDeclaration::new(
+                object,
+                "Object",
+                vec![FieldDeclaration::new(
+                    "value",
+                    ValueType::Composite(union),
+                    Presence::Required,
+                )],
+            )],
+        )
+    }
+
+    struct DenyCombinedPhase {
+        target: StoragePhase,
+        current: Cell<Option<StoragePhase>>,
+        denied: Cell<Option<StorageRequest>>,
+    }
+
+    impl ReservationPolicy for DenyCombinedPhase {
+        fn phase(&self, phase: StoragePhase) {
+            self.current.set(Some(phase));
+        }
+
+        fn permit(&self, request: StorageRequest) -> bool {
+            if self.current.get() == Some(self.target) && self.denied.get().is_none() {
+                self.denied.set(Some(request));
+                false
+            } else {
+                true
+            }
+        }
+    }
+
+    /// Trace: FR-108-AC-1, FR-108-AC-3
+    #[trace("TC-907", "FR-108-AC-1", "FR-108-AC-3")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked declaration and Union identities"
+    )]
+    #[test]
+    fn combined_record_tuple_union_object_denial_and_retry_is_atomic() {
+        let (composites, objects) = combined_declarations();
+        let expected = TypeEnvironment::new(composites, objects).expect("combined fixture admits");
+        for target in [
+            StoragePhase::Registry,
+            StoragePhase::MemberTypes,
+            StoragePhase::Traversal,
+            StoragePhase::Ancestors,
+            StoragePhase::FieldIndex,
+        ] {
+            let policy = DenyCombinedPhase {
+                target,
+                current: Cell::new(None),
+                denied: Cell::new(None),
+            };
+            let (composites, objects) = combined_declarations();
+            let denied = TypeEnvironment::bounded_with_reservations(
+                composites,
+                objects,
+                TypeEnvironmentLimits::default(),
+                None,
+                &policy,
+            );
+            let request = policy.denied.get().expect("selected reservation reached");
+            assert!(request.amount() > 0);
+            assert_eq!(request.unit(), StorageUnit::AdditionalElements);
+            assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+            let (composites, objects) = combined_declarations();
+            assert_eq!(
+                TypeEnvironment::new(composites, objects),
+                Ok(expected.clone())
+            );
+        }
+
+        let handle = NodeKey::from_digest([3; 32]);
+        let final_key = NodeKey::from_digest([30; 32]);
+        let bindings = || {
+            vec![
+                UnionMember::from_admitted(
+                    final_key,
+                    NodeKey::from_digest([31; 32]),
+                    Identifier::new("Empty").unwrap(),
+                ),
+                UnionMember::from_admitted(
+                    final_key,
+                    NodeKey::from_digest([32; 32]),
+                    Identifier::new("Value").unwrap(),
+                ),
+            ]
+        };
+        for target in [StoragePhase::Sealing, StoragePhase::KeyJoin] {
+            let mut environment = expected.clone();
+            let before = environment.clone();
+            let policy = DenyCombinedPhase {
+                target,
+                current: Cell::new(None),
+                denied: Cell::new(None),
+            };
+            let denied =
+                environment.seal_union_with_reservations(handle, final_key, bindings(), &policy);
+            let request = policy
+                .denied
+                .get()
+                .expect("selected seal reservation reached");
+            assert!(request.amount() > 0);
+            assert_eq!(request.unit(), StorageUnit::AdditionalElements);
+            assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+            assert_eq!(environment, before);
+            assert_eq!(environment.union_key(handle), None);
+            assert_eq!(environment.union_handle(final_key), None);
+            environment
+                .seal_union_verified(handle, final_key, bindings())
+                .expect("retry seals all members");
+            let mut fresh = expected.clone();
+            fresh
+                .seal_union_verified(handle, final_key, bindings())
+                .expect("fresh seal succeeds");
+            assert_eq!(environment, fresh);
+            assert_eq!(environment.union_key(handle), Some(final_key));
+            assert_eq!(environment.union_handle(final_key), Some(handle));
+            assert!(environment
+                .union_member_named(handle, "Value")
+                .unwrap()
+                .1
+                .member()
+                .is_some());
+            assert!(environment
+                .attribute(EffectiveId::from_digest([4; 32]), "value")
+                .is_some());
+        }
     }
 
     /// Walk `value` against `expected`, denying the event at `stop_at` with a
