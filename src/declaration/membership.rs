@@ -567,13 +567,11 @@ impl TypeEnvironment {
                 }
             }
             (ValueType::Composite(declared), Value::Union(union)) => {
-                if !matches!(self.shape(*declared), Some(CompositeShape::Union(_))) {
-                    return Err(invalid(InvalidMembershipCause::UnsupportedUnion, here).into());
-                }
                 on_boundary(MembershipBoundary::Event(
                     MembershipEvent::DescriptorQuery,
                     query,
                 ))?;
+                let union_shape = matches!(self.shape(*declared), Some(CompositeShape::Union(_)));
                 let expected_handle = self.union_handle(*declared).unwrap_or(*declared);
                 let final_key = self.union_key(expected_handle);
                 let member = if final_key == Some(union.declaration()) {
@@ -582,17 +580,20 @@ impl TypeEnvironment {
                 } else {
                     None
                 };
+                let positions = member
+                    .filter(|member| member.member() == Some(union.member()))
+                    .map(|member| member.positions());
                 on_boundary(MembershipBoundary::AfterHelper(
                     MembershipEvent::DescriptorQuery,
                     query,
                 ))?;
-                let Some(member) = member else {
+                if !union_shape {
+                    return Err(invalid(InvalidMembershipCause::UnsupportedUnion, here).into());
+                }
+                let Some(positions) = positions else {
                     return Err(invalid(InvalidMembershipCause::Member, query).into());
                 };
-                if member.member() != Some(union.member()) {
-                    return Err(invalid(InvalidMembershipCause::Member, query).into());
-                }
-                if member.positions().len() != union.payload().len() {
+                if positions.len() != union.payload().len() {
                     return Err(invalid(InvalidMembershipCause::Payload, query).into());
                 }
                 if let Some(last) = union.payload().len().checked_sub(1) {
@@ -603,12 +604,8 @@ impl TypeEnvironment {
                         on_boundary,
                     )?;
                 }
-                for (position, (ty, payload)) in member
-                    .positions()
-                    .iter()
-                    .zip(union.payload())
-                    .enumerate()
-                    .rev()
+                for (position, (ty, payload)) in
+                    positions.iter().zip(union.payload()).enumerate().rev()
                 {
                     frontier.schedule::<Cause, Error>(
                         path,
@@ -2936,7 +2933,7 @@ mod tests {
                 locus: at,
             })
         );
-        assert_eq!(budget.spent(), 1);
+        assert_eq!(budget.spent(), 2);
     }
 
     struct CancelAtReservation<'a> {
