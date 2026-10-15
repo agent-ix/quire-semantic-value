@@ -110,15 +110,16 @@ Decimal values or Decimal value membership.
   neighboring Int/Rational type-link boundary; its helper does not compare
   Decimal domains.
 - [QSpec FR-140](ix://agent-ix/quire-specification/FR-140) defines the five
-  declared Decimal type fields. An exact-kernel requirement specifically for
-  bounded, cancellable `DecimalType` **type equality** is a blocking
-  prerequisite to implementation and acceptance of this FR. The currently
+  declared Decimal type fields. IR-799 is the separately owned exact-kernel
+  prerequisite for bounded, cancellable `DecimalType` **type equality**;
+  its structured tracker dependency blocks IR-798. Implementation and
+  acceptance of this FR wait for that requirement and helper. The currently
   available [exact FR-381](ix://agent-ix/quire-exact/FR-381) covers only
   Int/Rational retained type equality, and
   [exact FR-372](ix://agent-ix/quire-exact/FR-372) covers Decimal **value**
   membership; neither supplies the required operation. Add a typed
   frontmatter dependency edge to the exact Decimal type-equality FR once its
-  owner allocates and authors that artifact. QSL-772 supplies the real public
+  IR-799 owner allocates and authors that artifact. QSL-772 supplies the real public
   checked-call and replay consumer vector.
 
 ## Status

@@ -57,5 +57,6 @@ evaluation debit occurs on supplied-admission refusal.
 
 ## Status
 
-PLANNED/UNRUN; an authored exact-kernel Decimal type-equality requirement,
-its delivered helper and the QSV implementation are prerequisites.
+PLANNED/UNRUN; IR-799 blocks IR-798 until its exact-kernel Decimal
+type-equality requirement and helper are delivered. The QSV implementation
+is also required before this test case runs.
