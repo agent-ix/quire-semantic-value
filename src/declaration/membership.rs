@@ -213,17 +213,19 @@ fn same_type_walk<
             MembershipEvent::TypeLinkComparison,
             at,
         ))?;
-        if matches!(
-            (left, right),
-            (ValueType::Decimal(_), ValueType::Decimal(_))
-        ) {
+        let numeric_equal = on_numeric_type(right, left, at)?;
+        if numeric_equal.is_none()
+            && matches!(
+                (left, right),
+                (ValueType::Decimal(_), ValueType::Decimal(_))
+            )
+        {
             on_boundary(MembershipBoundary::RequiresQualification(
                 UnsupportedHelperFamily::DecimalDomain,
                 MembershipEvent::TypeLinkComparison,
                 at,
             ))?;
         }
-        let numeric_equal = on_numeric_type(right, left, at)?;
         if numeric_equal.is_none()
             && matches!(
                 (left, right),
@@ -375,6 +377,9 @@ impl TypeEnvironment {
                             expected.try_eq_bounded(actual, magnitude_bits, cancel)
                         }
                         (ValueType::Rational(expected), ValueType::Rational(actual)) => {
+                            expected.try_eq_bounded(actual, magnitude_bits, cancel)
+                        }
+                        (ValueType::Decimal(expected), ValueType::Decimal(actual)) => {
                             expected.try_eq_bounded(actual, magnitude_bits, cancel)
                         }
                         _ => return Ok(None),
@@ -2597,6 +2602,646 @@ mod tests {
             })
         );
         assert_eq!(cancelled_budget.spent(), 0);
+    }
+
+    /// A bounded Decimal link is admitted after its event; the link budget
+    /// still wins before the helper can inspect an oversized endpoint.
+    /// Trace: FR-118-AC-1, FR-118-AC-2
+    #[trace("TC-918", "FR-118-AC-1", "FR-118-AC-2")]
+    #[test]
+    fn bounded_decimal_type_link_observes_event_before_size() {
+        let decimal = ValueType::Decimal(
+            DecimalType::new(
+                Integer::zero(),
+                Integer::from(2_i64),
+                0,
+                0,
+                RoundingMode::Exact,
+            )
+            .expect("valid Decimal type"),
+        );
+        let expected = ValueType::option(decimal.clone());
+        let value = OptionValue::from_admitted(decimal, None);
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let root = arena.root(8);
+        let at = MembershipLocus {
+            path: root,
+            part: Occurrence,
+        };
+        let link = MembershipLocus {
+            path: root,
+            part: TypeLink(0),
+        };
+        let mut denied = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut denied,
+                &Cancel::new(),
+                1,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Limit {
+                ceiling: 1,
+                spent: 1,
+                requested: 1,
+                event: TypeLinkComparison,
+                locus: link,
+            }))
+        );
+        assert_eq!(denied.spent(), 1);
+        let mut admitted = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut admitted,
+                &Cancel::new(),
+                1,
+            ),
+            Err(BoundedSuppliedAdmissionError::NumericTypeSize {
+                position: quire_exact::NumericTypeEndpoint::DecimalExpectedUpper,
+                measured_bits: 2,
+                limit_bits: 1,
+                locus: link,
+            })
+        );
+        assert_eq!(admitted.spent(), 2);
+        assert_eq!(arena.resolve(link).expect("rooted link").argument(), 8);
+    }
+
+    fn decimal_link(lower: i64, upper: i64, min: u64, max: u64, mode: RoundingMode) -> ValueType {
+        ValueType::Decimal(
+            DecimalType::new(Integer::from(lower), Integer::from(upper), min, max, mode)
+                .expect("valid Decimal type"),
+        )
+    }
+
+    /// A prior argument spends two units; the nested Set/Option Decimal link
+    /// is the fourth event of its own argument, at ordinal two.
+    /// Trace: FR-118-AC-1
+    #[trace("TC-918", "FR-118-AC-1")]
+    #[test]
+    fn bounded_decimal_nested_set_option_uses_rooted_cumulative_budget() {
+        let decimal = decimal_link(-2, 3, 0, 2, RoundingMode::Exact);
+        let first_expected = ValueType::option(decimal.clone());
+        let first_value = OptionValue::from_admitted(decimal.clone(), None);
+        let expected_set = CollectionType::new(
+            CollectionKind::Set,
+            ValueType::option(decimal.clone()),
+            None,
+        );
+        let expected = ValueType::collection(expected_set.clone());
+        let actual_set = CollectionType::new(CollectionKind::Set, ValueType::option(decimal), None);
+        let value = from_admitted(actual_set, vec![]);
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let first = MembershipLocus {
+            path: arena.root(4),
+            part: Occurrence,
+        };
+        let root = arena.root(5);
+        let second = MembershipLocus {
+            path: root,
+            part: Occurrence,
+        };
+        let link = MembershipLocus {
+            path: root,
+            part: TypeLink(2),
+        };
+        let cancel = Cancel::new();
+        let mut budget = SuppliedMembershipBudget::new(5);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &first_expected,
+                &first_value,
+                &mut arena,
+                first,
+                &mut budget,
+                &cancel,
+                2,
+            ),
+            Ok(())
+        );
+        assert_eq!(budget.spent(), 2);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                second,
+                &mut budget,
+                &cancel,
+                2,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Limit {
+                ceiling: 5,
+                spent: 5,
+                requested: 1,
+                event: TypeLinkComparison,
+                locus: link,
+            }))
+        );
+        assert_eq!(budget.spent(), 5);
+        assert_eq!(arena.resolve(link).expect("rooted link").argument(), 5);
+
+        let mut enough = SuppliedMembershipBudget::new(6);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &first_expected,
+                &first_value,
+                &mut arena,
+                first,
+                &mut enough,
+                &cancel,
+                2,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                second,
+                &mut enough,
+                &cancel,
+                2,
+            ),
+            Ok(())
+        );
+        assert_eq!(enough.spent(), 6);
+
+        let different_set = CollectionType::new(
+            CollectionKind::Set,
+            ValueType::option(decimal_link(-2, 3, 1, 2, RoundingMode::Exact)),
+            None,
+        );
+        let mut unequal = SuppliedMembershipBudget::new(6);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &from_admitted(different_set, vec![]),
+                &mut arena,
+                second,
+                &mut unequal,
+                &cancel,
+                2,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Invalid {
+                cause: InvalidMembershipCause::Type,
+                locus: link,
+            }))
+        );
+        assert_eq!(unequal.spent(), 4);
+
+        let sibling_type = ValueType::option(decimal_link(-2, 3, 0, 2, RoundingMode::Exact));
+        let sequence = sequence_of(sibling_type.clone());
+        let siblings = from_admitted(
+            sequence.clone(),
+            vec![
+                OptionValue::from_admitted(decimal_link(-2, 3, 0, 2, RoundingMode::Exact), None),
+                OptionValue::from_admitted(decimal_link(-2, 3, 0, 2, RoundingMode::Exact), None),
+            ],
+        );
+        let mut sibling_budget = SuppliedMembershipBudget::new(10);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &ValueType::collection(sequence),
+                &siblings,
+                &mut arena,
+                second,
+                &mut sibling_budget,
+                &cancel,
+                2,
+            ),
+            Ok(())
+        );
+        assert_eq!(sibling_budget.spent(), 10);
+
+        let mut after_link = SuppliedMembershipBudget::new(4);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &ValueType::collection(sequence_of(sibling_type)),
+                &siblings,
+                &mut arena,
+                second,
+                &mut after_link,
+                &cancel,
+                2,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Limit {
+                ceiling: 4,
+                spent: 4,
+                requested: 1,
+                event: ChildScheduling,
+                locus: MembershipLocus {
+                    path: root,
+                    part: Child(CollectionElement(1)),
+                },
+            }))
+        );
+        assert_eq!(after_link.spent(), 4);
+    }
+
+    /// Every coefficient endpoint is checked in expected-first order, even
+    /// when a metadata field already differs.
+    /// Trace: FR-118-AC-2
+    #[trace("TC-918", "FR-118-AC-2")]
+    #[test]
+    fn bounded_decimal_type_link_checks_four_endpoints_and_metadata() {
+        use quire_exact::NumericTypeEndpoint as Endpoint;
+
+        let small = decimal_link(0, 1, 0, 2, RoundingMode::Exact);
+        for (expected, actual, position) in [
+            (
+                decimal_link(2, 2, 0, 2, RoundingMode::Exact),
+                small.clone(),
+                Endpoint::DecimalExpectedLower,
+            ),
+            (
+                decimal_link(0, 2, 0, 2, RoundingMode::Exact),
+                small.clone(),
+                Endpoint::DecimalExpectedUpper,
+            ),
+            (
+                small.clone(),
+                decimal_link(2, 2, 0, 2, RoundingMode::Exact),
+                Endpoint::DecimalActualLower,
+            ),
+            (
+                small.clone(),
+                decimal_link(0, 2, 0, 2, RoundingMode::Exact),
+                Endpoint::DecimalActualUpper,
+            ),
+            (
+                decimal_link(2, 2, 0, 2, RoundingMode::Exact),
+                decimal_link(2, 2, 0, 2, RoundingMode::Exact),
+                Endpoint::DecimalExpectedLower,
+            ),
+            (
+                decimal_link(0, 2, 0, 2, RoundingMode::Exact),
+                decimal_link(2, 2, 0, 2, RoundingMode::Exact),
+                Endpoint::DecimalExpectedUpper,
+            ),
+            (
+                small.clone(),
+                decimal_link(2, 3, 0, 2, RoundingMode::Exact),
+                Endpoint::DecimalActualLower,
+            ),
+        ] {
+            let value = OptionValue::from_admitted(actual, None);
+            let mut arena = MembershipPathArena::new().expect("arena");
+            let root = arena.root(9);
+            let at = MembershipLocus {
+                path: root,
+                part: Occurrence,
+            };
+            let link = MembershipLocus {
+                path: root,
+                part: TypeLink(0),
+            };
+            let mut budget = SuppliedMembershipBudget::new(2);
+            assert_eq!(
+                environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                    &ValueType::option(expected),
+                    &value,
+                    &mut arena,
+                    at,
+                    &mut budget,
+                    &Cancel::new(),
+                    1,
+                ),
+                Err(BoundedSuppliedAdmissionError::NumericTypeSize {
+                    position,
+                    measured_bits: 2,
+                    limit_bits: 1,
+                    locus: link,
+                })
+            );
+            assert_eq!(budget.spent(), 2);
+        }
+
+        for actual in [
+            decimal_link(0, 1, 1, 2, RoundingMode::Exact),
+            decimal_link(0, 1, 0, 1, RoundingMode::Exact),
+            decimal_link(0, 1, 0, 2, RoundingMode::TowardZero),
+            decimal_link(-1, 1, 0, 2, RoundingMode::Exact),
+            decimal_link(0, 0, 0, 2, RoundingMode::Exact),
+        ] {
+            let mut arena = MembershipPathArena::new().expect("arena");
+            let root = arena.root(10);
+            let at = MembershipLocus {
+                path: root,
+                part: Occurrence,
+            };
+            let link = MembershipLocus {
+                path: root,
+                part: TypeLink(0),
+            };
+            let mut budget = SuppliedMembershipBudget::new(2);
+            assert_eq!(
+                environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                    &ValueType::option(small.clone()),
+                    &OptionValue::from_admitted(actual, None),
+                    &mut arena,
+                    at,
+                    &mut budget,
+                    &Cancel::new(),
+                    1,
+                ),
+                Err(BoundedSuppliedAdmissionError::Admission(Stop::Invalid {
+                    cause: InvalidMembershipCause::Type,
+                    locus: link,
+                }))
+            );
+            assert_eq!(budget.spent(), 2);
+        }
+
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let root = arena.root(11);
+        let at = MembershipLocus {
+            path: root,
+            part: Occurrence,
+        };
+        let link = MembershipLocus {
+            path: root,
+            part: TypeLink(0),
+        };
+        let mut budget = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &ValueType::option(decimal_link(0, 1, 0, 2, RoundingMode::Exact)),
+                &OptionValue::from_admitted(decimal_link(0, 2, 1, 2, RoundingMode::Exact), None),
+                &mut arena,
+                at,
+                &mut budget,
+                &Cancel::new(),
+                1,
+            ),
+            Err(BoundedSuppliedAdmissionError::NumericTypeSize {
+                position: Endpoint::DecimalActualUpper,
+                measured_bits: 2,
+                limit_bits: 1,
+                locus: link,
+            })
+        );
+
+        let mut zero_budget = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &ValueType::option(decimal_link(0, 0, 0, 0, RoundingMode::Exact)),
+                &OptionValue::from_admitted(decimal_link(0, 0, 0, 0, RoundingMode::Exact), None,),
+                &mut arena,
+                at,
+                &mut zero_budget,
+                &Cancel::new(),
+                0,
+            ),
+            Err(BoundedSuppliedAdmissionError::NumericTypeSize {
+                position: Endpoint::DecimalExpectedLower,
+                measured_bits: 1,
+                limit_bits: 0,
+                locus: link,
+            })
+        );
+        assert_eq!(zero_budget.spent(), 2);
+
+        let mut one_budget = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &ValueType::option(decimal_link(0, 0, 0, 0, RoundingMode::Exact)),
+                &OptionValue::from_admitted(decimal_link(0, 0, 0, 0, RoundingMode::Exact), None),
+                &mut arena,
+                at,
+                &mut one_budget,
+                &Cancel::new(),
+                1,
+            ),
+            Ok(())
+        );
+        assert_eq!(one_budget.spent(), 2);
+    }
+
+    /// Cancellation observed at the target event keeps prior spend; a late
+    /// kernel poll keeps that event and the original cause.
+    /// Trace: FR-118-AC-3
+    #[trace("TC-918", "FR-118-AC-3")]
+    #[test]
+    fn bounded_decimal_type_link_retains_pre_and_late_cancellation() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let endpoint = Integer::one().shifted_left(127);
+        let decimal = ValueType::Decimal(
+            DecimalType::new(endpoint.clone(), endpoint, 0, 0, RoundingMode::Exact)
+                .expect("valid Decimal type"),
+        );
+        let expected = ValueType::option(decimal.clone());
+        let value = OptionValue::from_admitted(decimal, None);
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let root = arena.root(14);
+        let at = MembershipLocus {
+            path: root,
+            part: Occurrence,
+        };
+        let link = MembershipLocus {
+            path: root,
+            part: TypeLink(0),
+        };
+
+        let polls = Arc::new(AtomicUsize::new(0));
+        let trigger = Arc::new(Mutex::new(None::<Cancel>));
+        let observed_polls = Arc::clone(&polls);
+        let observed_trigger = Arc::clone(&trigger);
+        let before = Cancel::observing(move || {
+            if observed_polls.fetch_add(1, Ordering::SeqCst) + 1 == 2 {
+                observed_trigger
+                    .lock()
+                    .expect("test cancellation lock")
+                    .take()
+                    .expect("test cancellation handle")
+                    .cancel(CancelCause::Requested);
+            }
+        });
+        *trigger.lock().expect("test cancellation lock") = Some(before.clone());
+        let mut pre_budget = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut pre_budget,
+                &before,
+                128,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Cancelled {
+                cause: CancelCause::Requested,
+                spent: 1,
+                event: TypeLinkComparison,
+                locus: link,
+            }))
+        );
+        assert_eq!(pre_budget.spent(), 1);
+        assert_eq!(polls.load(Ordering::SeqCst), 2);
+
+        let polls = Arc::new(AtomicUsize::new(0));
+        let trigger = Arc::new(Mutex::new(None::<Cancel>));
+        let observed_polls = Arc::clone(&polls);
+        let observed_trigger = Arc::clone(&trigger);
+        let during = Cancel::observing(move || {
+            if observed_polls.fetch_add(1, Ordering::SeqCst) + 1 == 11 {
+                observed_trigger
+                    .lock()
+                    .expect("test cancellation lock")
+                    .take()
+                    .expect("test cancellation handle")
+                    .cancel(CancelCause::Deadline);
+            }
+        });
+        *trigger.lock().expect("test cancellation lock") = Some(during.clone());
+        let mut late_budget = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut late_budget,
+                &during,
+                128,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(Stop::Cancelled {
+                cause: CancelCause::Deadline,
+                spent: 2,
+                event: TypeLinkComparison,
+                locus: link,
+            }))
+        );
+        assert_eq!(late_budget.spent(), 2);
+        assert_eq!(polls.load(Ordering::SeqCst), 11);
+        assert_eq!(arena.resolve(link).expect("rooted link").argument(), 14);
+    }
+
+    /// The unbounded API refuses at the charged link, after event denial and
+    /// cancellation have had their usual priority.
+    /// Trace: FR-118-AC-4
+    #[trace("TC-918", "FR-118-AC-4")]
+    #[test]
+    fn decimal_type_link_without_bound_preserves_event_precedence() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let decimal = decimal_link(0, 1, 0, 0, RoundingMode::Exact);
+        let expected = ValueType::option(decimal.clone());
+        let value = OptionValue::from_admitted(decimal, None);
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let root = arena.root(15);
+        let at = MembershipLocus {
+            path: root,
+            part: Occurrence,
+        };
+        let link = MembershipLocus {
+            path: root,
+            part: TypeLink(0),
+        };
+
+        let mut denied = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut denied,
+                &Cancel::new(),
+            ),
+            Err(Stop::Limit {
+                ceiling: 1,
+                spent: 1,
+                requested: 1,
+                event: TypeLinkComparison,
+                locus: link,
+            })
+        );
+        assert_eq!(denied.spent(), 1);
+
+        let mut permitted = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut permitted,
+                &Cancel::new(),
+            ),
+            Err(Stop::UnsupportedHelper {
+                family: UnsupportedHelperFamily::DecimalDomain,
+                locus: link,
+            })
+        );
+        assert_eq!(permitted.spent(), 2);
+
+        let cancel = Cancel::new();
+        cancel.cancel(CancelCause::Requested);
+        let mut cancelled = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut cancelled,
+                &cancel,
+            ),
+            Err(Stop::Cancelled {
+                cause: CancelCause::Requested,
+                spent: 0,
+                event: ValueVisit,
+                locus: at,
+            })
+        );
+        assert_eq!(cancelled.spent(), 0);
+
+        let polls = Arc::new(AtomicUsize::new(0));
+        let trigger = Arc::new(Mutex::new(None::<Cancel>));
+        let observed_polls = Arc::clone(&polls);
+        let observed_trigger = Arc::clone(&trigger);
+        let after_event = Cancel::observing(move || {
+            if observed_polls.fetch_add(1, Ordering::SeqCst) + 1 == 3 {
+                observed_trigger
+                    .lock()
+                    .expect("test cancellation lock")
+                    .take()
+                    .expect("test cancellation handle")
+                    .cancel(CancelCause::Deadline);
+            }
+        });
+        *trigger.lock().expect("test cancellation lock") = Some(after_event.clone());
+        let mut after_event_budget = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut after_event_budget,
+                &after_event,
+            ),
+            Err(Stop::Cancelled {
+                cause: CancelCause::Deadline,
+                spent: 2,
+                event: TypeLinkComparison,
+                locus: link,
+            })
+        );
+        assert_eq!(after_event_budget.spent(), 2);
+        assert_eq!(polls.load(Ordering::SeqCst), 3);
     }
 
     /// A single caller budget and B apply across two argument roots, including
