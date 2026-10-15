@@ -68,3 +68,10 @@ coverage.
 | --- | --- | --- | --- |
 | FND-001 | medium | FR-115-AC-1's unsealed-refusal clauses have no live test, although they pass today. The first 44 lines of `resolved_topology_is_visible_and_runtime_union_is_denied_until_sealed` do not depend on union value admission: name lookup before sealing, `union_key`/`runtime_type`/`union_member` returning `None`, equality returning `TypeMismatch`, `union()` refusing, and `evaluate_union` refusing without running any payload. They are ignored only because the test's later part needs the union arms. Split them into a live test tagged FR-115-AC-1. | tests/union_staging.rs:78-126 |
 | FND-002 | medium | FR-115-AC-4's trace binding is vacuous, and its cancellation clause has no test. The only test tagged FR-115-AC-4, `full_size_resolved_registry_can_be_sealed_without_replacing_topology`, sets no work limit and no cancellation. The real N/N-1 test, `five_thousand_members_and_thousand_options_use_named_work_limit`, is tagged FR-321-AC-4 only. No test cancels union topology admission. Tag the N/N-1 test with FR-115-AC-4, and add a cancelled-handle `bounded` case over a union fixture. | tests/union_staging.rs:557-560; tests/union_registry.rs:360-363 |
+
+## Dispositions
+
+| FND | Outcome | sha/reason |
+| --- | --- | --- |
+| FND-001 | fixed | 458565f. The live test `resolved_topology_is_visible_and_unsealed_union_grants_nothing` is tagged FR-115-AC-1. The sealed remainder is still ignored as `sealed_union_carrier_is_admitted_by_handle_and_final_key`. |
+| FND-002 | fixed | 458565f. The N/N-1 test is now tagged FR-115-AC-4. The new live `cancelled_handle_stops_union_topology_admission` asserts `WorkUnits` and `cancel.tripped() == Requested`. This matches FR-115 Behaviour 4 ("poll its cancellation handle; running out SHALL be the named work limit") and the shared WorkBudget convention. |

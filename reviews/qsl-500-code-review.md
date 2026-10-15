@@ -72,3 +72,9 @@ dad364a.
 | ID | Severity | Summary | Refs |
 | --- | --- | --- | --- |
 | FND-001 | high | A Record or Tuple carrier is admitted at a union type. Main's walk admits `(Composite(declared), Value::Composite(c))` when `composite_conforms(c.declaration(), declared)` holds, and that is `sub == sup` with no shape check. So `admits(Composite(U), from_admitted_slots(U, []))` returns `true` for a union `U`. This PR is what makes union declarations reachable, so it exposes the wrong admission result. The ignored test `supplied_trusted_carriers_still_require_registry_admission` asserts `false` for this carrier and fails on it today. Its ignore reason, "fails only because main refuses union values", is therefore false. Fix: refuse a union-shaped key in `composite_conforms` (declaration.rs, in this PR), and add a live test. Otherwise, hand the case to the union-arm work explicitly and correct the ignore reason. | src/declaration.rs:2447-2453; src/declaration/membership.rs:534-546; tests/union_registry.rs:183-214 |
+
+## Dispositions
+
+| FND | Outcome | sha/reason |
+| --- | --- | --- |
+| FND-001 | fixed | 458565f. `composite_conforms` now returns false when either key has a union shape, by handle or by final key. membership.rs is untouched. The tests `record_and_tuple_carriers_are_not_admitted_at_a_union_type` and `sealed_union_final_key_never_admits_a_record_or_tuple_carrier` are live, and both would fail on the old `sub == sup`. Non-union paths are unchanged, because prepare refuses a union as a supertype in either direction. `supplied_trusted_carriers_still_require_registry_admission` is live. |
