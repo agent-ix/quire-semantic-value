@@ -147,7 +147,7 @@ dependencies = [
 [[package]]
 name = "quire-exact"
 version = "0.1.0"
-source = "git+https://github.com/agent-ix/quire-exact?branch=main#f8e05771804cb0c2e0166d5afa8c19532d602577"
+source = "git+https://github.com/agent-ix/quire-exact?branch=main#9a3411d3f8ad0fd9e7135d9756db3257c8f37654"
 dependencies = [
  "allocator-api2",
  "num-bigint",
