@@ -33,3 +33,9 @@ Reviewed frozen PR #25 at 5acae91 for IR-793. Examined FR-117 and TC-917 against
 | ID | Severity | Summary | Refs |
 | --- | --- | --- | --- |
 | FND-001 | high | The Inputs and Behavior 4 define an authentic B as covering both retained types. A valid caller ceiling B with one endpoint at B+1 would then be treated as missing qualification and return NumericDomain, while AC-2 requires typed unsupported size. Define authenticity independently of endpoint compliance and always pass a present authentic B to the helper for its ordered endpoint checks. | spec/functional/FR-117-bound-retained-numeric-type-links.md:26-29,62-66 |
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | Verified at PR #25 head 0551175; revised text below resolves the original defect. |

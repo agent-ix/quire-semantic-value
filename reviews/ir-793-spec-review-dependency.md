@@ -34,3 +34,10 @@ Reviewed frozen PR #25 at 5acae91 for IR-793. Examined FR-117 and TC-917 against
 | --- | --- | --- | --- |
 | FND-001 | high | FR-117 fixes left=actual/right=expected and delegates first-over-B endpoint order to QExact FR-381 (left/right interleaved). Published QSpec FR-323 requires expected endpoints before actual endpoints, numerator interval before denominator and lower before upper. When multiple endpoints exceed B, these rules choose different first failures; reconcile the authoritative order and side mapping across QSV and QExact before implementation. | spec/functional/FR-117-bound-retained-numeric-type-links.md:40-53 |
 | FND-002 | medium | FR-117 still calls the QSpec B carrier a proposal under review and declines its default and event order. QSpec FR-323 is now merged: it owns the published 4096 caller default, charged type-comparison boundary and zero-as-one rule. Update the dependency to the published contract while retaining QSV direct no-B NumericDomain until QSL-779 supplies B. | spec/functional/FR-117-bound-retained-numeric-type-links.md:91-95 |
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | Verified at PR #25 head 0551175; revised text below resolves the original defect. |
+| FND-002 | fixed | Verified at PR #25 head 0551175; revised text below resolves the original defect. |

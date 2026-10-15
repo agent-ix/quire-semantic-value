@@ -34,3 +34,10 @@ Reviewed frozen PR #25 at 5acae91 for IR-793. Examined FR-117 and TC-917 against
 | --- | --- | --- | --- |
 | FND-001 | medium | TC-917 asserts cumulative spend of one event after a nested Option/Collection comparison. Earlier value visits, child schedules and type-link pairs have already spent units; the expected total must be the independently enumerated prior spend plus the initiating event. | spec/test-cases/TC-917-retained-numeric-type-link-admission.md:31-33 |
 | FND-002 | medium | TC-917 omits the zero-magnitude boundary. QExact FR-381 defines zero as one magnitude bit, but the QSV admission test does not verify that an authentic B=1 accepts zero-valued retained endpoints and preserves the typed boundary through projection. | spec/test-cases/TC-917-retained-numeric-type-link-admission.md:25-30 |
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | Verified at PR #25 head 0551175; revised text below resolves the original defect. |
+| FND-002 | fixed | Verified at PR #25 head 0551175; revised text below resolves the original defect. |
