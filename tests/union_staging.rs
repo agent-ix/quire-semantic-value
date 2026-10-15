@@ -129,8 +129,8 @@ fn resolved_topology_is_visible_and_unsealed_union_grants_nothing() {
     assert_eq!(calls.get(), 0);
 }
 
-/// A Record or Tuple carrier keyed with a sealed union's final key is not a member
-/// of the union type on either key.
+/// A Record or Tuple carrier keyed with a sealed union's handle or final key
+/// fails direct and Option-wrapped membership on either type key.
 ///
 /// Trace: FR-115-AC-5
 #[trace("TC-915", "FR-115-AC-5")]
@@ -144,6 +144,12 @@ fn sealed_union_final_key_never_admits_a_record_or_tuple_carrier() {
             let carrier = quire_exact::from_admitted_slots(declaration, slots.into_boxed_slice());
             for ty in [key(1), key(40)] {
                 assert!(!env.admits(&ValueType::Composite(ty), &carrier).unwrap());
+                let wrapped =
+                    OptionValue::present(ValueType::Composite(declaration), carrier.clone())
+                        .unwrap();
+                assert!(!env
+                    .admits(&ValueType::option(ValueType::Composite(ty)), &wrapped)
+                    .unwrap());
             }
         }
     }
@@ -247,6 +253,79 @@ fn sealed_union_payload_uses_one_rooted_supplied_budget() {
                 );
             }
         }
+    }
+}
+
+/// A supplied union's wrong member or arity fails at the descriptor query;
+/// a wrong positional value fails at that payload's rooted occurrence.
+/// Trace: FR-109-AC-4
+#[trace("TC-908", "FR-109-AC-4")]
+#[test]
+fn invalid_union_member_and_payload_keep_distinct_rooted_causes() {
+    let mut env = TypeEnvironment::new([shape()], []).unwrap();
+    env.seal_union_verified(key(1), key(40), bindings(key(40)))
+        .unwrap();
+    let cases = [
+        (
+            UnionValue::from_admitted(binding(key(40), 99, "Rect"), vec![integer(2), integer(3)]),
+            InvalidMembershipCause::Member,
+            MembershipPart::Descriptor(0),
+            None,
+            2,
+        ),
+        (
+            UnionValue::from_admitted(binding(key(40), 11, "Spoof"), vec![integer(2), integer(3)]),
+            InvalidMembershipCause::Member,
+            MembershipPart::Descriptor(0),
+            None,
+            2,
+        ),
+        (
+            UnionValue::from_admitted(binding(key(40), 11, "Rect"), vec![integer(2)]),
+            InvalidMembershipCause::Payload,
+            MembershipPart::Descriptor(0),
+            None,
+            2,
+        ),
+        (
+            UnionValue::from_admitted(
+                binding(key(40), 11, "Rect"),
+                vec![integer(2), Value::Boolean(true)],
+            ),
+            InvalidMembershipCause::Kind,
+            MembershipPart::Value,
+            Some(PathStep::UnionPayload(1)),
+            6,
+        ),
+    ];
+    for (value, expected_cause, expected_part, expected_step, expected_spent) in cases {
+        let mut arena = MembershipPathArena::new().unwrap();
+        let at = MembershipLocus {
+            path: arena.root(9),
+            part: MembershipPart::Value,
+        };
+        let mut budget = SuppliedMembershipBudget::new(10);
+        let result = env.admit_supplied::<InvalidMembershipCause>(
+            &ValueType::Composite(key(1)),
+            &value,
+            &mut arena,
+            at,
+            &mut budget,
+            &quire_exact::Cancel::new(),
+        );
+        let Err(SuppliedAdmissionError::Invalid { cause, locus }) = result else {
+            panic!("expected typed union refusal: {result:?}");
+        };
+        assert_eq!(cause, expected_cause);
+        assert_eq!(budget.spent(), expected_spent);
+        let resolved = arena.resolve(locus).unwrap();
+        assert_eq!(resolved.argument(), 9);
+        assert_eq!(resolved.part(), expected_part);
+        assert_eq!(resolved.steps_from_leaf().next(), expected_step);
+        assert_eq!(
+            resolved.steps_from_leaf().count(),
+            usize::from(expected_step.is_some())
+        );
     }
 }
 

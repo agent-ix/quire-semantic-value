@@ -42,9 +42,7 @@ These are SV source controls, not QSL run, codec or canonical minting evidence.
 
 ## Status
 
-Implemented except the controls that need Union value membership. Those are
-tracked in the pull request under "waits for the union arms in admits_walk_core"
-and run once the typed-event admission walk accepts union values. The other
-controls run in tests/union_registry.rs, tests/union_staging.rs and the unit
-tests of src/declaration.rs. TC-907's protected Union obligation remains open
-under IR-713 until the complete QSL-500 delivery.
+Union value membership controls now run through the typed-event admission walk
+in tests/union_registry.rs and tests/union_staging.rs. Registry and sealing
+storage controls also run in the unit tests of src/declaration.rs. QSL run,
+codec and canonical minting evidence remains separate from these SV controls.
