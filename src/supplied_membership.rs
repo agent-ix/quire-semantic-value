@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use quire_exact::{Cancel, CancelCause};
+use quire_exact::{Cancel, CancelCause, NumericMembershipOperand};
 
 use crate::declaration::{StorageRequest, StorageUnit};
 
@@ -465,6 +465,40 @@ pub enum SuppliedAdmissionError<Cause = InvalidMembershipCause> {
         /// Where the reservation was needed.
         locus: MembershipLocus,
     },
+}
+
+/// A supplied admission stop when the caller authenticates a numeric operand bound.
+///
+/// The ordinary admission stop retains its typed limit, cancellation, and
+/// storage distinctions. An operand above `magnitude_bits` has its own variant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundedSuppliedAdmissionError<Cause = InvalidMembershipCause> {
+    /// An ordinary supplied admission stop.
+    Admission(SuppliedAdmissionError<Cause>),
+    /// A numeric operand exceeds the caller's authenticated magnitude ceiling.
+    NumericSize {
+        /// The operand checked by the exact kernel.
+        operand: NumericMembershipOperand,
+        /// Its measured magnitude bits; zero counts as one.
+        measured_bits: u64,
+        /// The caller's authenticated ceiling.
+        limit_bits: u64,
+        /// The rooted value occurrence containing this operand.
+        locus: MembershipLocus,
+    },
+}
+
+impl<Cause> From<SuppliedAdmissionError<Cause>> for BoundedSuppliedAdmissionError<Cause> {
+    fn from(stop: SuppliedAdmissionError<Cause>) -> Self {
+        Self::Admission(stop)
+    }
+}
+
+impl<Cause> BoundedSuppliedAdmissionError<Cause> {
+    /// The owning phase for every bounded numeric admission stop.
+    pub const fn phase(&self) -> SuppliedAdmissionPhase {
+        SuppliedAdmissionPhase::Membership
+    }
 }
 
 impl<Cause> SuppliedAdmissionError<Cause> {
