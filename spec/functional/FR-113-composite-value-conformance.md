@@ -117,6 +117,10 @@ conformance.
     values. Charging the occurrences of a built or decoded value is the
     caller's, through the value-accounting charge it already makes at
     construction and replay; the answer stays a `bool`.
+15. `admits` SHALL refuse a union value at a record or tuple composite slot,
+    including a union value that carries that record's or tuple's key, at any
+    depth. QSV declares no union shape in this requirement, so no declaration
+    admits one.
 
 ## Acceptance Criteria
 
@@ -129,6 +133,7 @@ conformance.
 | FR-113-AC-5 | `operand_value` admits a composite operand of source type `P` holding a `C` or an `M` unchanged and with its own key, and an `Option<P>` or `Sequence<P>` operand holding one. It refuses a `P` operand holding `U`, and a `P` value at source type `C`, with `EqualityOperandSourceNotAdmitted`. A `Reference<T>` operand is still checked by kind only. | Test (TC-913) |
 | FR-113-AC-6 | A `Set<P>` or `Bag<P>` holding a `C` and a `P` of equal shared fields has two elements and is admitted. This vector rests on the quire-exact collection and equality behavior of FR-376 to FR-378. | Test (TC-913) |
 | FR-113-AC-7 | A `Reference<T>` inside an `Option` payload or collection element is admitted only when the reference's object type is `T` or conforms to `T`: an `Option<Reference<T>>` or `Sequence<Reference<T>>` holding a reference to a subtype object is admitted, and one holding a reference to an unrelated object type, or a supertype object at a subtype `T`, is refused although the recorded payload or element type matches. | Test (TC-913) |
+| FR-113-AC-8 | A union value whose declaration key is a record's or tuple's key is refused by `admits` at that composite type, at a record field typed by it, at a tuple position typed by it, and inside an `Option` payload. Record and tuple construction refuse a member holding it with `TypeMismatch`. | Test (TC-913) |
 
 ## Dependencies
 

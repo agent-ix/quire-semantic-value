@@ -1805,9 +1805,9 @@ struct Edge {
 }
 
 impl TypeEnvironment {
-    /// Construct the registry-resolved member with environment-aware payload admission.
-    /// Construct a sealed union using the caller's cumulative admission budget.
-    /// Work stops are separate from existing construction refusals.
+    /// Construct a sealed union value for a registry-resolved member, admitting its
+    /// payload against the member's positions under the caller's cumulative budget.
+    /// Work stops are separate from construction refusals.
     pub fn union(
         &self,
         declaration: NodeKey,
@@ -1848,9 +1848,9 @@ impl TypeEnvironment {
     }
 
     /// Evaluate payload positions in order, propagating the first stopped outcome,
-    /// then retaining the completed union once under the existing composite schedule.
-    /// Evaluate a sealed union with cumulative SV admission work and the actual
-    /// runtime meter. Prior runtime stops bypass further SV admission charges.
+    /// then retain the completed union once under the existing composite schedule.
+    /// Admission charges the caller's cumulative budget; a prior runtime stop
+    /// bypasses further admission charges.
     pub fn evaluate_union(
         &self,
         declaration: NodeKey,
@@ -2282,16 +2282,14 @@ impl TypeEnvironment {
         self.union_handles.get(&final_key).copied()
     }
 
-    /// Attach a settled canonical key and producer-verified FR-441 bindings to
-    /// an already resolved union. The caller must verify the final key against
-    /// its settled canonical type node, and each binding against that node and
-    /// the exact declared identifier. This method hashes nothing.
+    /// Attach a settled canonical key and producer-verified FR-441 bindings to an
+    /// already resolved union. The caller must verify the final key against its
+    /// settled canonical type node, and each binding against that node and the
+    /// exact declared identifier. This method hashes nothing.
     /// Failed validation leaves the resolved registry unchanged. Bindings must
     /// cover every member once, in declaration order; resealing is refused.
-    /// Seal under the caller's environment work budget and cancellation handle.
-    /// Each verified binding comparison charges one work unit before attachment.
-    /// Seal with the caller's cumulative budget. A charged member step covers
-    /// its binding validation and eventual indexed attachment, before mutation.
+    /// Each member step charges one work unit of the caller's cumulative budget
+    /// before any mutation.
     pub fn seal_union_verified(
         &mut self,
         handle: NodeKey,
@@ -2382,9 +2380,9 @@ impl TypeEnvironment {
         Ok(())
     }
 
-    /// Compare resolved types using the explicit sealed union handle/key join.
-    /// Option and collection nesting is iterative. Record/Tuple identity is unchanged.
-    /// Compare nested types while charging each pair to the caller's budget.
+    /// Compare resolved types using the explicit sealed union handle/key join,
+    /// charging each compared pair to the caller's budget. Option and collection
+    /// nesting is iterative; Record/Tuple identity is unchanged.
     pub fn same_type(
         &self,
         left: &ValueType,
@@ -2443,12 +2441,11 @@ impl TypeEnvironment {
         }
     }
 
-    /// Resolve union handles in a runtime type through verified final-key joins.
-    /// Unsealed union leaves return `None`. Other declaration keys stay unchanged.
-    /// Nested options/collections are rebuilt iteratively, preserving their kinds
-    /// and bounds whether or not a declaration key changes.
-    /// Resolve a runtime type using shared cumulative work, including rebuilding
-    /// each wrapper. An unsealed declaration is `Ok(None)`, never a resource stop.
+    /// Resolve union handles in a runtime type through verified final-key joins,
+    /// rebuilding each Option and collection wrapper iteratively under the
+    /// caller's cumulative budget and preserving its kind and bounds. An unsealed
+    /// union leaf is `Ok(None)`, never a resource stop; other declaration keys
+    /// stay unchanged.
     pub fn runtime_type(
         &self,
         value_type: &ValueType,
@@ -2576,8 +2573,8 @@ impl TypeEnvironment {
         Some((position, members.get(position)?))
     }
 
-    /// Resolve an authored identifier to topology, before or after sealing.
-    /// Resolve an authored member name with one charge per inspected descriptor.
+    /// Resolve an authored member name to its topology, before or after sealing,
+    /// with one charge per inspected descriptor.
     pub fn union_member_named<'a>(
         &'a self,
         declaration: NodeKey,
@@ -2605,11 +2602,14 @@ impl TypeEnvironment {
         Ok(None)
     }
 
-    /// Iterative supplied-value membership checking. One work unit per value
-    /// visited, including each shared occurrence. A limit is returned by name;
-    /// references check type conformance here, target closure is checked separately.
-    /// Admit supplied occurrences and their nested type comparisons under one
-    /// cumulative configured budget. Type-validation work uses this same budget.
+    /// Whether `value_type` admits `value` under this environment: a
+    /// `Reference<T>` by `conforms`, a composite by `composite_conforms` (the walk
+    /// stops at a composite), a sealed union value by its carried member and
+    /// positions, and every other leaf by the exact kernel `ValueType::admits`.
+    /// Iterative; one work unit per value visited, including each shared
+    /// occurrence, and per type-link pair compared, against the caller's budget.
+    /// A reached ceiling is returned by name; reference target closure is checked
+    /// separately.
     pub fn admits(
         &self,
         value_type: &ValueType,
@@ -2625,7 +2625,7 @@ impl TypeEnvironment {
         value: &Value,
         charge: &mut impl FnMut(usize) -> Result<(), E>,
     ) -> Result<bool, E> {
-        if self.type_refusal_walk(value_type, charge)?.is_some() {
+        if self.type_refusal_walk(value_type, true, charge)?.is_some() {
             return Ok(false);
         }
         charge(1)?;
@@ -2654,47 +2654,16 @@ impl TypeEnvironment {
                     pending.extend(member.positions.iter().zip(union.payload()).rev());
                 }
                 (ValueType::Composite(key), Value::Composite(value)) => {
-                    // Conformance by declared supertype admits a descendant and
-                    // the walk stops there: its members were admitted against
-                    // its own declaration. A value of exactly the declared
-                    // composite is walked against that declaration.
-                    if !self.composite_conforms(value.declaration(), *key) {
+                    // FR-113 items 9 and 11: conformance by identity or declared
+                    // supertype admits the value and the walk stops there; its
+                    // members were admitted against its own declaration. A
+                    // union declaration is admitted only by a union value.
+                    if !self.composite_conforms(value.declaration(), *key)
+                        || matches!(self.shape(*key), Some(CompositeShape::Union(_)))
+                    {
                         return Ok(false);
                     }
                     charge(1)?;
-                    match self.shape(*key) {
-                        Some(CompositeShape::Record(_) | CompositeShape::Tuple(_))
-                            if value.declaration() != *key => {}
-                        Some(CompositeShape::Record(fields)) => {
-                            if fields.len() != value.slots().len() {
-                                return Ok(false);
-                            }
-                            charge(fields.len())?;
-                            for (field, slot) in fields.iter().zip(value.slots()).rev() {
-                                match slot {
-                                    FieldValue::Present(value) => {
-                                        pending.push((field.value_type(), value));
-                                    }
-                                    FieldValue::Absent | FieldValue::Null
-                                        if field.presence() == Presence::Optional => {}
-                                    FieldValue::Absent | FieldValue::Null => return Ok(false),
-                                }
-                            }
-                        }
-                        Some(CompositeShape::Tuple(positions)) => {
-                            if positions.len() != value.slots().len() {
-                                return Ok(false);
-                            }
-                            charge(positions.len())?;
-                            for (ty, slot) in positions.iter().zip(value.slots()).rev() {
-                                let FieldValue::Present(value) = slot else {
-                                    return Ok(false);
-                                };
-                                pending.push((ty, value));
-                            }
-                        }
-                        Some(CompositeShape::Union(_)) | None => return Ok(false),
-                    }
                 }
                 (ValueType::Reference(declared), Value::Reference(reference)) => {
                     charge(1)?;
@@ -2766,15 +2735,10 @@ impl TypeEnvironment {
         Ok(true)
     }
 
-    /// Check a type named outside a declaration (a parameter or result type):
-    /// every named declaration exists, every `Reference<T>` names a model
-    /// object type, and no set, bag or ordered set has an IEEE-bearing element
-    /// type.
-    /// Whether `value_type` contains `Float32` or `Float64` at any depth,
-    /// through every record, tuple and union member declaration included.
-    /// Inspect all reachable member types under the caller's shared budget.
-    /// Every visited type and scheduled member position is charged, including
-    /// unused union alternatives. Recursive declaration keys are visited once.
+    /// Whether `value_type` contains `Float32` or `Float64` at any depth, through
+    /// every record, tuple and union member declaration, including unused union
+    /// alternatives. Every visited type and scheduled member position is charged
+    /// to the caller's budget; recursive declaration keys are visited once.
     pub fn contains_ieee(
         &self,
         value_type: &ValueType,
@@ -2842,16 +2806,18 @@ impl TypeEnvironment {
         Ok(false)
     }
 
-    /// The first refusal of one type's named declarations and element types.
-    /// Validate a parameter/result type without converting work stops into
-    /// ill-typed refusals. The inner result retains the existing typed cause.
+    /// Check a type named outside a declaration (a parameter or result type):
+    /// every named declaration exists, every `Reference<T>` names a model object
+    /// type, and no set, bag or ordered set has an IEEE-bearing element type. Work
+    /// stops are not converted into ill-typed refusals; the inner result keeps the
+    /// typed cause.
     pub fn check_type(
         &self,
         value_type: &ValueType,
         budget: &mut WorkBudget,
     ) -> Result<Result<(), IllTyped>, EnvironmentLimit> {
         Ok(
-            match self.type_refusal_walk(value_type, &mut |units| budget.charge(units))? {
+            match self.type_refusal_walk(value_type, false, &mut |units| budget.charge(units))? {
                 None => Ok(()),
                 Some(DeclarationCause::Type(cause)) => Err(IllTyped { cause }),
                 Some(_) => Err(IllTyped {
@@ -2864,6 +2830,7 @@ impl TypeEnvironment {
     fn type_refusal_walk<E>(
         &self,
         value_type: &ValueType,
+        unknown_composite_ok: bool,
         charge: &mut impl FnMut(usize) -> Result<(), E>,
     ) -> Result<Option<DeclarationCause>, E> {
         charge(1)?;
@@ -2875,7 +2842,9 @@ impl TypeEnvironment {
             }
             first = false;
             match value_type {
-                ValueType::Composite(key) if self.composite(*key).is_none() => {
+                ValueType::Composite(key)
+                    if !unknown_composite_ok && self.composite(*key).is_none() =>
+                {
                     return Ok(Some(DeclarationCause::UnknownDeclaration(*key)));
                 }
                 // QSpec FR-143: `T` in `Reference<T>` must name a model object
@@ -3322,11 +3291,20 @@ impl TypeEnvironment {
                 .map_or("", |declaration| declaration.name.as_str())
         };
         for declaration in self.composites.values() {
+            let is_union = matches!(declaration.shape, CompositeShape::Union(_));
             for supertype in &declaration.supertypes {
-                if !self.composites.contains_key(supertype) {
+                let Some(target) = self.composites.get(supertype) else {
                     return Err(EnvironmentFailure::Refused(InvalidDeclaration {
                         declaration: try_clone_str(&declaration.name, reserve)?,
                         cause: DeclarationCause::UnknownDeclaration(*supertype),
+                    }));
+                };
+                // FR-115: a union takes no part in composite generalization,
+                // neither as a subtype nor as a supertype.
+                if is_union || matches!(target.shape, CompositeShape::Union(_)) {
+                    return Err(EnvironmentFailure::Refused(InvalidDeclaration {
+                        declaration: try_clone_str(&declaration.name, reserve)?,
+                        cause: DeclarationCause::Type(IllTypedCause::TypeMismatch),
                     }));
                 }
             }
@@ -4774,7 +4752,7 @@ impl TypeEnvironment {
         let ill_typed = |cause| Ok(Err(IllTyped { cause }));
         for operand in [&left, &right] {
             for ty in core::iter::once(&operand.source).chain(operand.target.iter()) {
-                if let Some(cause) = self.type_refusal_walk(ty, charge)? {
+                if let Some(cause) = self.type_refusal_walk(ty, false, charge)? {
                     return ill_typed(match cause {
                         DeclarationCause::Type(cause) => cause,
                         _ => IllTypedCause::TypeMismatch,
@@ -5247,6 +5225,87 @@ mod native_type_tests {
             [FieldValue::Present(Value::String(text))] if text.as_str() == "hello"
         ));
         assert!(types.admits_u(&ValueType::Composite(record), &value));
+    }
+
+    /// A union value is never admitted at a record or tuple composite type,
+    /// even when it carries that record's or tuple's key.
+    #[trace("TC-913", "FR-113-AC-8")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture supplies checked composite identities without minting them in production"
+    )]
+    #[test]
+    fn union_value_is_refused_at_record_and_tuple_slots() {
+        let record = NodeKey::from_digest([31; 32]);
+        let tuple = NodeKey::from_digest([32; 32]);
+        let holder = NodeKey::from_digest([34; 32]);
+        let pair = NodeKey::from_digest([35; 32]);
+        let types = TypeEnvironment::new(
+            [
+                CompositeDeclaration::new(
+                    record,
+                    "Plain",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "label",
+                        ValueType::String,
+                        Presence::Required,
+                    )]),
+                ),
+                CompositeDeclaration::new(
+                    tuple,
+                    "Pair",
+                    CompositeShape::Tuple(vec![ValueType::Integer]),
+                ),
+                CompositeDeclaration::new(
+                    holder,
+                    "Holder",
+                    CompositeShape::Record(vec![FieldDeclaration::new(
+                        "member",
+                        ValueType::Composite(record),
+                        Presence::Required,
+                    )]),
+                ),
+                CompositeDeclaration::new(
+                    pair,
+                    "Holds",
+                    CompositeShape::Tuple(vec![ValueType::Composite(tuple)]),
+                ),
+            ],
+            [],
+        )
+        .expect("record and tuple admit");
+        let union_at = |key| {
+            quire_exact::UnionValue::from_admitted(
+                quire_exact::UnionMember::from_admitted(
+                    key,
+                    NodeKey::from_digest([33; 32]),
+                    quire_exact::Identifier::new("m").expect("identifier"),
+                ),
+                vec![Value::Integer(Integer::one())],
+            )
+        };
+        for key in [record, tuple] {
+            let value = union_at(key);
+            assert!(!types.admits_u(&ValueType::Composite(key), &value));
+            assert!(!types.admits_u(
+                &ValueType::option(ValueType::Composite(key)),
+                &quire_exact::OptionValue::present(ValueType::Composite(key), value.clone())
+                    .expect("option payload type matches")
+            ));
+        }
+        let refusal = types
+            .record_u(
+                holder,
+                vec![("member", FieldValue::Present(union_at(record)))],
+            )
+            .expect_err("a union is not a Plain record");
+        assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
+        assert_eq!(refusal.component, Component::Field("member".into()));
+        let refusal = types
+            .tuple_u(pair, vec![union_at(tuple)])
+            .expect_err("a union is not a Pair tuple");
+        assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
+        assert_eq!(refusal.component, Component::Position(0));
     }
 
     /// A composite value keeps its child identity while admitting at an ancestor boundary.

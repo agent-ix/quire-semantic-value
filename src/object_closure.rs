@@ -69,7 +69,9 @@ impl ObjectClosure {
     /// passes the references its check 8 skipped, because they name an
     /// incomplete population nothing requires; every other caller passes
     /// `&[]`.
-    /// Admit objects, attribute types and reference closure with one shared budget.
+    ///
+    /// Object types, attribute types and reference closure share the caller's one
+    /// cumulative budget.
     /// The outer result preserves named work stops and caller cancellation; the
     /// inner result preserves the existing object/attribute refusal and locus.
     pub fn new<'n>(
@@ -426,6 +428,135 @@ mod tests {
                         cause: ConstructionCause::TypeMismatch,
                     }),
                 }
+            );
+        }
+    }
+
+    /// Reference closure of one object's slots with no work ceiling.
+    fn closes(
+        closure: &ObjectClosure,
+        owner: &ObjectReference,
+        slots: &[FieldValue],
+        tolerated: &BTreeSet<&ObjectReference>,
+    ) -> Result<(), ObjectClosureRefusal> {
+        closure
+            .check_closed(owner, slots, tolerated, &mut |_| {
+                Ok::<(), core::convert::Infallible>(())
+            })
+            .unwrap_or_else(|never| match never {})
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test fixture needs a NodeKey; production code mints none"
+    )]
+    fn node_key(byte: u8) -> quire_exact::NodeKey {
+        quire_exact::NodeKey::from_digest([byte; 32])
+    }
+
+    /// A union value's payload is traversed like a composite's slots: a
+    /// reference inside it must name a closed object, and a nested union is
+    /// walked too.
+    #[trace("TC-904", "FR-106-AC-11")]
+    #[test]
+    fn union_payload_references_are_closed_over() {
+        use quire_exact::{Identifier, UnionMember, UnionValue};
+        let types = types();
+        let present_ref = reference(A, "present");
+        let missing = reference(B, "missing");
+        let closure = ObjectClosure::new(
+            &types,
+            [object(&present_ref)],
+            &[],
+            &mut crate::declaration::WorkBudget::new(crate::declaration::DEFAULT_WORK_UNITS, None),
+        )
+        .expect("fixture closure work completes")
+        .expect("one object closes");
+        let member = UnionMember::from_admitted(
+            node_key(7),
+            node_key(8),
+            Identifier::new("m").expect("identifier"),
+        );
+        let union = |payload| UnionValue::from_admitted(member.clone(), payload);
+        let slots = |value| vec![FieldValue::Present(value)];
+        let owner = reference(A, "owner");
+        let tolerated = BTreeSet::new();
+
+        let closed = union(vec![
+            Value::Integer(1_i64.into()),
+            Value::Reference(present_ref.clone()),
+        ]);
+        assert_eq!(closes(&closure, &owner, &slots(closed), &tolerated), Ok(()));
+
+        let nested = union(vec![union(vec![Value::Reference(missing.clone())])]);
+        assert_eq!(
+            closes(&closure, &owner, &slots(nested), &tolerated),
+            Err(ObjectClosureRefusal {
+                object: Box::new(owner.clone()),
+                cause: ObjectClosureCause::DanglingReference(Box::new(missing.clone())),
+            })
+        );
+
+        let tolerating: BTreeSet<&ObjectReference> = [&missing].into_iter().collect();
+        let dangling = union(vec![Value::Reference(missing.clone())]);
+        assert_eq!(
+            closes(&closure, &owner, &slots(dangling), &tolerating),
+            Ok(())
+        );
+    }
+
+    /// A dangling reference is refused through every carrier: an `Option`
+    /// payload, a composite slot and a collection element.
+    #[trace("TC-904", "FR-106-AC-11")]
+    #[test]
+    fn dangling_references_are_refused_through_option_collection_and_composite() {
+        use quire_exact::{
+            from_admitted, from_admitted_slots, CollectionKind, CollectionType, OptionValue,
+        };
+        let types = types();
+        let closure = ObjectClosure::new(
+            &types,
+            [object(&reference(A, "present"))],
+            &[],
+            &mut crate::declaration::WorkBudget::new(crate::declaration::DEFAULT_WORK_UNITS, None),
+        )
+        .expect("fixture closure work completes")
+        .expect("one object closes");
+        let missing = reference(B, "missing");
+        let owner = reference(A, "owner");
+        let held = Value::Reference(missing.clone());
+        let ref_type = ValueType::Reference(object_type(B));
+        let option = OptionValue::present(ref_type.clone(), held.clone()).expect("option");
+        let collection = from_admitted(
+            CollectionType::new(CollectionKind::Sequence, ref_type, None),
+            vec![held.clone()],
+        );
+        let composite = from_admitted_slots(
+            node_key(5),
+            vec![FieldValue::Present(held)].into_boxed_slice(),
+        );
+        for carrier in [option, collection, composite] {
+            assert_eq!(
+                closed(
+                    &closure,
+                    &owner,
+                    &[FieldValue::Present(carrier.clone())],
+                    &BTreeSet::new()
+                ),
+                Err(ObjectClosureRefusal {
+                    object: Box::new(owner.clone()),
+                    cause: ObjectClosureCause::DanglingReference(Box::new(missing.clone())),
+                })
+            );
+            let tolerated: BTreeSet<&ObjectReference> = [&missing].into_iter().collect();
+            assert_eq!(
+                closed(
+                    &closure,
+                    &owner,
+                    &[FieldValue::Present(carrier)],
+                    &tolerated
+                ),
+                Ok(())
             );
         }
     }

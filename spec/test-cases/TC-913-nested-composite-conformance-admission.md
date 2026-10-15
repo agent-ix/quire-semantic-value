@@ -40,6 +40,7 @@ type constructors, and refuse nonconforming values with typed causes.
    unrelated object type, and (at a subtype slot) a supertype object.
 6. After quire-exact FR-376 to FR-378 land, build a `Set<P>` and a `Bag<P>`
    holding a `C` and a `P` of equal shared fields and admit them.
+7. Build a union value carrying a record's key and a union value carrying a tuple's key. Query `admits` at each composite type and at `Option` of it, then construct a record with a field typed by the record and a tuple with a position typed by the tuple holding it.
 
 ## Expected Results
 
@@ -54,3 +55,4 @@ type constructors, and refuse nonconforming values with typed causes.
 5. The subtype and identical object types are admitted; the unrelated and
    supertype-at-subtype cases return `false`.
 6. Both collections are admitted with two elements.
+7. Every `admits` query returns `false` and both constructions are refused with `TypeMismatch`.
