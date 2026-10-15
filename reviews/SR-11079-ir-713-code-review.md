@@ -1,5 +1,5 @@
 ---
-id: SR-11077
+id: SR-11079
 title: "Code review of combined TC-907 fixture"
 type: SpecReview
 analysis: code-review
@@ -25,3 +25,7 @@ Ticket: IR-713. Reviewed PR #31 at be5dcfccaaa1ee7ce8e3730d9ddf5f331c297139 agai
 ## Coverage
 
 Examined `src/declaration/membership.rs:754-925`, the reservation and sealing implementation in `src/declaration.rs`, and FR-108-AC-1 and FR-108-AC-3. The added `#[allow]` declarations carry a fixture-specific reason. The reservation policy does not replace admission logic or use external state. No production code or CI workflow changed in the PR diff.
+
+## Rebase verification
+
+At rebased head 6f3962d4f3f0f5ba37c0e3f9f1897d22aaf767ba over main 7f6f1ebc8209ffb85260a7db4660e108701b87dc, the conflict resolution retains both the IR-714 Union imports and the IR-713 storage fixture imports. The fixture's denial, retry, and binding assertions remain intact. No new code-review finding arose. The SR id was changed from SR-11077 because IR-714's main-branch review already owns that id.

@@ -1,5 +1,5 @@
 ---
-id: SR-11078
+id: SR-11080
 title: "Gap analysis of combined TC-907 acceptance evidence"
 type: SpecReview
 analysis: gap-analysis
@@ -38,3 +38,7 @@ Plan completion: not assessed. Semantic review: performed for the changed FR-108
 | FND-001 | fixed | f8a9bd9db3eac3887f3783792f18bcaeecbc7ae3 asserts the authored Record, Tuple, Union, and Object keys and shapes, the Object attribute type, and exact identities for both `Empty` and `Value` Union bindings after retry. |
 
 Current disposition verdict: **PASS**. The original finding and review-time verdict above remain as the record of the first pass.
+
+## Rebase verification
+
+At rebased head 6f3962d4f3f0f5ba37c0e3f9f1897d22aaf767ba over main 7f6f1ebc8209ffb85260a7db4660e108701b87dc, the combined fixture still asserts authored Record, Tuple, Union, and Object identities and shapes, the Object attribute type, both Union member bindings, and failure and retry in every selected phase. FND-001 remains fixed; no new gap arose. The SR id was changed from SR-11078 because IR-714's main-branch review already owns that id.
