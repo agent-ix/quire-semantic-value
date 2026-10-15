@@ -57,7 +57,8 @@ attached to its producer-verified final key and member bindings.
 5. Unsealed topology SHALL grant no runtime member lookup or construction.
    A sealed carrier SHALL retain the verified final declaration/member/name
    binding, exact payload arity and positional membership. Record and Tuple
-   identities SHALL retain their established behavior.
+   identities SHALL retain their established behavior, and a Record or Tuple
+   carrier SHALL never be admitted at a union type, whichever key it carries.
 
 ## Acceptance Criteria
 
@@ -67,6 +68,7 @@ attached to its producer-verified final key and member bindings.
 | FR-115-AC-2 | Exact complete verified sealing retains the original handle and topology and exposes inverse final-key joins. Wrong count/order/name/declaration, duplicate member keys, resealing and key collisions preserve their typed cause and leave the environment unchanged. | Test |
 | FR-115-AC-3 | Actual Union registry, traversal and each sealing destination reservation can deny with FR-108's exact native request and classification. No partial binding or join is exposed; identical input succeeds after removing denial. Byte-request and capacity controls retain distinct carriers. | Test |
 | FR-115-AC-4 | Union topology admission charges the environment's admission work limit with exact N/N-1 behaviour over the 5,000-member and 1,000-Option fixtures, and observes its cancellation handle. Released non-Union limits and both Record/Tuple prior-stop regressions remain unchanged. | Test |
+| FR-115-AC-5 | A Record or Tuple carrier keyed with a union's internal handle or final key is not admitted at that union's type, directly or inside an Option, before and after sealing. | Test |
 
 ## Dependencies
 

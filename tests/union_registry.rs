@@ -182,7 +182,6 @@ fn ordered_resolution_and_real_construction_validate_positions() {
 /// Trace: FR-321-AC-1
 #[trace("FR-321-AC-1")]
 #[test]
-#[ignore = "waits for the union arms in admits_walk_core"]
 fn supplied_trusted_carriers_still_require_registry_admission() {
     let env = TypeEnvironment::new([shape()], []).unwrap();
     let ty = ValueType::Composite(key(1));
@@ -205,12 +204,54 @@ fn supplied_trusted_carriers_still_require_registry_admission() {
     }
     assert!(env.union(key(1), variant(99), vec![]).is_err());
     assert!(env.union(key(2), variant(12), vec![]).is_err());
+}
+
+/// Trace: FR-321-AC-1
+#[trace("FR-321-AC-1")]
+#[test]
+#[ignore = "waits for the union arms in admits_walk_core"]
+fn sealed_supplied_union_carrier_is_admitted() {
+    let env = TypeEnvironment::new([shape()], []).unwrap();
+    let ty = ValueType::Composite(key(1));
+    let supplied = |decl, id, name, payload| {
+        UnionValue::from_admitted(
+            member(decl, id, name, vec![]).member().unwrap().clone(),
+            payload,
+        )
+    };
     assert!(env
         .admits(
             &ty,
             &supplied(key(1), 12, "Rect", vec![integer(2), integer(3)])
         )
         .unwrap());
+}
+
+/// A Record or Tuple carrier keyed with a union declaration is never a member of
+/// that union's type, on the handle or the final key.
+///
+/// Trace: FR-115-AC-5
+#[trace("TC-915", "FR-115-AC-5")]
+#[test]
+fn record_and_tuple_carriers_are_not_admitted_at_a_union_type() {
+    let env = TypeEnvironment::new([shape()], []).unwrap();
+    let record = || quire_exact::from_admitted_slots(key(1), vec![].into_boxed_slice());
+    let tuple = || {
+        quire_exact::from_admitted_slots(
+            key(1),
+            vec![FieldValue::Present(integer(1))].into_boxed_slice(),
+        )
+    };
+    for carrier in [record(), tuple()] {
+        assert!(!env.admits(&ValueType::Composite(key(1)), &carrier).unwrap());
+        assert!(!env
+            .admits(
+                &ValueType::option(ValueType::Composite(key(1))),
+                &OptionValue::present(ValueType::Composite(key(1)), carrier.clone()).unwrap()
+            )
+            .unwrap());
+    }
+    assert!(!env.composite_conforms(key(1), key(1)));
 }
 
 /// Trace: FR-321-AC-1
@@ -357,8 +398,35 @@ fn named_union_edges_require_escape_and_report_exact_cycle() {
     );
 }
 
-/// Trace: FR-321-AC-4
-#[trace("FR-321-AC-4")]
+/// A cancelled handle stops union topology admission as the named work limit.
+///
+/// Trace: FR-115-AC-4
+#[trace("TC-915", "FR-115-AC-4")]
+#[test]
+fn cancelled_handle_stops_union_topology_admission() {
+    let cancel = quire_exact::Cancel::new();
+    cancel.cancel(quire_exact::CancelCause::Requested);
+    let Err(EnvironmentFailure::Limit(limit)) = TypeEnvironment::bounded_with_cancel(
+        [shape()],
+        [],
+        TypeEnvironmentLimits::default(),
+        &cancel,
+    ) else {
+        panic!("cancelled union admission must stop with the work limit");
+    };
+    assert_eq!(limit.kind(), EnvironmentLimitKind::WorkUnits);
+    assert_eq!(cancel.tripped(), Some(quire_exact::CancelCause::Requested));
+    assert!(TypeEnvironment::bounded_with_cancel(
+        [shape()],
+        [],
+        TypeEnvironmentLimits::default(),
+        &quire_exact::Cancel::new(),
+    )
+    .is_ok());
+}
+
+/// Trace: FR-321-AC-4, FR-115-AC-4
+#[trace("FR-321-AC-4", "TC-915", "FR-115-AC-4")]
 #[test]
 fn five_thousand_members_and_thousand_options_use_named_work_limit() {
     std::thread::Builder::new()
@@ -690,31 +758,28 @@ fn nested_union_admission_traverses_record_tuple_option_and_collection() {
         [],
     )
     .unwrap();
-    let wrap = |shape| {
-        let record = quire_exact::from_admitted_slots(
-            key(2),
-            vec![FieldValue::Present(shape)].into_boxed_slice(),
-        );
-        let tuple = quire_exact::from_admitted_slots(
-            key(3),
-            vec![FieldValue::Present(record)].into_boxed_slice(),
-        );
+    // Built through the checked constructors: a Record or Tuple holds only members
+    // admitted at construction, and the admission walk stops at a conforming
+    // composite (FR-113).
+    let wrap = |shape| -> Result<Value, quire_semantic_value::declaration::ConstructionRefusal> {
+        let record = env.record(key(2), vec![("shape", FieldValue::Present(shape))])?;
+        let tuple = env.tuple(key(3), vec![record])?;
         let ty = ValueType::Composite(key(3));
         let collection = quire_exact::from_admitted(
             CollectionType::new(CollectionKind::Sequence, ty.clone(), None),
             vec![tuple],
         );
-        OptionValue::from_admitted(
+        Ok(OptionValue::from_admitted(
             ValueType::collection(CollectionType::new(CollectionKind::Sequence, ty, None)),
             Some(collection),
-        )
+        ))
     };
     let ty = ValueType::option(ValueType::collection(CollectionType::new(
         CollectionKind::Sequence,
         ValueType::Composite(key(3)),
         None,
     )));
-    let good = wrap(env.union(key(1), variant(10), vec![]).unwrap());
+    let good = wrap(env.union(key(1), variant(10), vec![]).unwrap()).unwrap();
     assert!(env.admits(&ty, &good).unwrap());
     let bad = wrap(UnionValue::from_admitted(
         env.union_member_named(key(1), "Circle")
@@ -724,8 +789,9 @@ fn nested_union_admission_traverses_record_tuple_option_and_collection() {
             .unwrap()
             .clone(),
         vec![Value::Boolean(true)],
-    ));
-    assert!(!env.admits(&ty, &bad).unwrap());
+    ))
+    .unwrap_err();
+    assert_eq!(bad.cause, ConstructionCause::TypeMismatch);
 }
 
 /// Trace: FR-321-AC-1

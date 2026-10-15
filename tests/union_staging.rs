@@ -75,12 +75,11 @@ fn meter() -> Meter {
     })
 }
 
-/// Trace: FR-321-AC-1, FR-115-AC-1, FR-115-AC-2
-#[trace("FR-321-AC-1", "TC-915", "FR-115-AC-1", "FR-115-AC-2")]
+/// Trace: FR-321-AC-1, FR-115-AC-1
+#[trace("FR-321-AC-1", "TC-915", "FR-115-AC-1")]
 #[test]
-#[ignore = "waits for the union arms in admits_walk_core"]
-fn resolved_topology_is_visible_and_runtime_union_is_denied_until_sealed() {
-    let mut env = TypeEnvironment::new([shape()], []).unwrap();
+fn resolved_topology_is_visible_and_unsealed_union_grants_nothing() {
+    let env = TypeEnvironment::new([shape()], []).unwrap();
     let (position, rect) = env.union_member_named(key(1), "Rect").unwrap();
     assert_eq!(position, 1);
     assert_eq!(rect.identifier().as_str(), "Rect");
@@ -124,6 +123,36 @@ fn resolved_topology_is_visible_and_runtime_union_is_denied_until_sealed() {
         )
         .is_err());
     assert_eq!(calls.get(), 0);
+}
+
+/// A Record or Tuple carrier keyed with a sealed union's final key is not a member
+/// of the union type on either key.
+///
+/// Trace: FR-115-AC-5
+#[trace("TC-915", "FR-115-AC-5")]
+#[test]
+fn sealed_union_final_key_never_admits_a_record_or_tuple_carrier() {
+    let mut env = TypeEnvironment::new([shape()], []).unwrap();
+    env.seal_union_verified(key(1), key(40), bindings(key(40)))
+        .unwrap();
+    for declaration in [key(1), key(40)] {
+        for slots in [vec![], vec![FieldValue::Present(integer(1))]] {
+            let carrier = quire_exact::from_admitted_slots(declaration, slots.into_boxed_slice());
+            for ty in [key(1), key(40)] {
+                assert!(!env.admits(&ValueType::Composite(ty), &carrier).unwrap());
+            }
+        }
+    }
+    assert!(!env.composite_conforms(key(40), key(40)));
+}
+
+/// Trace: FR-321-AC-1, FR-115-AC-2
+#[trace("FR-321-AC-1", "TC-915", "FR-115-AC-2")]
+#[test]
+#[ignore = "waits for the union arms in admits_walk_core"]
+fn sealed_union_carrier_is_admitted_by_handle_and_final_key() {
+    let mut env = TypeEnvironment::new([shape()], []).unwrap();
+    let supplied = UnionValue::from_admitted(binding(key(40), 10, "Empty"), vec![]);
     env.seal_union_verified(key(1), key(40), bindings(key(40)))
         .unwrap();
     assert_eq!(env.union_key(key(1)), Some(key(40)));

@@ -2443,8 +2443,16 @@ impl TypeEnvironment {
 
     /// Whether composite declaration `sub` conforms to `sup`: reflexive, or
     /// `sup` is in `sub`'s admitted transitive composite-supertype closure.
-    /// Unknown unequal keys never conform.
+    /// Unknown unequal keys never conform, and a union declaration never conforms
+    /// to or from anything.
     pub fn composite_conforms(&self, sub: NodeKey, sup: NodeKey) -> bool {
+        // A union takes no part in composite generalization: no Record or Tuple
+        // carrier conforms to a union type, by either its handle or its final key.
+        if matches!(self.shape(sub), Some(CompositeShape::Union(_)))
+            || matches!(self.shape(sup), Some(CompositeShape::Union(_)))
+        {
+            return false;
+        }
         sub == sup
             || self
                 .composite_ancestry
