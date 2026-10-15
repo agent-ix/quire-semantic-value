@@ -15,6 +15,10 @@ use quire_semantic_value::declaration::{
 };
 use quire_semantic_value::enumeration::EnumMemberIndex;
 use quire_semantic_value::object_closure::{ObjectClosure, ObjectClosureCause};
+use quire_semantic_value::supplied_membership::{
+    InvalidMembershipCause, MembershipEvent, MembershipLocus, MembershipPart, MembershipPathArena,
+    PathStep, SuppliedAdmissionError, SuppliedMembershipBudget,
+};
 
 #[allow(
     clippy::disallowed_methods,
@@ -149,7 +153,6 @@ fn sealed_union_final_key_never_admits_a_record_or_tuple_carrier() {
 /// Trace: FR-321-AC-1, FR-115-AC-2
 #[trace("FR-321-AC-1", "TC-915", "FR-115-AC-2")]
 #[test]
-#[ignore = "waits for the union arms in admits_walk_core"]
 fn sealed_union_carrier_is_admitted_by_handle_and_final_key() {
     let mut env = TypeEnvironment::new([shape()], []).unwrap();
     let supplied = UnionValue::from_admitted(binding(key(40), 10, "Empty"), vec![]);
@@ -180,6 +183,71 @@ fn sealed_union_carrier_is_admitted_by_handle_and_final_key() {
     assert!(!env
         .admits(&ValueType::Composite(key(1)), &wrong_handle_value)
         .unwrap());
+}
+
+/// A two-position sealed member takes six events: union visit, descriptor
+/// query, two child schedules and two payload visits. The last denied event
+/// remains rooted at the second payload, with the caller's spent work intact.
+/// Trace: FR-109-AC-1, FR-109-AC-4, FR-115-AC-2
+#[trace("TC-908", "TC-915", "FR-109-AC-1", "FR-109-AC-4", "FR-115-AC-2")]
+#[test]
+fn sealed_union_payload_uses_one_rooted_supplied_budget() {
+    let mut env = TypeEnvironment::new([shape()], []).unwrap();
+    env.seal_union_verified(key(1), key(40), bindings(key(40)))
+        .unwrap();
+    let value =
+        UnionValue::from_admitted(binding(key(40), 11, "Rect"), vec![integer(2), integer(3)]);
+    let expected = ValueType::Composite(key(1));
+    let cancel = quire_exact::Cancel::new();
+    for ceiling in [0, 5, 6] {
+        let mut arena = MembershipPathArena::new().unwrap();
+        let at = MembershipLocus {
+            path: arena.root(7),
+            part: MembershipPart::Value,
+        };
+        let mut budget = SuppliedMembershipBudget::new(ceiling);
+        let result = env.admit_supplied::<InvalidMembershipCause>(
+            &expected,
+            &value,
+            &mut arena,
+            at,
+            &mut budget,
+            &cancel,
+        );
+        if ceiling == 6 {
+            assert_eq!(result, Ok(()));
+            assert_eq!(budget.spent(), 6);
+        } else {
+            let Err(SuppliedAdmissionError::Limit {
+                ceiling: reported,
+                spent,
+                requested,
+                event,
+                locus,
+            }) = result
+            else {
+                panic!("expected union event limit: {result:?}");
+            };
+            assert_eq!((reported, spent, requested), (ceiling, ceiling, 1));
+            let resolved = arena.resolve(locus).unwrap();
+            assert_eq!(resolved.argument(), 7);
+            if ceiling == 0 {
+                assert_eq!(
+                    (event, resolved.part()),
+                    (MembershipEvent::ValueVisit, MembershipPart::Value)
+                );
+            } else {
+                assert_eq!(
+                    (event, resolved.part()),
+                    (MembershipEvent::ValueVisit, MembershipPart::Value)
+                );
+                assert_eq!(
+                    resolved.steps_from_leaf().collect::<Vec<_>>(),
+                    vec![PathStep::UnionPayload(1)]
+                );
+            }
+        }
+    }
 }
 
 /// Trace: FR-321-AC-1, FR-115-AC-2
@@ -333,7 +401,6 @@ fn ieee_and_named_escape_checks_run_before_any_binding_exists() {
 /// Trace: FR-321-AC-4
 #[trace("FR-321-AC-4")]
 #[test]
-#[ignore = "waits for the union arms in admits_walk_core"]
 fn recursive_handle_final_key_joins_admit_payloads_and_checked_equality() {
     let declaration = |handle, name, other| {
         CompositeDeclaration::new(
@@ -422,7 +489,6 @@ fn recursive_handle_final_key_joins_admit_payloads_and_checked_equality() {
 /// Trace: FR-321-AC-4
 #[trace("FR-321-AC-4")]
 #[test]
-#[ignore = "waits for the union arms in admits_walk_core"]
 fn ten_thousand_supplied_links_follow_sealed_keys_with_internal_position_types() {
     std::thread::Builder::new()
         .stack_size(512 * 1024)
@@ -507,7 +573,6 @@ fn ten_thousand_supplied_links_follow_sealed_keys_with_internal_position_types()
     reason = "fixture supplies object identity; production mints none"
 )]
 #[test]
-#[ignore = "waits for the union arms in admits_walk_core"]
 fn sealed_reference_positions_validate_conformance_and_closure() {
     let object_type = EffectiveId::from_digest([1; 32]);
     let mut env = TypeEnvironment::new(

@@ -64,7 +64,6 @@ fn integer(n: i64) -> Value {
 /// Trace: FR-115-AC-1, FR-115-AC-2
 #[trace("TC-915", "FR-115-AC-1", "FR-115-AC-2")]
 #[test]
-#[ignore = "waits for the union arms in admits_walk_core"]
 fn native_union_positions_preserve_released_leaf_kinds_and_equality() {
     let environment = TypeEnvironment::new(
         [CompositeDeclaration::new(
@@ -138,7 +137,6 @@ fn variant(n: u64) -> VariantId {
 /// Trace: FR-321-AC-1
 #[trace("FR-321-AC-1")]
 #[test]
-#[ignore = "waits for the union arms in admits_walk_core"]
 fn ordered_resolution_and_real_construction_validate_positions() {
     let env = TypeEnvironment::new([shape()], []).unwrap();
     let (position, rect) = env.union_member_named(key(1), "Rect").unwrap();
@@ -209,7 +207,6 @@ fn supplied_trusted_carriers_still_require_registry_admission() {
 /// Trace: FR-321-AC-1
 #[trace("FR-321-AC-1")]
 #[test]
-#[ignore = "waits for the union arms in admits_walk_core"]
 fn sealed_supplied_union_carrier_is_admitted() {
     let env = TypeEnvironment::new([shape()], []).unwrap();
     let ty = ValueType::Composite(key(1));
@@ -295,7 +292,6 @@ fn duplicate_names_keys_foreign_bindings_and_unknown_types_refuse() {
 /// Trace: FR-323-AC-3
 #[trace("FR-323-AC-3")]
 #[test]
-#[ignore = "waits for the union arms in admits_walk_core"]
 fn unused_ieee_member_denies_all_keyed_kinds_but_sequence_admits() {
     let env = TypeEnvironment::new(
         [CompositeDeclaration::new(
@@ -485,7 +481,6 @@ fn five_thousand_members_and_thousand_options_use_named_work_limit() {
 /// Trace: FR-321-AC-4
 #[trace("FR-321-AC-4")]
 #[test]
-#[ignore = "waits for the union arms in admits_walk_core"]
 fn ten_thousand_supplied_union_links_are_admitted_on_small_stack() {
     std::thread::Builder::new()
         .stack_size(512 * 1024)
@@ -560,7 +555,6 @@ fn ten_thousand_supplied_union_links_are_admitted_on_small_stack() {
     reason = "fixture supplies object identities; production mints none"
 )]
 #[test]
-#[ignore = "waits for the union arms in admits_walk_core"]
 fn union_references_close_and_dangling_payloads_name_the_target() {
     let object_type = EffectiveId::from_digest([1; 32]);
     let reference = |name| {
@@ -629,7 +623,6 @@ fn union_references_close_and_dangling_payloads_name_the_target() {
 /// Trace: FR-321-AC-1
 #[trace("FR-321-AC-1")]
 #[test]
-#[ignore = "waits for the union arms in admits_walk_core"]
 fn union_graph_construction_preserves_cycle_locus_and_positional_payloads() {
     let env = TypeEnvironment::new([shape()], []).unwrap();
     let graph = ValueGraph::new([(
@@ -663,7 +656,6 @@ fn union_graph_construction_preserves_cycle_locus_and_positional_payloads() {
 /// Trace: FR-323-AC-1
 #[trace("FR-323-AC-1")]
 #[test]
-#[ignore = "waits for the union arms in admits_walk_core"]
 fn registry_binding_drives_identifier_key_order_and_checked_equality() {
     use quire_exact::{compare_keys, Meter, Outcome, ScalarLimits};
     use quire_semantic_value::declaration::{EqualityOperand, EqualityOperator};
@@ -735,7 +727,6 @@ fn registry_binding_drives_identifier_key_order_and_checked_equality() {
 /// Trace: FR-321-AC-1
 #[trace("FR-321-AC-1")]
 #[test]
-#[ignore = "waits for the union arms in admits_walk_core"]
 fn nested_union_admission_traverses_record_tuple_option_and_collection() {
     let env = TypeEnvironment::new(
         [
