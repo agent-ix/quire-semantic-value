@@ -148,6 +148,40 @@ fn invalid<Cause: From<InvalidMembershipCause>>(
     }
 }
 
+/// Project the exact helper's completed membership or typed stop into the
+/// supplied caller without admitting a result on a stopped helper.
+fn decimal_value_result<Cause>(
+    result: Result<bool, DecimalMembershipFailure>,
+    locus: MembershipLocus,
+    spent: u64,
+) -> Result<Option<bool>, BoundedSuppliedAdmissionError<Cause>> {
+    result.map(Some).map_err(|failure| match failure {
+        DecimalMembershipFailure::Capacity { magnitude_bits } => {
+            BoundedSuppliedAdmissionError::DecimalCapacity {
+                magnitude_bits,
+                locus,
+            }
+        }
+        DecimalMembershipFailure::Allocation {
+            additional_elements,
+            element_width,
+            layout_bytes,
+        } => BoundedSuppliedAdmissionError::DecimalAllocation {
+            additional_elements,
+            element_width,
+            layout_bytes,
+            locus,
+        },
+        DecimalMembershipFailure::Cancelled(cause) => SuppliedAdmissionError::Cancelled {
+            cause,
+            spent,
+            event: MembershipEvent::ValueVisit,
+            locus,
+        }
+        .into(),
+    })
+}
+
 /// Compare two type chains one link pair at a time, emitting one event per
 /// pair, the initial one included. Ordinals count from `first_ordinal`.
 fn same_type_walk<
@@ -291,36 +325,11 @@ impl TypeEnvironment {
                                 });
                             }
                         }
-                        return domain
-                            .try_contains(decimal, cancel)
-                            .map(Some)
-                            .map_err(|failure| match failure {
-                                DecimalMembershipFailure::Capacity { magnitude_bits } => {
-                                    BoundedSuppliedAdmissionError::DecimalCapacity {
-                                        magnitude_bits,
-                                        locus,
-                                    }
-                                }
-                                DecimalMembershipFailure::Allocation {
-                                    additional_elements,
-                                    element_width,
-                                    layout_bytes,
-                                } => BoundedSuppliedAdmissionError::DecimalAllocation {
-                                    additional_elements,
-                                    element_width,
-                                    layout_bytes,
-                                    locus,
-                                },
-                                DecimalMembershipFailure::Cancelled(cause) => {
-                                    SuppliedAdmissionError::Cancelled {
-                                        cause,
-                                        spent: spent.get(),
-                                        event: MembershipEvent::ValueVisit,
-                                        locus,
-                                    }
-                                    .into()
-                                }
-                            });
+                        return decimal_value_result::<Cause>(
+                            domain.try_contains(decimal, cancel),
+                            locus,
+                            spent.get(),
+                        );
                     }
                     let admitted = match (expected, value) {
                         (ValueType::Int(interval), Value::Integer(integer)) => {
@@ -2581,6 +2590,56 @@ mod tests {
         );
         assert_eq!(size_budget.spent(), 1);
 
+        let mut coefficient_budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &Value::Decimal(Decimal::new(Integer::from(128_i64), 0)),
+                &mut arena,
+                at,
+                &mut coefficient_budget,
+                &Cancel::new(),
+                7,
+            ),
+            Err(BoundedSuppliedAdmissionError::DecimalSize {
+                operand: DecimalMembershipOperand::Coefficient,
+                measured_bits: 8,
+                limit_bits: 7,
+                locus: at,
+            })
+        );
+        assert_eq!(coefficient_budget.spent(), 1);
+
+        let lower_first = ValueType::Decimal(
+            DecimalType::new(
+                Integer::from(64_i64),
+                Integer::from(65_i64),
+                0,
+                0,
+                RoundingMode::Exact,
+            )
+            .expect("bounded Decimal declaration"),
+        );
+        let mut lower_budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &lower_first,
+                &Value::Decimal(Decimal::new(Integer::one(), 0)),
+                &mut arena,
+                at,
+                &mut lower_budget,
+                &Cancel::new(),
+                6,
+            ),
+            Err(BoundedSuppliedAdmissionError::DecimalSize {
+                operand: DecimalMembershipOperand::Lower,
+                measured_bits: 7,
+                limit_bits: 6,
+                locus: at,
+            })
+        );
+        assert_eq!(lower_budget.spent(), 1);
+
         let mut invalid_budget = SuppliedMembershipBudget::new(1);
         assert_eq!(
             environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
@@ -2598,6 +2657,55 @@ mod tests {
             }))
         );
         assert_eq!(invalid_budget.spent(), 1);
+    }
+
+    /// The QSV projection preserves a constructed kernel resource failure's
+    /// actual native request and rooted locus. Exact TC-920 tests the kernel's
+    /// production allocation and checked-capacity mechanisms separately.
+    /// Trace: FR-372-AC-5
+    #[trace("TC-908", "FR-372-AC-5")]
+    #[test]
+    fn decimal_kernel_resource_failures_project_without_partial_admission() {
+        let arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(9),
+            part: MembershipPart::Value,
+        };
+        let capacity: Result<Option<bool>, BoundedSuppliedAdmissionError<InvalidMembershipCause>> =
+            decimal_value_result(
+                Err(DecimalMembershipFailure::Capacity { magnitude_bits: 65 }),
+                at,
+                1,
+            );
+        assert_eq!(
+            capacity,
+            Err(BoundedSuppliedAdmissionError::DecimalCapacity {
+                magnitude_bits: 65,
+                locus: at,
+            })
+        );
+        let allocation: Result<
+            Option<bool>,
+            BoundedSuppliedAdmissionError<InvalidMembershipCause>,
+        > = decimal_value_result(
+            Err(DecimalMembershipFailure::Allocation {
+                additional_elements: 3,
+                element_width: 4,
+                layout_bytes: 12,
+            }),
+            at,
+            1,
+        );
+        assert_eq!(
+            allocation,
+            Err(BoundedSuppliedAdmissionError::DecimalAllocation {
+                additional_elements: 3,
+                element_width: 4,
+                layout_bytes: 12,
+                locus: at,
+            })
+        );
+        assert_eq!(arena.resolve(at).expect("resource locus").argument(), 9);
     }
 
     /// Cancellation observed by the kernel after the owning value event
