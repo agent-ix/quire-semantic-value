@@ -759,8 +759,8 @@ mod tests {
 
     use super::*;
     use crate::declaration::{
-        CompositeDeclaration, GlobalReservations, ObjectTypeDeclaration, StorageRequest,
-        StorageUnit,
+        CompositeDeclaration, CompositeShape, GlobalReservations, ObjectTypeDeclaration,
+        StorageRequest, StorageUnit, UnionMemberDeclaration,
     };
     use crate::supplied_membership::SuppliedMembershipBudget;
 
@@ -1160,6 +1160,78 @@ mod tests {
         assert_eq!(policy.seen.get(), Some(request));
         assert_eq!(walked.describe(locus).0, Child(CollectionElement(2)));
         assert!(walked.seen().iter().all(|event| event.0 != ChildScheduling));
+    }
+
+    /// Union payload growth reports the actual worklist request at the first
+    /// scheduled position and leaves the shared arena available for a retry.
+    /// Trace: FR-109-AC-5, FR-115-AC-3
+    #[trace("TC-908", "TC-915", "FR-109-AC-5", "FR-115-AC-3")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "fixture supplies checked union identities without minting them in production"
+    )]
+    #[test]
+    fn union_payload_worklist_denial_is_typed_and_retry_succeeds() {
+        let declaration = NodeKey::from_digest([41; 32]);
+        let binding = UnionMember::from_admitted(
+            declaration,
+            NodeKey::from_digest([42; 32]),
+            Identifier::new("Pair").expect("identifier"),
+        );
+        let env = TypeEnvironment::new(
+            [CompositeDeclaration::new(
+                declaration,
+                "Pair",
+                CompositeShape::Union(vec![UnionMemberDeclaration::from_verified(
+                    binding.clone(),
+                    vec![ValueType::Integer, ValueType::Integer],
+                )]),
+            )],
+            [],
+        )
+        .expect("union declaration");
+        let expected = ValueType::Composite(declaration);
+        let value = UnionValue::from_admitted(binding, vec![integer(1), integer(2)]);
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(3),
+            part: Occurrence,
+        };
+        let policy = DenyAll {
+            seen: Cell::new(None),
+        };
+        let mut events = Vec::new();
+        let result = env.admits_walk::<InvalidMembershipCause>(
+            &expected,
+            &value,
+            &mut arena,
+            at,
+            &mut |event, _| {
+                events.push(event);
+                Ok(())
+            },
+            &policy,
+        );
+        let Err(Stop::Allocation { request, locus }) = result else {
+            panic!("expected union worklist allocation denial: {result:?}");
+        };
+        assert_eq!(Some(request), policy.seen.get());
+        assert_eq!(events, vec![ValueVisit, MembershipEvent::DescriptorQuery]);
+        let resolved = arena.resolve(locus).expect("rooted denial locus");
+        assert_eq!(resolved.argument(), 3);
+        assert_eq!(resolved.part(), Child(PathStep::UnionPayload(1)));
+        assert_eq!(resolved.steps_from_leaf().count(), 0);
+        assert_eq!(
+            env.admits_walk::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                at,
+                &mut |_, _| Ok(()),
+                &GlobalReservations,
+            ),
+            Ok(())
+        );
     }
 
     /// The actual pending-worklist reserve rejects size overflow before a
