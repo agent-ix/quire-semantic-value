@@ -202,7 +202,8 @@ pub enum ExtentRefusal<K> {
 struct StoredExtent {
     complete: bool,
     links: Vec<(ObjectReference, ObjectReference)>,
-    inverse: Vec<(ObjectReference, ObjectReference)>,
+    // A private, immutable permutation of 0..links.len(); every index is valid for links.
+    inverse: Vec<usize>,
 }
 
 /// One transactionally admitted sequence of relationship extents.
@@ -337,14 +338,13 @@ impl<K: Ord + Clone> RelationshipExtentStore<K> {
             reserve_elements(&mut links, instances.len(), reservation).map_err(extent_storage)?;
             links.extend(instances);
             links.sort_unstable();
+            // Construct the complete permutation once; neither links nor inverse changes afterward.
             let mut inverse = Vec::new();
             reserve_elements(&mut inverse, links.len(), reservation).map_err(extent_storage)?;
-            inverse.extend(
-                links
-                    .iter()
-                    .map(|(source, target)| (target.clone(), source.clone())),
-            );
-            inverse.sort_unstable();
+            inverse.extend(0..links.len());
+            inverse.sort_unstable_by(|&a, &b| {
+                (&links[a].1, &links[a].0, a).cmp(&(&links[b].1, &links[b].0, b))
+            });
             admitted
                 .try_insert(
                     relationship,
@@ -399,17 +399,19 @@ impl<K: Ord + Clone> RelationshipExtentStore<K> {
         relationship: &K,
         target: &ObjectReference,
     ) -> impl Iterator<Item = &'a ObjectReference> {
-        let inverse = self
+        let (links, inverse) = self
             .extents
             .get(relationship)
-            .map_or(&[][..], |extent| extent.inverse.as_slice());
-        let start = inverse.partition_point(|(candidate, _)| candidate < target);
-        let end = inverse.partition_point(|(candidate, _)| candidate <= target);
+            .map_or((&[][..], &[][..]), |extent| {
+                (extent.links.as_slice(), extent.inverse.as_slice())
+            });
+        let start = inverse.partition_point(|&index| &links[index].1 < target);
+        let end = inverse.partition_point(|&index| &links[index].1 <= target);
         inverse
             .get(start..end)
             .into_iter()
             .flatten()
-            .map(|(_, source)| source)
+            .map(|&index| &links[index].0)
     }
 }
 
@@ -956,6 +958,43 @@ mod tests {
                 StorageUnit::AdditionalElements
             ))
         );
+    }
+
+    #[trace("TC-919", "FR-119-AC-11", "FR-119-AC-10")]
+    #[test]
+    fn inverse_reservation_is_fallible_and_sources_borrow_stored_links() {
+        let types = types();
+        let mut nonunique = declaration();
+        nonunique.source.unique = false;
+        nonunique.target.unique = false;
+        let table = NavigationRelationshipTable::new(&types, [nonunique]).unwrap();
+        let extent = || RelationshipExtent {
+            relationship: "r",
+            complete: true,
+            instances: vec![(reference(1), reference(2))],
+        };
+        let reservations = Cell::new(0);
+        let deny_inverse = |request: StorageRequest| {
+            assert_eq!(
+                request,
+                StorageRequest::new(1, StorageUnit::AdditionalElements)
+            );
+            reservations.set(reservations.get() + 1);
+            reservations.get() != 2
+        };
+        assert_eq!(
+            RelationshipExtentStore::with_reservation(&types, &table, [extent()], &deny_inverse),
+            Err(ExtentRefusal::Allocation(StorageRequest::new(
+                1,
+                StorageUnit::AdditionalElements
+            )))
+        );
+        assert_eq!(reservations.get(), 2);
+
+        let store = RelationshipExtentStore::new(&types, &table, [extent()]).unwrap();
+        let source = store.sources(&"r", &reference(2)).next().unwrap();
+        let stored = &store.extents.get(&"r").unwrap().links[0].0;
+        assert!(core::ptr::eq(source, stored));
     }
 
     struct OneRow(Option<PopulationEntry<&'static str>>);
