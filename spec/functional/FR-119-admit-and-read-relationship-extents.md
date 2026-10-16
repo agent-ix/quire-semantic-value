@@ -55,14 +55,14 @@ population bindings, charge accounting and snapshot integration remain with
   pub struct PopulationEntry<P: Ord> { /* private population, covered_types, complete */ }
   // try_new fallibly stores the non-empty, duplicate-free covered_types sequence.
   // EmptyCoveredTypes, DuplicateCoveredType, Allocation and Capacity are typed causes.
-  pub struct ClosedPopulationManifest<'a, P: Ord + Clone> { /* private rows and &'a TypeEnvironment */ }
-  pub struct PartialPopulationRows<P: Ord + Clone> { /* private rows, source_rows, stop */ }
-  impl<'a, P: Ord + Clone> ClosedPopulationManifest<'a, P> {
+  pub struct ClosedPopulationManifest<'t, P: Ord + Clone> { /* private rows and &'t TypeEnvironment */ }
+  pub struct PartialPopulationRows<'t, P: Ord + Clone> { /* private rows, source_rows, stop, &'t TypeEnvironment */ }
+  impl<'t, P: Ord + Clone> ClosedPopulationManifest<'t, P> {
       pub fn from_enumerator<E: PopulationEnumerator<P>>(
-          types: &'a TypeEnvironment, e: &mut E, row_limit: usize
-      ) -> Result<ManifestOutcome<'a, P, E::Error>, ManifestFailure<P>>;
+          types: &'t TypeEnvironment, e: &mut E, row_limit: usize
+      ) -> Result<ManifestOutcome<'t, P, E::Error>, ManifestFailure<P>>;
   }
-  pub struct ManifestOutcome<'a, P: Ord + Clone, E> { /* private state */ }
+  pub struct ManifestOutcome<'t, P: Ord + Clone, E> { /* private state and &'t TypeEnvironment */ }
   // Read-only accessors expose state, closed/partial views, rows in P order,
   // source_rows and stop reason. No accessor permits mutation or state conversion.
   pub enum StopReason<E> { RowLimit { limit: usize }, EnumeratorError(E) }
@@ -74,22 +74,9 @@ population bindings, charge accounting and snapshot integration remain with
   }
   pub enum Resolution { Present, Dangling, Undecidable }
   impl ObjectClosure {
-      pub fn resolve<P: Ord + Clone, E>(&self, x: &ObjectReference, types: &TypeEnvironment, m: &ManifestOutcome<'_, P, E>) -> Resolution;
+      pub fn resolve<'t, P: Ord + Clone, E>(&self, x: &ObjectReference, types: &'t TypeEnvironment, m: &ManifestOutcome<'t, P, E>) -> Resolution;
   }
   ```
-
-  `ObjectClosure` SHALL retain a lifetime-bound borrow of the `TypeEnvironment`
-  supplied at its admission and expose that reference through a read-only
-  `admitted_types()` accessor. `resolve` SHALL compare that reference with both
-  `types` and a closed manifest's admitted environment by reference identity
-  (`core::ptr::eq`), without a hash, digest or pin. A mismatched environment
-  yields `Undecidable` for a missing object. QSV SHALL NOT authenticate that
-  an `ObjectClosure` and a manifest describe the same checked unit or source.
-  A `Dangling` result is only as sound as the cross-input pairing supplied by
-  the caller: a manifest for source A can misclassify a missing reference from
-  source B even when both use the same `TypeEnvironment`. The current
-  `ObjectClosure::new` does not yet retain this borrow; implementing FR-119
-  requires that change.
 
 ## Outputs
 
@@ -110,7 +97,12 @@ population bindings, charge accounting and snapshot integration remain with
    For a declaration with competing faults, duplicate key SHALL precede
    unknown end type; source SHALL precede target.
 2. The store SHALL admit one call's entire supplied extent sequence
-   transactionally. For each extent in that call's order, the store SHALL check
+   transactionally through one one-shot constructor, like `ObjectClosure::new`.
+   It SHALL have no incremental add operation. A later constructor call SHALL
+   build a new independent store, even when it supplies a relationship present
+   in an earlier store; cross-call duplication is not condition 2. QSL SHALL
+   supply all extents of one observation in one call. For each extent in that
+   call's order, the store SHALL check
    FR-364 condition
    1 (key is a table navigation relationship), then condition 2 (relationship
    already has an extent). For each instance in supplied order it SHALL check
@@ -128,8 +120,8 @@ population bindings, charge accounting and snapshot integration remain with
    `TypeEnvironment` before checking conformance; an unknown actual type SHALL
    return that same typed `EndTypeMismatch` carrying the unknown type, since
    reflexive `conforms` on an equal unknown key does not prove membership. A
-   refusal SHALL admit no extents from that call; a store built by an earlier
-   successful call SHALL remain unchanged.
+   store SHALL admit no extents from a refused call.
+   QSV SHALL leave any earlier independent store unchanged.
    The table input contains no lower or upper multiplicity bounds. QSV SHALL
    perform no instance-count comparison at admission. QSL passes only each end's type
    and `unique` flag through this boundary.
@@ -145,10 +137,24 @@ population bindings, charge accounting and snapshot integration remain with
    order, with repeated references adjacent and retained once per instance.
    Equality SHALL use the whole key, including universe and type.
 5. `ObjectClosure::resolve(x, types, manifest)` SHALL return `Present` exactly
-   when `x` is an admitted object, including with a `Partial` outcome. For a
+   when `x` is an admitted object and the manifest's environment reference is
+   identical to `types`, including with a `Partial` outcome. The manifest
+   types SHALL borrow the `TypeEnvironment` against which they were built;
+   `ObjectClosure` SHALL retain no environment reference and gain no lifetime
+   parameter. `resolve` SHALL use the same `'t` for `types` and the manifest,
+   and SHALL compare their environment references with `core::ptr::eq` at run
+   time. The shared lifetime constrains the borrow scope but does not establish
+   that both references identify the same value; Rust may shorten compatible
+   borrows. A mismatch SHALL return `Undecidable`. This compares reference identity
+   of the environment value, without a hash, digest or pin; it does not prove
+   the closure was admitted against that environment. QSV SHALL NOT authenticate
+   that a closure and manifest describe the same checked unit or source. A
+   `Dangling` result therefore depends on the caller's cross-input pairing: a
+   manifest for source A can misclassify a missing reference from source B even
+   when both use the same environment value. For a
    missing `x`, it SHALL return `Dangling` exactly when the outcome is `Closed`,
-   the closure, manifest and supplied `types` have the same admitted environment
-   reference identity, `x`'s type is admitted, at least one population entry
+   the manifest and supplied `types` have identical environment references,
+   `x`'s type is admitted, at least one population entry
    covers that type, and every covering entry is complete. Otherwise it SHALL
    return `Undecidable`. QSV SHALL explicitly check type membership before
    conformance; reflexive `conforms` on an unknown equal key is not membership
@@ -177,7 +183,9 @@ population bindings, charge accounting and snapshot integration remain with
    type and before reservation. `P` SHALL be the population identity, and a
    repeated `P` SHALL return `DuplicatePopulation`. Every covered type SHALL
    belong to the admitted environment; otherwise QSV SHALL return
-   `UnknownCoveredType` naming the population and type. QSV SHALL require each
+   `UnknownCoveredType` naming the population and type. When several covered
+   types of one row are unknown, the refusal SHALL name the first unknown in
+   caller-supplied covered-type order. QSV SHALL require each
    `PopulationEntry` to have at least one covered type, preserve caller order, and reject a
    repeated covered type with a typed cause during fallible construction.
    Manifest rows SHALL be readable in ascending `P` order. Denied representable
@@ -194,7 +202,13 @@ population bindings, charge accounting and snapshot integration remain with
    object field or population member list, charge nothing, consult no path,
    clock or global state, and leave both stores unchanged. The admitted
    `ObjectClosure` and extent store SHALL have structural equality so each
-   compares equal to its clone before and after reads.
+   compares equal to its clone before and after reads. `ObjectClosure` SHALL
+   change only by adding `resolve` and structural `PartialEq`/`Eq`; its fields,
+   lifetime shape and `new` signature SHALL remain unchanged. The extent store
+   holds no environment reference and SHALL compare its stored state by value.
+   Manifest equality SHALL compare rows and state by value and environment
+   references by reference identity. `ManifestOutcome<'t, P, E>` equality SHALL
+   require `E: PartialEq` (and `E: Eq` for `Eq`).
 11. All table and extent storage growth SHALL be fallible. A denied
    representable reservation SHALL report typed `Allocation` with the exact
    `StorageRequest` amount and native `StorageUnit`; size arithmetic or
@@ -209,7 +223,7 @@ population bindings, charge accounting and snapshot integration remain with
 | --- | --- | --- |
 | FR-119-AC-1 | The public table admits two distinct caller-defined ordered keys and resolves their ends without a QSL key or newly minted effective identity. Repeating a key returns only typed `DuplicateRelationshipKey` naming that key, even when an end type is unknown; an unknown source type and separately an unknown target type return only typed `UnknownEndType` naming key, side and type, including when the unknown key equals itself under `conforms`. With both ends unknown, source wins. Each refusal leaves the prior table equal to its clone. | Test |
 | FR-119-AC-2 | In one call containing valid extent 0 and an extent 1 whose key is absent from the table, `NotNavigationRelationship` names that key and index 1; neither extent appears afterward. A store built by an earlier successful call remains equal to its clone. | Test |
-| FR-119-AC-3 | A second extent of the same relationship at extent index 1 returns typed `DuplicateExtent` naming the key and index, even if its instances are otherwise invalid; neither extent from that call appears, while a store built by an earlier successful call is unchanged. | Test |
+| FR-119-AC-3 | A second extent of the same relationship at extent index 1 in one constructor call returns typed `DuplicateExtent` naming the key and index, even if its instances are otherwise invalid; neither extent from that call appears. A later constructor call over the same relationship succeeds independently and leaves the earlier store unchanged; no incremental add operation exists. | Test + Inspection |
 | FR-119-AC-4 | At instance index 0, a `Tank` source reference against declared `Sys`, and separately a `Tank` target reference against declared `Pump`, return typed `EndTypeMismatch` with relationship, extent index, instance index, side, actual type and declared type even when the end object is missing from the closure. An actual reference type unknown to the declared environment also returns that mismatch carrying the unknown type. If both ends mismatch, source wins. A missing end object with a conforming reference type admits and remains available to `resolve`; no refused instance appears. | Test |
 | FR-119-AC-5 | Repeating the same relationship/source/target triple at instance index 1 returns typed `DuplicateTriple` with relationship, extent index and instance index when both ends are unique or only one end is non-unique. When both ends are non-unique, both occurrences admit and both reads retain adjacent repeats. A duplicate at instance 1 wins over a type mismatch at instance 2, and a type mismatch in extent 0 wins over a duplicate extent at index 1. | Test |
 | FR-119-AC-6 | The public table input contains only type and `unique` for each end, no lower or upper bound, and the admission path performs no count comparison. For one source, 0, 1 and a large number of instances each admit; a complete empty extent admits. | Inspection + Test |
@@ -218,14 +232,14 @@ population bindings, charge accounting and snapshot integration remain with
 | FR-119-AC-9 | `resolve` returns `Present` for an admitted object with a `Partial` outcome and with a `Closed` outcome whose covering population entry is incomplete. | Test |
 | FR-119-AC-10 | Test: repeating every read gives equal results, zero allocations and charges, and closure and store equal to their pre-read clones, including after incomplete and unlisted reads. Inspection: read signatures and bodies access no object field, population member list, path, clock or global and allocate no storage. | Test + Inspection |
 | FR-119-AC-11 | Denying an actual representable table reservation and separately an extent reservation returns typed `Allocation` with the exact requested amount and byte or additional-element unit; capacity arithmetic overflow returns distinct typed `Capacity`. Each failure publishes no partial input, leaves prior admitted state equal to its clone, and the same input admits after denial is removed. No QSV count ceiling rejects it. | Test |
-| FR-119-AC-12 | For a missing `x` of known type and matching closure, supplied and manifest environments, `resolve` returns `Dangling` exactly when a `Closed` manifest has at least one covering entry and every covering entry is complete. A population entry covers type T if and only if T conforms, including reflexively, to at least one declared member type under [QSL FR-082](ix://agent-ix/quire-spec-language/FR-082) through `TypeEnvironment`. Positive cases include exact-type coverage, supertype-only coverage, and coverage through one member of a multi-type population. | Test |
-| FR-119-AC-13 | For a missing `x`, `resolve` returns `Undecidable` separately for a `Partial` outcome, a `Closed` outcome with an incomplete covering entry, no covering entry, and an actual object type unknown to the admitted environment. Test unknown-type membership with matching closure, supplied and manifest environments and a `Closed` manifest whose entries completely cover an admitted control type: the missing control reference resolves `Dangling`, while a missing reference of unknown actual type resolves `Undecidable`. Separately, a row naming a covered type unknown to that manifest's environment fails intake with typed `ManifestFailure::UnknownCoveredType`. Inspect `resolve` for explicit actual-type membership; the result alone can also follow from absence of coverage. No covering entry establishes no completeness. | Test + Inspection |
+| FR-119-AC-12 | For a missing `x` of known type, with identical supplied and manifest environment references, `resolve` returns `Dangling` exactly when a `Closed` manifest has at least one covering entry and every covering entry is complete. A population entry covers type T if and only if T conforms, including reflexively, to at least one declared member type under [QSL FR-082](ix://agent-ix/quire-spec-language/FR-082) through `TypeEnvironment`. Positive cases include exact-type coverage, supertype-only coverage, and coverage through one member of a multi-type population. | Test |
+| FR-119-AC-13 | For a missing `x`, `resolve` returns `Undecidable` separately for a `Partial` outcome, a `Closed` outcome with an incomplete covering entry, no covering entry, and an actual object type unknown to the supplied environment. Test unknown-type membership with identical supplied and manifest environment references and a `Closed` manifest whose entries completely cover an admitted control type: the missing control reference resolves `Dangling`, while a missing reference of unknown actual type resolves `Undecidable`. Separately, a row naming a covered type unknown to that manifest's environment fails intake with typed `ManifestFailure::UnknownCoveredType`. Inspect `resolve` for explicit actual-type membership; the result alone can also follow from absence of coverage. No covering entry establishes no completeness. | Test + Inspection |
 | FR-119-AC-14 | A `Closed` manifest with a complete entry covering `x`'s exact type and an incomplete entry for a different population covering a supertype of `x`'s type returns `Undecidable` for missing `x`. The same result holds when the incomplete covering type is one member of a multi-type population. | Test |
-| FR-119-AC-15 | `PopulationEntry` construction refuses empty or duplicate covered types with distinct typed causes and preserves a non-empty caller-ordered set using fallible storage. `from_enumerator` rejects duplicate population keys before unknown covered type or reservation, and rejects unknown covered types with distinct typed `ManifestFailure<P>` causes, never dropping or merging a row. It reports denied representable storage and capacity overflow with distinct typed `Allocation` and `Capacity` causes. Read accessors return retained rows sorted by `P`, `source_rows`, state and stop. Inspection confirms private manifest fields and absence of public constructors for arbitrary closed or partial outcomes, state flags, `PartialPopulationRows::resolve` and partial-to-closed conversion. | Test + Inspection |
+| FR-119-AC-15 | `PopulationEntry` construction refuses empty or duplicate covered types with distinct typed causes and preserves a non-empty caller-ordered set using fallible storage. `from_enumerator` rejects duplicate population keys before unknown covered type or reservation, and rejects unknown covered types with distinct typed `ManifestFailure<P>` causes, naming the first unknown in caller order when several occur in one row; it never drops or merges a row. It reports denied representable storage and capacity overflow with distinct typed `Allocation` and `Capacity` causes. Read accessors return retained rows sorted by `P`, `source_rows`, state and stop. Inspection confirms private manifest fields and absence of public constructors for arbitrary closed or partial outcomes, state flags, `PartialPopulationRows::resolve` and partial-to-closed conversion. | Test + Inspection |
 | FR-119-AC-16 | With N retained rows and one further `Some(row)` beyond `row_limit == N`, `from_enumerator` returns `Partial` retaining only N sorted rows and both `source_rows` accessors equal N + 1, with `RowLimit { limit: N }`. An excess duplicate-population row and separately an excess unknown-covered-type row yield that same partial outcome before validation. A missing object covered by a retained complete row resolves `Undecidable`, while an admitted object resolves `Present`. | Test |
-| FR-119-AC-17 | With `row_limit` exactly equal to the source row count, the next pull returns `Ok(None)` and `from_enumerator` returns `Closed`, equal to its clone. With `row_limit == 0`, `Ok(None)` on the first pull returns empty `Closed`; `Ok(Some(row))` on the first pull returns `Partial` with no retained rows, `source_rows == 1` and `StopReason::RowLimit { limit: 0 }`. Each case checks the pull before the limit check. | Test |
+| FR-119-AC-17 | With `row_limit` exactly equal to the source row count, the next pull returns `Ok(None)` and `from_enumerator` returns `Closed`, equal to its clone by row/state value and environment reference identity. `ManifestOutcome` equality requires `E: PartialEq`. With `row_limit == 0`, `Ok(None)` on the first pull returns empty `Closed`; `Ok(Some(row))` on the first pull returns `Partial` with no retained rows, `source_rows == 1` and `StopReason::RowLimit { limit: 0 }`. Each case checks the pull before the limit check. | Test |
 | FR-119-AC-18 | After N successful `Some` pulls followed by `Err`, `from_enumerator` returns `Partial` with N rows retained in sorted order, both `source_rows` accessors equal N, and `EnumeratorError` carrying the original error. The failing pull is not counted; a missing object covered by a retained complete row still resolves `Undecidable`. | Test |
-| FR-119-AC-19 | For a missing known-type `x`, a closed manifest admitted against an environment other than the closure's admission environment returns `Undecidable` even when its complete rows would cover `x` under that other environment. Inspection confirms lifetime-bound environment borrows and reference-identity comparison, and that QSV does not authenticate the closure and manifest's checked-unit/source pairing. | Test + Inspection |
+| FR-119-AC-19 | With a missing known-type `x`, passing `types` as a different environment value from the one borrowed by a closed manifest returns `Undecidable` even when its complete rows would cover `x`. Inspection confirms the manifest types borrow their environment, `resolve` shares `'t` between `types` and the outcome and compares references by `core::ptr::eq`, while `ObjectClosure` has no environment field or lifetime and retains its `new` signature. QSV does not authenticate the closure and manifest's checked-unit/source pairing. | Test + Inspection |
 | FR-119-AC-20 | With only a child type declared in a complete population entry, a missing parent-typed reference remains `Undecidable` in a `Closed` manifest with matching environments: the parent does not conform to the child. A missing child-typed reference is `Dangling` under that same entry, demonstrating reflexive coverage. | Test |
 
 ## Dependencies

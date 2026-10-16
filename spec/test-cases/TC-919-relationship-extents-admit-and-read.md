@@ -43,8 +43,13 @@ FR-119-AC-1 through FR-119-AC-20. This is a planned QSV counterpart of
    extent 0 followed by absent-key extent 1; assert neither appears after refusal,
    and an earlier successfully built store stays unchanged. In another call make
    extent 1 repeat extent 0 and contain otherwise invalid instances; require
-   `DuplicateExtent` and no extent from that call. Put a duplicate triple at
-   instance 1 before a type mismatch at instance 2 and require `DuplicateTriple`.
+   `DuplicateExtent` and no extent from that call.
+   Make a second one-shot constructor call containing an extent for a
+   relationship already present in the first successful store. Assert that the
+   new independent store admits it, while the first store remains unchanged;
+   inspect the API for absence of incremental add.
+   Put a duplicate triple at instance 1 before a type mismatch at instance 2
+   and require `DuplicateTriple`.
    Put a type mismatch in extent 0 before a duplicate extent at index 1 and
    require `EndTypeMismatch`. Repeat the triple with **bag** and
    **bag-target**. Supply a missing end object whose full reference type mismatches
@@ -80,12 +85,13 @@ FR-119-AC-1 through FR-119-AC-20. This is a planned QSV counterpart of
    at least one declared member type under FR-082. In a separate `Closed`
    manifest with only a child type declared by a complete population entry,
    assert `Undecidable` for a missing parent-typed reference and `Dangling`
-   for a missing child-typed reference, with all three environments matching.
+   for a missing child-typed reference, using the manifest's environment
+   reference as the supplied `types`.
    Independently assert `Undecidable` for a `Partial` outcome,
    an incomplete covering entry, no covering entry, and an unknown actual object
    type. For the unknown-type case, use a `Closed` manifest with complete
-   entries covering an admitted control type and the same environment as the
-   closure and supplied `types`; assert `Dangling` for a missing reference of
+   entries covering an admitted control type and the same environment value as
+   supplied `types`; assert `Dangling` for a missing reference of
    the control type, then `Undecidable` for a missing reference whose actual
    type is not a member. Separately, name a covered type unknown to the
    manifest's environment in a retained row and assert the typed
@@ -122,7 +128,10 @@ FR-119-AC-1 through FR-119-AC-20. This is a planned QSV counterpart of
    require `DuplicatePopulation` before type validation or reservation. Then
    try an unknown covered type alone; assert their
    distinct typed `ManifestFailure<P>` causes and that neither row is silently
-   dropped or merged. Deny a real representable manifest reservation and
+   dropped or merged. Then place two different unknown covered types in one
+   row; assert `UnknownCoveredType` names the first in caller order, including
+   when that type sorts after the second by `EffectiveId`. Deny a real
+   representable manifest reservation and
    exercise capacity overflow; assert distinct typed `Allocation` with exact
    request amount and unit, and `Capacity` causes. Assert there is no public
    constructor taking a closed flag, no caller-controlled `close`, no mutable
@@ -133,9 +142,16 @@ FR-119-AC-1 through FR-119-AC-20. This is a planned QSV counterpart of
    charges, and no mutation across `complete`, `targets`, `sources` and
    `resolve`. Inspect read signatures and bodies for no object-field, population
    member-list, path, clock or global access, and allocation-free reads. Inspect
-   the closure and manifest's lifetime-bound environment borrows and reference
-   identity comparison; a closed manifest built against another environment
-   must give `Undecidable` for a missing object even when its rows would cover it.
+   that only the transient manifest types borrow the environment. Inspect
+   `ObjectClosure` for no environment field or lifetime, its unchanged `new`
+   signature, and its added `resolve` and structural `PartialEq`/`Eq`. Compare
+   two closed manifests with equal rows and state but distinct, value-equal
+   environment values: they must compare unequal by reference identity.
+   Check that `ManifestOutcome` equality requires `E: PartialEq`; the extent
+   store compares its state by value and holds no environment reference.
+   Pass a closed manifest built against one environment with `types` referring
+   to another value; assert `Undecidable` even when its rows would cover a
+   missing object. Inspect `resolve` for a shared `'t` and `core::ptr::eq`.
    Inspect that QSV does not authenticate the closure and manifest's
    checked-unit/source pairing; a common `TypeEnvironment` alone cannot
    establish that the caller paired the same source.
