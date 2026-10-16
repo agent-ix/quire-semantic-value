@@ -46,19 +46,18 @@ remain with [QSL FR-106](ix://agent-ix/quire-spec-language/FR-106) and FR-364.
       fn next_row(&mut self) -> Result<Option<PopulationEntry<P>>, Self::Error>;
   }
   pub struct PopulationEntry<P: Ord> { pub population: P, pub covered_type: EffectiveId, pub complete: bool }
-  pub enum ManifestState { Closed, Incomplete }
-  pub struct PopulationManifest<P: Ord + Clone> { /* rows sorted by P and retained; state */ }
-  impl<P: Ord + Clone> PopulationManifest<P> {
+  pub struct ClosedPopulationManifest<P: Ord + Clone> { /* rows sorted by P */ }
+  pub struct PartialPopulationRows<P: Ord + Clone> { /* retained rows sorted by P; source_rows: usize */ }
+  impl<P: Ord + Clone> ClosedPopulationManifest<P> {
       pub fn from_enumerator<E: PopulationEnumerator<P>>(
-          types: &TypeEnvironment, e: &mut E, row_limit: Option<usize>
+          types: &TypeEnvironment, e: &mut E, row_limit: usize
       ) -> Result<ManifestOutcome<P, E::Error>, ManifestFailure<P>>;
-      pub fn state(&self) -> ManifestState;
   }
   pub enum ManifestOutcome<P: Ord + Clone, E> {
-      Closed(PopulationManifest<P>),
-      Incomplete { manifest: PopulationManifest<P>, stop: StopReason<E> },
+      Closed(ClosedPopulationManifest<P>),
+      Partial { rows: PartialPopulationRows<P>, source_rows: usize, stop: StopReason<E> },
   }
-  pub enum StopReason<E> { EnumeratorError(E), RowLimit }
+  pub enum StopReason<E> { RowLimit { limit: usize }, EnumeratorError(E) }
   pub enum ManifestFailure<P> {
       DuplicatePopulation(P),
       UnknownCoveredType { population: P, covered_type: EffectiveId },
@@ -67,7 +66,7 @@ remain with [QSL FR-106](ix://agent-ix/quire-spec-language/FR-106) and FR-364.
   }
   pub enum Resolution { Present, Dangling, Undecidable }
   impl ObjectClosure {
-      pub fn resolve<P: Ord + Clone>(&self, x: &ObjectReference, types: &TypeEnvironment, m: &PopulationManifest<P>) -> Resolution;
+      pub fn resolve<P: Ord + Clone, E>(&self, x: &ObjectReference, types: &TypeEnvironment, m: &ManifestOutcome<P, E>) -> Resolution;
   }
   ```
 
@@ -90,8 +89,9 @@ remain with [QSL FR-106](ix://agent-ix/quire-spec-language/FR-106) and FR-364.
 2. For each extent in supplied order, the store SHALL check FR-364 condition
    1 (key is a table navigation relationship), then condition 2 (relationship
    already has an extent). For each instance in supplied order it SHALL check
-   condition 3 (source then target reference-type conformance, whether or not
-   the referenced object is held in the closure), then condition 4 (duplicate
+   condition 3 (source then target reference-type conformance against the
+   authenticated declared end type, whether or not the referenced object is
+   held in the closure), then condition 4 (duplicate
    full triple unless both ends declare `unique: false`). It SHALL stop at the
    first failure. The four conditions SHALL have distinct typed refusal causes.
    Each SHALL carry the
@@ -118,27 +118,40 @@ remain with [QSL FR-106](ix://agent-ix/quire-spec-language/FR-106) and FR-364.
    order, with repeated references adjacent and retained once per instance.
    Equality SHALL use the whole key, including universe and type.
 5. `ObjectClosure::resolve(x, types, manifest)` SHALL return `Present` exactly
-   when `x` is an admitted object, regardless of manifest completeness. For a
-   missing `x`, it SHALL return `Dangling` exactly when the manifest is `Closed`,
+   when `x` is an admitted object, including with a `Partial` outcome. For a
+   missing `x`, it SHALL return `Dangling` exactly when the outcome is `Closed`,
    at least one entry's covered type covers `x`'s object type by FR-082
    conformance through the admitted `TypeEnvironment`, every such covering
    entry is complete, and the closure holds no object equal to `x`. Otherwise
-   it SHALL return `Undecidable`: this includes an `Incomplete` manifest, no
+   it SHALL return `Undecidable`: this includes a `Partial` outcome, no
    covering entry, any incomplete covering entry, or an object type unknown to the
    environment. QSV SHALL check `x`'s type membership explicitly; reflexive
    `conforms` on an unknown equal key is not membership evidence. A covering
    entry for a supertype counts even when a different population's entry
-   covers the exact type. `from_enumerator` SHALL retain successfully read rows
-   sorted by `P` and issue `Closed` only after `next_row` returns `Ok(None)`.
-   An enumerator error or a row limit reached before normal exhaustion SHALL
-   return `Incomplete` with the retained rows and typed `EnumeratorError` or
-   `RowLimit` stop reason, never `Closed`.
+   covers the exact type. `from_enumerator` SHALL require a finite caller-supplied
+   `row_limit: usize` for every source-backed enumeration; QSV SHALL never read
+   unbounded caller input. QSV SHALL call `next_row` first on each pull.
+   QSV SHALL return `Closed` when `next_row` returns `Ok(None)`. This includes
+   the first pull with `row_limit == 0` and the pull immediately after exactly
+   `row_limit` retained rows. On `Ok(Some(row))`,
+   it SHALL count that row in `source_rows`, then check the limit before validation
+   or storage growth. If the row would exceed the limit, it SHALL return `Partial`
+   with the previously retained rows, matching `source_rows` in the outcome and
+   `PartialPopulationRows`, and `StopReason::RowLimit { limit: row_limit }`.
+   Thus a nonempty source with `row_limit == 0` returns `Partial` with zero
+   retained rows and `source_rows == 1`. An `Err(error)` SHALL return `Partial`
+   with the retained rows, the number of successfully pulled source rows, and
+   `StopReason::EnumeratorError(error)`. Rows in both manifest types SHALL be
+   sorted by `P`; only normal exhaustion SHALL construct `Closed`.
    A duplicate population key or unknown covered type SHALL return distinct
    typed `ManifestFailure<P>` causes, never silently drop or merge a row;
    denied representable storage and capacity overflow SHALL return distinct
    typed `Allocation` and `Capacity` causes. No public constructor SHALL take
    a closed flag or build a `Closed` manifest from rows already in hand, and
-   there SHALL be no caller-controlled `close`. QSV cannot verify what the
+   there SHALL be no caller-controlled `close` or conversion from
+   `PartialPopulationRows` to `ClosedPopulationManifest`. No type SHALL expose
+   a state flag, and `PartialPopulationRows` SHALL have no `resolve` operation.
+   QSV cannot verify what the
    enumerator enumerates. QSL-800 owns authenticating the selected population
    set, per-entry completeness and that the enumerator walks all of it. Its
    reviewed contract, not this FR, establishes
@@ -170,20 +183,28 @@ remain with [QSL FR-106](ix://agent-ix/quire-spec-language/FR-106) and FR-364.
 | FR-119-AC-6 | Four targets through an end declared upper 3, no instance through an end declared lower 1, and a complete empty extent all admit. No multiplicity refusal is returned at admission. | Test |
 | FR-119-AC-7 | An unlisted relationship gives `complete=false` and empty reads; a listed incomplete extent gives `complete=false` while retaining its instances in reads; a listed complete empty extent gives `complete=true` and empty reads. None is inferred from another. | Test |
 | FR-119-AC-8 | Supplying two relationships and their instances in either order yields identical `targets` and `sources` in ascending universe/type/identity order. A repeated non-unique link appears twice adjacently; inverse `sources` reads the same instances. A same-named object in another universe, and separately another type, does not match a receiver or collapse with it. | Test |
-| FR-119-AC-9 | `resolve` returns `Present` for an admitted object even when its population entry is incomplete. | Test |
+| FR-119-AC-9 | `resolve` returns `Present` for an admitted object with a `Partial` outcome and with a `Closed` outcome whose covering population entry is incomplete. | Test |
 | FR-119-AC-10 | Repeating every read gives equal results and performs zero allocations and charges; clone comparisons show the closure and store structurally unchanged, including after reads of incomplete and unlisted extents. No field, population member list, path, clock or global is consulted. | Test |
 | FR-119-AC-11 | Denying an actual representable table reservation and separately an extent reservation returns typed `Allocation` with the exact requested amount and byte or additional-element unit; capacity arithmetic overflow returns distinct typed `Capacity`. Each failure publishes no partial input, leaves prior admitted state equal to its clone, and the same input admits after denial is removed. No QSV count ceiling rejects it. | Test |
 | FR-119-AC-12 | For a missing `x` of a known type, `resolve` returns `Dangling` only with a `Closed` manifest containing at least one covering entry, every covering entry complete, and no object equal to `x` in the closure. Coverage uses FR-082 conformance through `TypeEnvironment`. | Test |
-| FR-119-AC-13 | For a missing `x`, `resolve` returns `Undecidable` separately for an `Incomplete` manifest, an incomplete covering entry, no covering entry, and an object type unknown to the environment. No covering entry does not establish completeness. | Test |
+| FR-119-AC-13 | For a missing `x`, `resolve` returns `Undecidable` separately for a `Partial` outcome, a `Closed` outcome with an incomplete covering entry, no covering entry, and an object type unknown to the environment. No covering entry does not establish completeness. | Test |
 | FR-119-AC-14 | A `Closed` manifest with a complete entry covering `x`'s exact type and an incomplete entry for a different population covering a supertype of `x`'s type returns `Undecidable` for missing `x`. | Test |
-| FR-119-AC-15 | `from_enumerator` rejects duplicate population keys and unknown covered types with distinct typed `ManifestFailure<P>` causes, never dropping or merging a row, and reports denied representable storage and capacity overflow with distinct typed `Allocation` and `Capacity` causes. Successful rows remain sorted by `P`. Normal exhaustion alone yields a `Closed` manifest equal to its clone; an enumerator error mid-way and a row limit each yield an `Incomplete` manifest with rows retained and the matching typed stop reason. No public constructor accepts a closed flag or makes `Closed` directly from supplied rows; an enumerator stopped by error or row limit cannot make `resolve` return `Dangling`. | Test |
+| FR-119-AC-15 | `from_enumerator` rejects duplicate population keys and unknown covered types with distinct typed `ManifestFailure<P>` causes, never dropping or merging a row, and reports denied representable storage and capacity overflow with distinct typed `Allocation` and `Capacity` causes. Successful retained rows are sorted by `P`. No public constructor accepts a closed flag or makes `Closed` directly from supplied rows; no type exposes a state flag, and `PartialPopulationRows` has neither `resolve` nor a conversion to `ClosedPopulationManifest`. | Test |
+| FR-119-AC-16 | With `row_limit` smaller than the source row count, `from_enumerator` pulls one row beyond the limit, returns `Partial` with only the rows within the limit retained in sorted order, equal `source_rows` counts in the outcome and `PartialPopulationRows` including the excess pulled row, and `StopReason::RowLimit { limit }`. `resolve` returns `Undecidable` for a missing object covered by a retained complete row, but `Present` for an admitted object. | Test |
+| FR-119-AC-17 | With `row_limit` exactly equal to the source row count, the next pull returns `Ok(None)` and `from_enumerator` returns `Closed`, equal to its clone. With `row_limit == 0`, `Ok(None)` on the first pull returns empty `Closed`; `Ok(Some(row))` on the first pull returns `Partial` with no retained rows, `source_rows == 1` and `StopReason::RowLimit { limit: 0 }`. Each case checks the pull before the limit check. | Test |
+| FR-119-AC-18 | An enumerator error after one or more rows returns `Partial` with those rows retained in sorted order, equal `source_rows` counts in the outcome and `PartialPopulationRows`, and `StopReason::EnumeratorError` carrying the original error; a missing object covered by a retained complete row still resolves `Undecidable`. | Test |
 
 ## Dependencies
 
 - [QSL FR-364](ix://agent-ix/quire-spec-language/FR-364) owns the four
   conditions and the observation read contract; this FR binds them to a QSV
   store by reference, without copying QSL's refusal codes or navigation rules.
-- QSL FR-364 condition 3 skips an end the observation does not hold; this FR is deliberately stricter by planner ruling, pending a QSL-side amendment.
+- QSL FR-364 condition 3 skips type checking only for snapshot document ends
+  (`population`, `key`) whose object is absent and thus supplies no type.
+  Model-layer extent ends carry full `ObjectReference`s with their own types;
+  FR-119 checks each type against the authenticated declared end type even when
+  its object is absent. FR-119 and FR-364 agree; QSL-800 owns clarifying the
+  FR-364 text.
 - [QSL FR-106](ix://agent-ix/quire-spec-language/FR-106) owns document syntax,
   population bindings and closure checks, `observation.values` charging and
   limit enforcement, and snapshot integration. [QSL FR-084](ix://agent-ix/quire-spec-language/FR-084)

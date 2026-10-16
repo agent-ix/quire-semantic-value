@@ -14,7 +14,7 @@ relationships:
 Verify [FR-119](../functional/FR-119-admit-and-read-relationship-extents.md)
 through QSV's public table, extent and `ObjectClosure` APIs, using full
 references supplied by a model-layer caller. Scope: FR-119-AC-1 through
-FR-119-AC-15. This is a planned QSV counterpart of
+FR-119-AC-18. This is a planned QSV counterpart of
 [QSL TC-1033](ix://agent-ix/quire-spec-language/TC-1033).
 
 ## Test Procedure
@@ -36,8 +36,8 @@ FR-119-AC-15. This is a planned QSV counterpart of
    Inspect exact cause, relationship, zero-based extent and instance indices,
    and mismatch side and types. Put faults in competing instances and
    extents to check first-failure order. Repeat the triple with **bag** and
-   **bag-target**. Supply a missing end object whose reference type mismatches
-   its declared end and assert `EndTypeMismatch` with the actual type; repeat
+   **bag-target**. Supply a missing end object whose full reference type mismatches
+   its authenticated declared end and assert `EndTypeMismatch` with the actual type; repeat
    with an unknown actual type that compares equal to itself under `conforms`.
    Supply a missing end object whose reference type conforms and assert that
    the instance admits and the end remains available to `resolve`.
@@ -46,15 +46,15 @@ FR-119-AC-15. This is a planned QSV counterpart of
    admit a listed incomplete extent holding one link and omit housing
    entirely. Compare all three completeness states and their held reads.
 5. Implement real `PopulationEnumerator`s over the fixture's authenticated
-   population set and build manifests with `from_enumerator`. One enumerator
+   population set and build outcomes with `ClosedPopulationManifest::from_enumerator`,
+   passing a finite `row_limit: usize` on every call. One enumerator
    returns each row then `Ok(None)`; assert that only this normal exhaustion
-   produces `ManifestOutcome::Closed` and `ManifestState::Closed`, and that the
-   closed manifest equals its clone. Pass the manifest and admitted
-   `TypeEnvironment` to `resolve`. Assert `Present`
+   produces `ManifestOutcome::Closed` and that the closed manifest equals its
+   clone. Pass the outcome and admitted `TypeEnvironment` to `resolve`. Assert `Present`
    for an admitted reference even with an incomplete population entry. For a
    missing reference of a known type, assert `Dangling` with a `Closed`
-   manifest containing at least one complete covering entry and no equal
-   closure object. Independently assert `Undecidable` for an `Incomplete` manifest,
+   outcome containing at least one complete covering entry and no equal
+   closure object. Independently assert `Undecidable` for a `Partial` outcome,
    an incomplete covering entry, no covering entry, and an unknown object
    type. In a `Closed` manifest, add a complete entry covering the missing
    reference's exact type and a different population's incomplete entry
@@ -62,18 +62,28 @@ FR-119-AC-15. This is a planned QSV counterpart of
    `TypeEnvironment` to establish both covering relationships, and repeat
    with every covering entry complete to assert `Dangling`.
 6. Yield entries out of population-key order and inspect sorted retained rows.
-   Use separate real enumerators that return `Err` mid-way and hit a row limit;
-   assert each returns `ManifestOutcome::Incomplete` with its retained rows,
-   `ManifestState::Incomplete`, and respectively `EnumeratorError` or
-   `RowLimit`. For each early stop, resolve a missing object whose type the
-   retained complete row covers and assert `Undecidable`, never `Dangling`.
+   Set `row_limit` below the source row count. Assert that `from_enumerator`
+   pulls the next `Some(row)` before checking the limit, counts that pulled row
+   in both `source_rows` fields, does not retain or validate it, and returns
+   `ManifestOutcome::Partial { rows, source_rows, stop: RowLimit { limit } }`.
+   Resolve a missing object covered by a retained complete row as `Undecidable`,
+   and an admitted object as `Present`. With `row_limit` equal to the row count,
+   assert that the next pull is `Ok(None)` and yields `Closed`. With `row_limit`
+   zero, test an already exhausted enumerator (`Ok(None)` on the first pull)
+   producing empty `Closed`, and a nonempty enumerator producing `Partial` with
+   zero retained rows, `source_rows == 1`, and `RowLimit { limit: 0 }`.
+   Separately return `Err` after retained rows. Assert `Partial` with those
+   rows, equal `source_rows` counts, and `EnumeratorError` carrying the original
+   error; resolve a missing object covered by a retained complete row as
+   `Undecidable`.
    Try a duplicate population key and an unknown covered type; assert their
    distinct typed `ManifestFailure<P>` causes and that neither row is silently
    dropped or merged. Deny a real representable manifest reservation and
    exercise capacity overflow; assert distinct typed `Allocation` with exact
    request amount and unit, and `Capacity` causes. Assert there is no public
-   constructor taking a closed flag, no caller-controlled `close`, and no way
-   to build `Closed` from supplied rows. Use read instrumentation and
+   constructor taking a closed flag, no caller-controlled `close`, no state
+   flag, no `resolve` on `PartialPopulationRows`, and no conversion of partial
+   rows into a closed manifest. Use read instrumentation and
    structural clones to check zero allocations, zero charges, no external
    reads and no mutation across repeated `complete`, `targets`, `sources`
    and `resolve`.
@@ -92,10 +102,12 @@ end admits. Reads are pure, total and
 sorted by the whole reference key with repeats preserved. The three extent
 states and three resolve results remain distinct. Missing references with no
 covering population remain `Undecidable`; an incomplete covering supertype
-prevents `Dangling`. Only normal enumerator exhaustion closes the manifest;
-errors and row limits retain rows in `Incomplete` without enabling `Dangling`.
+prevents `Dangling`. Only normal enumerator exhaustion closes the manifest; an
+exact row limit still allows the following exhausted pull to close it. Errors
+and exceeded row limits retain rows in `Partial` without enabling `Dangling`;
+`source_rows` counts every pulled `Some(row)`, including the row exceeding the limit.
 Manifest refusals are typed and do not silently accept duplicate or unknown
-rows; denied storage never creates partial state.
+rows; denied storage never publishes partially admitted state.
 
 ## Status
 
