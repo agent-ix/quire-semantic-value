@@ -53,7 +53,8 @@ pub enum InputRefusal {
     #[error("the observations were admitted for another clause or frame")]
     ObservationsMismatch,
     /// QSL FR-107: `evaluate_clause_set`'s slice names one clause twice:
-    /// `invalid_runtime_input` / `duplicate-member`.
+    /// `invalid_runtime_input` / `duplicate-member` (the catalogue pair QSL
+    /// FR-106-AC-43 also uses).
     #[error("the clause set names {0} more than once")]
     DuplicateClause(String),
 }
