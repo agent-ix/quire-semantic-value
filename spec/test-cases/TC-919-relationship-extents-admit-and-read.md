@@ -81,7 +81,9 @@ FR-119-AC-1 through FR-119-AC-19. This is a planned QSV counterpart of
    type. For the unknown-type case, build the closed manifest against a different
    `TypeEnvironment` that knows and covers that type, then resolve against the
    closure's declared environment and assert `Undecidable`; also check a known
-   type whose complete coverage differs across the two environments. In a
+   type whose complete coverage differs across the two environments. Inspect
+   `resolve` for an explicit type-membership check, since environment mismatch
+   alone also yields `Undecidable`. In a
    `Closed` manifest, add a complete entry covering the missing
    reference's exact type and a different population's incomplete entry
    covering its supertype; assert `Undecidable`. Repeat with the incomplete
