@@ -20,6 +20,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use crate::declaration::{fill_slots, ConstructionRefusal, FieldRef, TypeEnvironment};
+use crate::relationship_extent::{ManifestOutcome, Resolution};
 use quire_exact::{FieldValue, ObjectReference, UniverseId, Value};
 
 /// Why an object closure does not close.
@@ -58,6 +59,23 @@ pub struct ObjectClosure {
 }
 
 impl ObjectClosure {
+    /// Resolve a reference using held objects first, then exhaustive population evidence.
+    pub fn resolve<'t, P: Ord + Clone, E>(
+        &self,
+        reference: &ObjectReference,
+        types: &'t TypeEnvironment,
+        manifest: &ManifestOutcome<'t, P, E>,
+    ) -> Resolution {
+        if self.contains(reference) {
+            return Resolution::Present;
+        }
+        if manifest.closed_coverage(types, reference.object_type()) {
+            Resolution::Dangling
+        } else {
+            Resolution::Undecidable
+        }
+    }
+
     /// Admit `objects` as `(reference, attributes)` pairs against the model
     /// object types of `types`. An omitted `?` attribute is `absent`.
     ///
@@ -176,6 +194,143 @@ impl ObjectClosure {
         }
         Ok(())
     }
+}
+
+impl PartialEq for ObjectClosure {
+    fn eq(&self, other: &Self) -> bool {
+        self.objects.len() == other.objects.len()
+            && self
+                .objects
+                .iter()
+                .zip(other.objects.iter())
+                .all(|((a_key, a), (b_key, b))| a_key == b_key && same_slots(a, b))
+    }
+}
+
+impl Eq for ObjectClosure {}
+
+enum IdentityPair<'a> {
+    Slot(&'a FieldValue, &'a FieldValue),
+    Value(&'a Value, &'a Value),
+}
+
+fn queue_slots<'a>(
+    pending: &mut Vec<IdentityPair<'a>>,
+    left: &'a [FieldValue],
+    right: &'a [FieldValue],
+) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    pending.extend(
+        left.iter()
+            .zip(right)
+            .map(|(a, b)| IdentityPair::Slot(a, b)),
+    );
+    true
+}
+
+fn queue_values<'a>(
+    pending: &mut Vec<IdentityPair<'a>>,
+    left: &'a [Value],
+    right: &'a [Value],
+) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    pending.extend(
+        left.iter()
+            .zip(right)
+            .map(|(a, b)| IdentityPair::Value(a, b)),
+    );
+    true
+}
+
+fn same_slots(left: &[FieldValue], right: &[FieldValue]) -> bool {
+    let mut pending = Vec::new();
+    if !queue_slots(&mut pending, left, right) {
+        return false;
+    }
+    while let Some(pair) = pending.pop() {
+        let equal = match pair {
+            IdentityPair::Slot(a, b) => match (a, b) {
+                (FieldValue::Absent, FieldValue::Absent) | (FieldValue::Null, FieldValue::Null) => {
+                    true
+                }
+                (FieldValue::Present(a), FieldValue::Present(b)) => {
+                    pending.push(IdentityPair::Value(a, b));
+                    true
+                }
+                (FieldValue::Absent, FieldValue::Null | FieldValue::Present(_))
+                | (FieldValue::Null, FieldValue::Absent | FieldValue::Present(_))
+                | (FieldValue::Present(_), FieldValue::Absent | FieldValue::Null) => false,
+            },
+            IdentityPair::Value(a, b) => match (a, b) {
+                (Value::Boolean(a), Value::Boolean(b)) => a == b,
+                (Value::Integer(a), Value::Integer(b)) => a == b,
+                (Value::Rational(a), Value::Rational(b)) => a == b,
+                (Value::Decimal(a), Value::Decimal(b)) => a.representation() == b.representation(),
+                (Value::Float(a), Value::Float(b)) => {
+                    a.width() == b.width() && a.bits() == b.bits()
+                }
+                (Value::Quantity(a), Value::Quantity(b)) => a == b,
+                (Value::Text(a), Value::Text(b)) => {
+                    a.text_type() == b.text_type()
+                        && a.payload() == b.payload()
+                        && a.retained() == b.retained()
+                }
+                (Value::String(a), Value::String(b)) => a == b,
+                (Value::Uuid(a), Value::Uuid(b)) => a == b,
+                (Value::Timestamp(a), Value::Timestamp(b)) => a == b,
+                (Value::Enum(a), Value::Enum(b)) => a == b,
+                (Value::Population(a), Value::Population(b)) => a == b,
+                (Value::Option(a), Value::Option(b)) => {
+                    a.payload_type() == b.payload_type()
+                        && match (a.payload(), b.payload()) {
+                            (None, None) => true,
+                            (Some(a), Some(b)) => {
+                                pending.push(IdentityPair::Value(a, b));
+                                true
+                            }
+                            (None, Some(_)) | (Some(_), None) => false,
+                        }
+                }
+                (Value::Composite(a), Value::Composite(b)) => {
+                    a.declaration() == b.declaration()
+                        && queue_slots(&mut pending, a.slots(), b.slots())
+                }
+                (Value::Union(a), Value::Union(b)) => {
+                    a.member() == b.member() && queue_values(&mut pending, a.payload(), b.payload())
+                }
+                (Value::Collection(a), Value::Collection(b)) => {
+                    a.collection_type() == b.collection_type()
+                        && queue_values(&mut pending, a.elements(), b.elements())
+                }
+                (Value::Reference(a), Value::Reference(b)) => a == b,
+                (Value::Boolean(_), _)
+                | (Value::Integer(_), _)
+                | (Value::Rational(_), _)
+                | (Value::Decimal(_), _)
+                | (Value::Float(_), _)
+                | (Value::Quantity(_), _)
+                | (Value::Text(_), _)
+                | (Value::String(_), _)
+                | (Value::Uuid(_), _)
+                | (Value::Timestamp(_), _)
+                | (Value::Enum(_), _)
+                | (Value::Population(_), _)
+                | (Value::Option(_), _)
+                | (Value::Composite(_), _)
+                | (Value::Union(_), _)
+                | (Value::Collection(_), _)
+                | (Value::Reference(_), _) => false,
+            },
+        };
+        if !equal {
+            return false;
+        }
+    }
+    true
 }
 
 fn present(slots: &[FieldValue]) -> impl Iterator<Item = &Value> {

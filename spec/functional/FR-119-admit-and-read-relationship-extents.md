@@ -56,7 +56,7 @@ population bindings, charge accounting and snapshot integration remain with
   // try_new fallibly stores the non-empty, duplicate-free covered_types sequence.
   // EmptyCoveredTypes, DuplicateCoveredType, Allocation and Capacity are typed causes.
   pub struct ClosedPopulationManifest<'t, P: Ord + Clone> { /* private rows and &'t TypeEnvironment */ }
-  pub struct PartialPopulationRows<'t, P: Ord + Clone> { /* private rows, source_rows, stop, &'t TypeEnvironment */ }
+  pub struct PartialPopulationRows<'t, P: Ord + Clone, E> { /* private rows, source_rows, StopReason<E>, &'t TypeEnvironment */ }
   impl<'t, P: Ord + Clone> ClosedPopulationManifest<'t, P> {
       pub fn from_enumerator<E: PopulationEnumerator<P>>(
           types: &'t TypeEnvironment, e: &mut E, row_limit: usize
@@ -294,4 +294,6 @@ population bindings, charge accounting and snapshot integration remain with
 
 ## Status
 
-PLANNED/UNRUN; implementation and acceptance tests are pending.
+IMPLEMENTED/TESTS PASSED: FR-119-AC-1 through FR-119-AC-9 and FR-119-AC-11 through FR-119-AC-20.
+
+IMPLEMENTED/TESTS PASSED: FR-119-AC-10. Repeated `complete`, `targets`, `sources`, and `resolve` reads were measured with `allocation-counter`; every measured read allocated zero times. An allocating control confirmed the counter was active. Charge, purity and Float-identity assertions also passed.
