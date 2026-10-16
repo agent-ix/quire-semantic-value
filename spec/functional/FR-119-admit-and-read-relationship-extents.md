@@ -294,4 +294,6 @@ population bindings, charge accounting and snapshot integration remain with
 
 ## Status
 
-PLANNED/UNRUN; implementation and acceptance tests are pending.
+IMPLEMENTED/TESTS PASSED: FR-119-AC-1 through FR-119-AC-9 and FR-119-AC-11 through FR-119-AC-20.
+
+FR-119-AC-10 remains PLANNED/UNRUN for its runtime zero-allocation assertion. Its repeated-read, charge, purity and Float-identity checks passed; the repository forbids unsafe code, so the attempted allocator instrumentation was removed. The read bodies were inspected for allocations.
