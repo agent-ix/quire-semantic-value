@@ -105,7 +105,7 @@ caller/admission input bound and the helper operation it constrains.
 | Nested retained type | At most T type-chain link comparisons; leaf comparisons include any input-sized retained enum/numeric data. | Charge type links through the bounded interface; bound leaf data separately. No outer one-event substitution for an entire unbounded type chain. |
 | Reference conformance | The retained ancestry path uses registry lookups and a binary search over at most A ancestor positions; registry size is R. | Establish finite lookup-comparison bounds from the authoritative container implementation and actual admitted R/A. Poll around each bounded helper. A nominal query does not prove internal cost or cancellation latency. |
 | Decimal domain | The authoritative `DecimalType::try_contains` helper borrows the normalized coefficient `c` and interval endpoints `lo,hi`. On a scale-admissible path, let `b = max(bits(c), bits(lo), bits(hi))`, counting zero as one bit, and let `k` be the actual nonnegative coefficient-alignment shift. The caller SHALL establish admitted `B >= b` and `S >= k` before invoking it. With `L_B = ceil(B / 32)`, [exact-kernel FR-372](ix://agent-ix/quire-exact/FR-372) bounds the two endpoint comparisons by `2 × (min(S,B) + 2) × L_B` limb steps and one live fallible scratch request of at most `4 × L_B` bytes. A scale refusal completes without scratch. | The helper polls the original cancellation handle before allocation, after successful allocation, before each limb step and before completion; allocation/release are indivisible calls with no wall-clock guarantee. Checked layout capacity, actual scratch-allocation denial and cancellation retain distinct typed causes. The QSV caller SHALL preserve those causes and the supplied-admission locus, with no additional logical event or evaluator debit. The caller SHALL NOT infer `B` or `S` from a default or substitute a smaller bound for `c`, either endpoint or the actual shift. |
-| Sealed union payload/descriptor | The public union declaration/member shape and supplied walk are implemented. Descriptor lookup checks the retained shape, final key and member; payload visits are bounded by the retained position count and scheduled through the fallible worklist. | Poll at the descriptor event and after the lookup; reserve worklist capacity before scheduling payloads. The 10,000-link Tree N/N-1 test verifies logical event accounting, not every helper premise or QSL consumer limit. |
+| Sealed union payload/descriptor | The public union declaration/member shape and supplied walk are implemented. The retained member position count bounds payload visits and worklist scheduling. A finite descriptor-lookup cost bound is not yet established: the shape, final-key and member ordered-index lookups and `UnionMember` equality over the member identifier still need inspection against admitted registry and identifier bounds. | Poll at the descriptor event and after the lookup; reserve worklist capacity before scheduling payloads. The 10,000-link Tree N/N-1 test verifies logical event accounting, not the remaining helper premises or QSL consumer limits. |
 
 ## Acceptance Criteria
 
@@ -152,8 +152,12 @@ caller/admission input bound and the helper operation it constrains.
 
 ## Status
 
-SPEC DRAFT; the fallible exact-kernel Decimal helper is implemented, while the
-QSV Decimal supplied-admission caller and its integrated acceptance test are
-PLANNED/UNRUN.
+SPEC DRAFT; the fallible exact-kernel Decimal helper and QSV bounded-numeric
+supplied-admission caller are implemented. QSV tests traced to FR-109-AC-1
+through FR-109-AC-5 execute, as do the integrated Decimal controls traced to
+FR-109-AC-8 for cumulative N/N-1 and zero budgets, membership and size
+outcomes, cancellation and typed resource-error projection. Exact-kernel
+TC-920 owns the actual scratch-denial and checked-capacity mechanisms. The
+union descriptor helper premises still need inspection under FR-109-AC-7.
 No numerical default is selected by this QSV requirement. Research predictions
 are not qualified defaults, event-table evidence or runtime acceptance results.

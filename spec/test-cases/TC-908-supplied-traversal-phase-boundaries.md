@@ -98,11 +98,17 @@ by `sealed_tree_10k_budgeted_admission_spends_exact_n_on_small_stack` and
 `sealed_tree_10k_budgeted_admission_denies_last_event_on_small_stack` in
 `tests/union_staging.rs`. They enumerate 60,002 logical events for a 10,000-link
 Tree and check completion and the final denied descriptor event on a small stack.
-Other QSV caller and integrated Decimal controls remain PLANNED/UNRUN. The
-exact-kernel fallible Decimal helper is implemented; no QSV Decimal test
-execution is claimed. Full deep Tree defaults, value-occurrence limits, replay
-converted nodes and evaluation exact/one-less parity remain QSL consumer
+QSV caller controls traced to FR-109-AC-1 through FR-109-AC-5 execute in
+`src/declaration/membership.rs` and `tests/union_staging.rs`. Integrated Decimal
+controls traced to FR-109-AC-8 execute through
+`admit_supplied_bounded_numeric`: they cover cumulative exact-N/N-1 and zero
+budgets, size and nonmembership loci, original-handle cancellation, and typed
+kernel resource-error projection. The actual kernel scratch-denial and checked-
+capacity mechanisms remain exact-kernel TC-920's controls. Full deep Tree
+defaults, value-occurrence limits, replay converted nodes and evaluation
+exact/one-less parity remain QSL consumer
 controls under QSL-778. Numerical default hypotheses and hosted source
-predictions are not an oracle for N. Decimal caller qualification under IR-719
-still requires admitted `B,S`, typed cause/locus projection and integrated
-tests. The Decimal caller adds no fifth helper-entry event or numeric default.
+predictions are not an oracle for N. The Decimal caller accepts an explicit
+magnitude bound and derives its alignment-shift bound from the declared minimum
+scale; it adds no fifth helper-entry event or numeric default. The union helper
+premises still need inspection under FR-109-AC-7.
