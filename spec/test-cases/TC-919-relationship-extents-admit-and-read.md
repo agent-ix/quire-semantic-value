@@ -16,7 +16,7 @@ through QSV's public table, extent and `ObjectClosure` APIs, using full
 references supplied by a model-layer caller. The reservation-denial and
 capacity cases of AC-11 and AC-15 use in-crate unit tests beside the code and
 the existing crate-private reservation seam, as in FR-108/TC-907. Scope:
-FR-119-AC-1 through FR-119-AC-19. This is a planned QSV counterpart of
+FR-119-AC-1 through FR-119-AC-20. This is a planned QSV counterpart of
 [QSL TC-1033](ix://agent-ix/quire-spec-language/TC-1033).
 
 ## Test Procedure
@@ -76,15 +76,24 @@ FR-119-AC-1 through FR-119-AC-19. This is a planned QSV counterpart of
    closure object. Check positive `Dangling` cases for exact-type coverage,
    supertype-only coverage, and coverage through one member of the multi-type
    Q entry, using a fixture with an admitted subtype for the supertype case.
+   Covering means the reference type conforms, reflexively or as a child, to
+   at least one declared member type under FR-082. In a separate `Closed`
+   manifest with only a child type declared by a complete population entry,
+   assert `Undecidable` for a missing parent-typed reference and `Dangling`
+   for a missing child-typed reference, with all three environments matching.
    Independently assert `Undecidable` for a `Partial` outcome,
-   an incomplete covering entry, no covering entry, and an unknown object
-   type. For the unknown-type case, build the closed manifest against a different
-   `TypeEnvironment` that knows and covers that type, then resolve against the
-   closure's declared environment and assert `Undecidable`; also check a known
-   type whose complete coverage differs across the two environments. Inspect
-   `resolve` for an explicit type-membership check, since environment mismatch
-   alone also yields `Undecidable`. In a
-   `Closed` manifest, add a complete entry covering the missing
+   an incomplete covering entry, no covering entry, and an unknown actual object
+   type. For the unknown-type case, use a `Closed` manifest with complete
+   entries covering an admitted control type and the same environment as the
+   closure and supplied `types`; assert `Dangling` for a missing reference of
+   the control type, then `Undecidable` for a missing reference whose actual
+   type is not a member. Separately, name a covered type unknown to the
+   manifest's environment in a retained row and assert the typed
+   `ManifestFailure::UnknownCoveredType` at intake. Inspect `resolve` for an
+   explicit actual-type membership check; absence of coverage could also
+   produce the same result. Also check a known type whose complete coverage
+   differs across two environments and assert `Undecidable` from their mismatch.
+   In a `Closed` manifest, add a complete entry covering the missing
    reference's exact type and a different population's incomplete entry
    covering its supertype; assert `Undecidable`. Repeat with the incomplete
    supertype as one member of a multi-type entry. Use
@@ -127,6 +136,9 @@ FR-119-AC-1 through FR-119-AC-19. This is a planned QSV counterpart of
    the closure and manifest's lifetime-bound environment borrows and reference
    identity comparison; a closed manifest built against another environment
    must give `Undecidable` for a missing object even when its rows would cover it.
+   Inspect that QSV does not authenticate the closure and manifest's
+   checked-unit/source pairing; a common `TypeEnvironment` alone cannot
+   establish that the caller paired the same source.
 7. Inject denial at actual table and extent reservation boundaries; assert
    `Allocation` carries the observed `StorageRequest` amount and unit.
    Exercise checked size overflow for `Capacity`. Compare state with its
@@ -141,7 +153,8 @@ against its reference type even when no object is held; a conforming missing
 end admits. Reads are pure, total and
 sorted by the whole reference key with repeats preserved. The three extent
 states and three resolve results remain distinct. Missing references with no
-covering population remain `Undecidable`; an incomplete covering supertype
+covering population remain `Undecidable`; a child-only declaration does not
+cover a parent; an incomplete covering supertype
 prevents `Dangling`. Only normal enumerator exhaustion closes the manifest; an
 exact row limit still allows the following exhausted pull to close it. Errors
 and exceeded row limits retain rows in `Partial` without enabling `Dangling`;

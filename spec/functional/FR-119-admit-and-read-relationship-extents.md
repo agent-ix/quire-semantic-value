@@ -83,8 +83,13 @@ population bindings, charge accounting and snapshot integration remain with
   `admitted_types()` accessor. `resolve` SHALL compare that reference with both
   `types` and a closed manifest's admitted environment by reference identity
   (`core::ptr::eq`), without a hash, digest or pin. A mismatched environment
-  yields `Undecidable` for a missing object. The current `ObjectClosure::new`
-  does not yet retain this borrow; implementing FR-119 requires that change.
+  yields `Undecidable` for a missing object. QSV SHALL NOT authenticate that
+  an `ObjectClosure` and a manifest describe the same checked unit or source.
+  A `Dangling` result is only as sound as the cross-input pairing supplied by
+  the caller: a manifest for source A can misclassify a missing reference from
+  source B even when both use the same `TypeEnvironment`. The current
+  `ObjectClosure::new` does not yet retain this borrow; implementing FR-119
+  requires that change.
 
 ## Outputs
 
@@ -147,10 +152,12 @@ population bindings, charge accounting and snapshot integration remain with
    covers that type, and every covering entry is complete. Otherwise it SHALL
    return `Undecidable`. QSV SHALL explicitly check type membership before
    conformance; reflexive `conforms` on an unknown equal key is not membership
-   evidence. An entry covers `x` when any of its covered types is `x`'s type
-   or an ancestor under [QSL FR-082](ix://agent-ix/quire-spec-language/FR-082)
-   conformance through `TypeEnvironment`. An incomplete covering entry SHALL
-   prevent `Dangling` even when a different complete entry covers the exact type.
+   evidence. A population entry covers type T if and only if T conforms,
+   including reflexively, to at least one of that entry's declared member
+   types under [QSL FR-082](ix://agent-ix/quire-spec-language/FR-082) through
+   `TypeEnvironment`. Declaring only a child type SHALL NOT cover its parent.
+   An incomplete covering entry SHALL prevent `Dangling` even when a different
+   complete entry covers the exact type.
    QSV SHALL infer no completeness from absence and provide no default or blanket
    completeness policy.
 6. `from_enumerator` SHALL require `row_limit: usize`. QSV SHALL pull at most
@@ -211,14 +218,15 @@ population bindings, charge accounting and snapshot integration remain with
 | FR-119-AC-9 | `resolve` returns `Present` for an admitted object with a `Partial` outcome and with a `Closed` outcome whose covering population entry is incomplete. | Test |
 | FR-119-AC-10 | Test: repeating every read gives equal results, zero allocations and charges, and closure and store equal to their pre-read clones, including after incomplete and unlisted reads. Inspection: read signatures and bodies access no object field, population member list, path, clock or global and allocate no storage. | Test + Inspection |
 | FR-119-AC-11 | Denying an actual representable table reservation and separately an extent reservation returns typed `Allocation` with the exact requested amount and byte or additional-element unit; capacity arithmetic overflow returns distinct typed `Capacity`. Each failure publishes no partial input, leaves prior admitted state equal to its clone, and the same input admits after denial is removed. No QSV count ceiling rejects it. | Test |
-| FR-119-AC-12 | For a missing `x` of known type and matching closure, supplied and manifest environments, `resolve` returns `Dangling` exactly when a `Closed` manifest has at least one covering entry and every covering entry is complete. Positive cases include exact-type coverage, supertype-only coverage, and coverage through one member of a multi-type population. Coverage uses [QSL FR-082](ix://agent-ix/quire-spec-language/FR-082) conformance through `TypeEnvironment`. | Test |
-| FR-119-AC-13 | For a missing `x`, `resolve` returns `Undecidable` separately for a `Partial` outcome, a `Closed` outcome with an incomplete covering entry, no covering entry, and an object type unknown to the declared environment. For the unknown-type case, build a closed manifest against a different environment that knows `x`'s type and covers it, then resolve against the declared closure environment; assert `Undecidable` from the mismatch. Inspect `resolve` for an explicit type-membership check; the mismatch result alone does not prove that check. No covering entry establishes no completeness. | Test + Inspection |
+| FR-119-AC-12 | For a missing `x` of known type and matching closure, supplied and manifest environments, `resolve` returns `Dangling` exactly when a `Closed` manifest has at least one covering entry and every covering entry is complete. A population entry covers type T if and only if T conforms, including reflexively, to at least one declared member type under [QSL FR-082](ix://agent-ix/quire-spec-language/FR-082) through `TypeEnvironment`. Positive cases include exact-type coverage, supertype-only coverage, and coverage through one member of a multi-type population. | Test |
+| FR-119-AC-13 | For a missing `x`, `resolve` returns `Undecidable` separately for a `Partial` outcome, a `Closed` outcome with an incomplete covering entry, no covering entry, and an actual object type unknown to the admitted environment. Test unknown-type membership with matching closure, supplied and manifest environments and a `Closed` manifest whose entries completely cover an admitted control type: the missing control reference resolves `Dangling`, while a missing reference of unknown actual type resolves `Undecidable`. Separately, a row naming a covered type unknown to that manifest's environment fails intake with typed `ManifestFailure::UnknownCoveredType`. Inspect `resolve` for explicit actual-type membership; the result alone can also follow from absence of coverage. No covering entry establishes no completeness. | Test + Inspection |
 | FR-119-AC-14 | A `Closed` manifest with a complete entry covering `x`'s exact type and an incomplete entry for a different population covering a supertype of `x`'s type returns `Undecidable` for missing `x`. The same result holds when the incomplete covering type is one member of a multi-type population. | Test |
 | FR-119-AC-15 | `PopulationEntry` construction refuses empty or duplicate covered types with distinct typed causes and preserves a non-empty caller-ordered set using fallible storage. `from_enumerator` rejects duplicate population keys before unknown covered type or reservation, and rejects unknown covered types with distinct typed `ManifestFailure<P>` causes, never dropping or merging a row. It reports denied representable storage and capacity overflow with distinct typed `Allocation` and `Capacity` causes. Read accessors return retained rows sorted by `P`, `source_rows`, state and stop. Inspection confirms private manifest fields and absence of public constructors for arbitrary closed or partial outcomes, state flags, `PartialPopulationRows::resolve` and partial-to-closed conversion. | Test + Inspection |
 | FR-119-AC-16 | With N retained rows and one further `Some(row)` beyond `row_limit == N`, `from_enumerator` returns `Partial` retaining only N sorted rows and both `source_rows` accessors equal N + 1, with `RowLimit { limit: N }`. An excess duplicate-population row and separately an excess unknown-covered-type row yield that same partial outcome before validation. A missing object covered by a retained complete row resolves `Undecidable`, while an admitted object resolves `Present`. | Test |
 | FR-119-AC-17 | With `row_limit` exactly equal to the source row count, the next pull returns `Ok(None)` and `from_enumerator` returns `Closed`, equal to its clone. With `row_limit == 0`, `Ok(None)` on the first pull returns empty `Closed`; `Ok(Some(row))` on the first pull returns `Partial` with no retained rows, `source_rows == 1` and `StopReason::RowLimit { limit: 0 }`. Each case checks the pull before the limit check. | Test |
 | FR-119-AC-18 | After N successful `Some` pulls followed by `Err`, `from_enumerator` returns `Partial` with N rows retained in sorted order, both `source_rows` accessors equal N, and `EnumeratorError` carrying the original error. The failing pull is not counted; a missing object covered by a retained complete row still resolves `Undecidable`. | Test |
-| FR-119-AC-19 | For a missing known-type `x`, a closed manifest admitted against an environment other than the closure's admission environment returns `Undecidable` even when its complete rows would cover `x` under that other environment. Inspection confirms lifetime-bound environment borrows and reference-identity comparison. | Test + Inspection |
+| FR-119-AC-19 | For a missing known-type `x`, a closed manifest admitted against an environment other than the closure's admission environment returns `Undecidable` even when its complete rows would cover `x` under that other environment. Inspection confirms lifetime-bound environment borrows and reference-identity comparison, and that QSV does not authenticate the closure and manifest's checked-unit/source pairing. | Test + Inspection |
+| FR-119-AC-20 | With only a child type declared in a complete population entry, a missing parent-typed reference remains `Undecidable` in a `Closed` manifest with matching environments: the parent does not conform to the child. A missing child-typed reference is `Dangling` under that same entry, demonstrating reflexive coverage. | Test |
 
 ## Dependencies
 
@@ -237,16 +245,18 @@ population bindings, charge accounting and snapshot integration remain with
   population bindings and closure checks, `observation.values` charging and
   limit enforcement, and snapshot integration. [QSL FR-084](ix://agent-ix/quire-spec-language/FR-084)
   owns population completeness and the reference-key meaning.
-- QSL-800 owns the definition of "the population of `x`", the authoritative
-  population set, completion and traversal-exhaustion evidence, and review of
-  compatibility with this manifest boundary. QSL-800 is open and blocks
-  QSL-794; this FR does not assert resolve compatibility acceptance. In
-  particular, confirmation that no covering entry yields `Undecidable` remains
-  a QSL-800 point. QSV cannot authenticate what an enumerator enumerates.
-  The multi-type `covered_types` row follows QSL's population member-type list:
-  [QSL TC-1033](ix://agent-ix/quire-spec-language/TC-1033) gives Q the list
-  `[Sys, Pump, Tank]`. QSL-800 owns confirming that row shape for integration;
-  it is not an additional QSV obligation.
+- NON-NORMATIVE (QSL-800 confirmation): QSL owns the definition of "the
+  population of `x`", completion and traversal-exhaustion evidence. The
+  authoritative set is the population declaration in the admitted domain
+  package, checked through the admitted model index; QSL-800 owns that check.
+  Its producer will issue one matched bundle of population manifest,
+  `ObjectClosure`/observation and `TypeEnvironment`, bound to the same whole
+  `RawSourceRef`/checked-unit source identity and selection digest, with a
+  typed refusal on mismatch. QSL, not QSV, owns this binding; external resolve
+  acceptance waits on it. QSV cannot authenticate what an enumerator
+  enumerates. The multi-type `covered_types` row follows QSL's population
+  member-type list: [QSL TC-1033](ix://agent-ix/quire-spec-language/TC-1033)
+  gives Q the list `[Sys, Pump, Tank]`.
 - [FR-106](./FR-106-object-closure-admission.md) supplies `ObjectClosure`;
   [FR-108](./FR-108-report-registry-allocation-failure.md) supplies the
   fallible reservation style and typed storage request units.
