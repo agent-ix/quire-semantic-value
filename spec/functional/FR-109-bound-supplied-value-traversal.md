@@ -141,8 +141,9 @@ caller/admission input bound and the helper operation it constrains.
 - QSV's existing `TypeEnvironment::admits` is bool-only; its authored-declaration
   work budget is distinct from the supplied traversal contract. The exact-kernel
   [FR-372](ix://agent-ix/quire-exact/FR-372) fallible Decimal helper is available;
-  IR-719 still owns QSV caller qualification, including admitted `B,S`, typed
-  cause/locus projection and integrated controls. The caller introduces no fifth
+  IR-719 delivered the QSV bounded Decimal caller with an explicit magnitude
+  bound, a declared-minimum-scale-derived alignment bound, typed cause/locus
+  projection and integrated controls. The caller introduces no fifth
   helper-entry event or numeric default. The public union declaration/member
   API and supplied walk are implemented; helper qualification remains subject
   to the source-backed bounds above.
@@ -153,8 +154,10 @@ caller/admission input bound and the helper operation it constrains.
 ## Status
 
 SPEC DRAFT; the fallible exact-kernel Decimal helper and QSV bounded-numeric
-supplied-admission caller are implemented. QSV tests traced to FR-109-AC-1
-through FR-109-AC-5 execute, as do the integrated Decimal controls traced to
+supplied-admission caller are implemented. Non-ignored QSV tests traced to
+FR-109-AC-1 through FR-109-AC-5 execute in the default run;
+`supplied_path_arena_growth_probe_10k` is an ignored resource probe outside
+that run. The integrated Decimal controls traced to
 FR-109-AC-8 for cumulative N/N-1 and zero budgets, membership and size
 outcomes, cancellation and typed resource-error projection. Exact-kernel
 TC-920 owns the actual scratch-denial and checked-capacity mechanisms. The

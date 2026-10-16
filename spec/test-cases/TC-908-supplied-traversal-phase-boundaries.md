@@ -98,9 +98,12 @@ by `sealed_tree_10k_budgeted_admission_spends_exact_n_on_small_stack` and
 `sealed_tree_10k_budgeted_admission_denies_last_event_on_small_stack` in
 `tests/union_staging.rs`. They enumerate 60,002 logical events for a 10,000-link
 Tree and check completion and the final denied descriptor event on a small stack.
-QSV caller controls traced to FR-109-AC-1 through FR-109-AC-5 execute in
-`src/declaration/membership.rs` and `tests/union_staging.rs`. Integrated Decimal
-controls traced to FR-109-AC-8 execute through
+Non-ignored QSV caller controls traced to FR-109-AC-1 through FR-109-AC-5
+execute in `src/declaration/membership.rs`, `src/supplied_membership.rs`,
+`src/declaration.rs`, `tests/union_staging.rs` and
+`tests/bounded_numeric_reservation.rs`. The ignored
+`supplied_path_arena_growth_probe_10k` is outside the default run. Integrated
+Decimal controls traced to FR-109-AC-8 execute through
 `admit_supplied_bounded_numeric`: they cover cumulative exact-N/N-1 and zero
 budgets, size and nonmembership loci, original-handle cancellation, and typed
 kernel resource-error projection. The actual kernel scratch-denial and checked-
