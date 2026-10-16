@@ -34,8 +34,8 @@ do not obtain the expected count by reading the counter being tested.
    each qualified family contract. Observe no partial admission. For released
    admitted Option/Composite/Collection inputs, assert the construction-custody
    boundary and actual logical event list; do not invent revalidation of all
-   descendants. Add union cases only after the public owning union API and
-   helper table are reviewed and available.
+   descendants. Include the implemented sealed-union cases; inspect their
+   helper bounds and failure behavior against the public owning API.
 5. Deny an actual fallible traversal-worklist reservation without replacing
    membership logic. Compare the reported allocation amount/unit with the
    real reservation request. Separately trigger checked representation/size
@@ -93,12 +93,16 @@ evidence.
 
 ## Status
 
-PLANNED/UNRUN for the QSV caller and this integrated case. The exact-kernel
-fallible Decimal helper is implemented; no QSV Decimal test execution is claimed.
-The full deep Tree defaults, occurrences, replay converted nodes and evaluation exact/one-less
-parity controls belong to the aligned QSL consumer fixtures, not this QSV-only
-case. Numerical default hypotheses and hosted source predictions are not an
-oracle for N. Decimal caller qualification under IR-719 still requires admitted
-`B,S`, typed cause/locus projection and integrated tests. The reviewed union API
-is a separate prerequisite where applicable. The Decimal caller adds no fifth
-helper-entry event or numeric default.
+The sealed-union QSV supplied-admission exact-N and N-1 controls are implemented
+by `sealed_tree_10k_budgeted_admission_spends_exact_n_on_small_stack` and
+`sealed_tree_10k_budgeted_admission_denies_last_event_on_small_stack` in
+`tests/union_staging.rs`. They enumerate 60,002 logical events for a 10,000-link
+Tree and check completion and the final denied descriptor event on a small stack.
+Other QSV caller and integrated Decimal controls remain PLANNED/UNRUN. The
+exact-kernel fallible Decimal helper is implemented; no QSV Decimal test
+execution is claimed. Full deep Tree defaults, value-occurrence limits, replay
+converted nodes and evaluation exact/one-less parity remain QSL consumer
+controls under QSL-778. Numerical default hypotheses and hosted source
+predictions are not an oracle for N. Decimal caller qualification under IR-719
+still requires admitted `B,S`, typed cause/locus projection and integrated
+tests. The Decimal caller adds no fifth helper-entry event or numeric default.

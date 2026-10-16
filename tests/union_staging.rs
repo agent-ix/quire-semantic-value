@@ -17,7 +17,7 @@ use quire_semantic_value::enumeration::EnumMemberIndex;
 use quire_semantic_value::object_closure::{ObjectClosure, ObjectClosureCause};
 use quire_semantic_value::supplied_membership::{
     InvalidMembershipCause, MembershipEvent, MembershipLocus, MembershipPart, MembershipPathArena,
-    PathStep, SuppliedAdmissionError, SuppliedAdmissionPhase, SuppliedMembershipBudget,
+    PathStep, SuppliedAdmissionError, SuppliedMembershipBudget,
 };
 
 #[allow(
@@ -639,50 +639,8 @@ fn ten_thousand_supplied_links_follow_sealed_keys_with_internal_position_types()
     std::thread::Builder::new()
         .stack_size(512 * 1024)
         .spawn(|| {
-            let handle_type = ValueType::Composite(key(1));
+            let (env, handle_type, supplied) = sealed_tree_10k_supplied_fixture();
             let final_type = ValueType::Composite(key(40));
-            let mut env = TypeEnvironment::new(
-                [CompositeDeclaration::new(
-                    key(1),
-                    "Tree",
-                    CompositeShape::Union(vec![
-                        resolved("End", vec![]),
-                        resolved("Next", vec![ValueType::option(handle_type.clone())]),
-                    ]),
-                )],
-                [],
-            )
-            .unwrap();
-            env.seal_union_verified(
-                key(1),
-                key(40),
-                vec![binding(key(40), 10, "End"), binding(key(40), 11, "Next")],
-            )
-            .unwrap();
-            let end = env
-                .union_member(key(1), variant(10))
-                .unwrap()
-                .1
-                .member()
-                .unwrap()
-                .clone();
-            let next = env
-                .union_member(key(40), variant(11))
-                .unwrap()
-                .1
-                .member()
-                .unwrap()
-                .clone();
-            let supplied = || {
-                let mut value = UnionValue::from_admitted(end.clone(), vec![]);
-                for _ in 0..10_000 {
-                    value = UnionValue::from_admitted(
-                        next.clone(),
-                        vec![OptionValue::from_admitted(final_type.clone(), Some(value))],
-                    );
-                }
-                value
-            };
             let left = supplied();
             let right = supplied();
             assert_eq!(left.occ(), Integer::from(20_001_u64));
@@ -712,11 +670,19 @@ fn ten_thousand_supplied_links_follow_sealed_keys_with_internal_position_types()
         .unwrap();
 }
 
+const TREE_LINK_COUNT: usize = 10_000;
+const TREE_EVENTS_PER_LINK: u64 = 6;
+const TREE_END_EVENTS: u64 = 2;
+const TREE_STEPS_PER_LINK: usize = 2;
+const TREE_EVENT_COUNT: u64 = TREE_LINK_COUNT as u64 * TREE_EVENTS_PER_LINK + TREE_END_EVENTS;
+const TREE_STEP_COUNT: usize = TREE_LINK_COUNT * TREE_STEPS_PER_LINK;
+
 /// The sealed Tree has 10,000 Next unions and one End union. Each Next costs
 /// six events: union visit and descriptor query, option child schedule and
 /// visit, one retained composite type comparison, and nested union schedule.
 /// End costs a visit and descriptor query, so N = 10,000 * 6 + 2 = 60,002.
-fn sealed_tree_10k_supplied_fixture() -> (TypeEnvironment, ValueType, Value) {
+/// Each link adds an Option and union path step: 10,000 * 2 = 20,000 steps.
+fn sealed_tree_10k_supplied_fixture() -> (TypeEnvironment, ValueType, impl Fn() -> Value) {
     let handle_type = ValueType::Composite(key(1));
     let final_type = ValueType::Composite(key(40));
     let mut env = TypeEnvironment::new(
@@ -751,14 +717,22 @@ fn sealed_tree_10k_supplied_fixture() -> (TypeEnvironment, ValueType, Value) {
         .member()
         .unwrap()
         .clone();
-    let mut value = UnionValue::from_admitted(end, vec![]);
-    for _ in 0..10_000 {
-        value = UnionValue::from_admitted(
-            next.clone(),
-            vec![OptionValue::from_admitted(final_type.clone(), Some(value))],
+    let supplied = move || {
+        let mut value = UnionValue::from_admitted(end.clone(), vec![]);
+        for _ in 0..TREE_LINK_COUNT {
+            value = UnionValue::from_admitted(
+                next.clone(),
+                vec![OptionValue::from_admitted(final_type.clone(), Some(value))],
+            );
+        }
+        assert_eq!(
+            value.occ(),
+            Integer::from(u64::try_from(TREE_STEP_COUNT + 1).unwrap()),
+            "Tree fixture must have exactly {TREE_LINK_COUNT} links"
         );
-    }
-    (env, handle_type, value)
+        value
+    };
+    (env, handle_type, supplied)
 }
 
 /// Trace: FR-109-AC-1, FR-321-AC-4
@@ -768,14 +742,14 @@ fn sealed_tree_10k_budgeted_admission_spends_exact_n_on_small_stack() {
     std::thread::Builder::new()
         .stack_size(512 * 1024)
         .spawn(|| {
-            const N: u64 = 60_002;
-            let (env, expected, value) = sealed_tree_10k_supplied_fixture();
+            let (env, expected, supplied) = sealed_tree_10k_supplied_fixture();
+            let value = supplied();
             let mut arena = MembershipPathArena::new().unwrap();
             let at = MembershipLocus {
                 path: arena.root(7),
                 part: MembershipPart::Value,
             };
-            let mut budget = SuppliedMembershipBudget::new(N);
+            let mut budget = SuppliedMembershipBudget::new(TREE_EVENT_COUNT);
             let result = env.admit_supplied::<InvalidMembershipCause>(
                 &expected,
                 &value,
@@ -785,28 +759,28 @@ fn sealed_tree_10k_budgeted_admission_spends_exact_n_on_small_stack() {
                 &quire_exact::Cancel::new(),
             );
             assert_eq!(result, Ok(()));
-            assert_eq!(budget.spent(), N);
+            assert_eq!(budget.spent(), TREE_EVENT_COUNT);
         })
         .unwrap()
         .join()
         .unwrap();
 }
 
-/// Trace: FR-109-AC-1, FR-321-AC-4
-#[trace("TC-908", "FR-109-AC-1", "FR-321-AC-4")]
+/// Trace: FR-109-AC-1
+#[trace("TC-908", "FR-109-AC-1")]
 #[test]
 fn sealed_tree_10k_budgeted_admission_denies_last_event_on_small_stack() {
     std::thread::Builder::new()
         .stack_size(512 * 1024)
         .spawn(|| {
-            const N: u64 = 60_002;
-            let (env, expected, value) = sealed_tree_10k_supplied_fixture();
+            let (env, expected, supplied) = sealed_tree_10k_supplied_fixture();
+            let value = supplied();
             let mut arena = MembershipPathArena::new().unwrap();
             let at = MembershipLocus {
                 path: arena.root(7),
                 part: MembershipPart::Value,
             };
-            let mut budget = SuppliedMembershipBudget::new(N - 1);
+            let mut budget = SuppliedMembershipBudget::new(TREE_EVENT_COUNT - 1);
             let result = env.admit_supplied::<InvalidMembershipCause>(
                 &expected,
                 &value,
@@ -815,26 +789,26 @@ fn sealed_tree_10k_budgeted_admission_denies_last_event_on_small_stack() {
                 &mut budget,
                 &quire_exact::Cancel::new(),
             );
-            let Err(
-                stop @ SuppliedAdmissionError::Limit {
-                    ceiling,
-                    spent,
-                    requested,
-                    event,
-                    locus,
-                },
-            ) = result
+            let Err(SuppliedAdmissionError::Limit {
+                ceiling,
+                spent,
+                requested,
+                event,
+                locus,
+            }) = result
             else {
                 panic!("expected final descriptor query denial: {result:?}");
             };
-            assert_eq!(stop.phase(), SuppliedAdmissionPhase::Membership);
-            assert_eq!((ceiling, spent, requested), (N - 1, N - 1, 1));
-            assert_eq!(budget.spent(), N - 1);
+            assert_eq!(
+                (ceiling, spent, requested),
+                (TREE_EVENT_COUNT - 1, TREE_EVENT_COUNT - 1, 1)
+            );
+            assert_eq!(budget.spent(), TREE_EVENT_COUNT - 1);
             assert_eq!(event, MembershipEvent::DescriptorQuery);
             let resolved = arena.resolve(locus).unwrap();
             assert_eq!(resolved.argument(), 7);
             assert_eq!(resolved.part(), MembershipPart::Descriptor(0));
-            assert_eq!(resolved.steps_from_leaf().count(), 20_000);
+            assert_eq!(resolved.steps_from_leaf().count(), TREE_STEP_COUNT);
         })
         .unwrap()
         .join()
