@@ -1745,6 +1745,14 @@ impl EnvironmentFailure {
 pub(crate) trait ReservationPolicy {
     fn permit(&self, request: StorageRequest) -> bool;
 
+    fn check_request(&self, request: StorageRequest) -> Result<(), StorageFailure> {
+        if self.permit(request) {
+            Ok(())
+        } else {
+            Err(StorageFailure::Allocation(request))
+        }
+    }
+
     fn phase(&self, _phase: StoragePhase) {}
 }
 
@@ -1809,9 +1817,7 @@ pub(crate) fn reserve_elements<T, R: ReservationPolicy>(
     if required <= values.capacity() {
         return Ok(());
     }
-    if !policy.permit(request) {
-        return Err(StorageFailure::Allocation(request));
-    }
+    policy.check_request(request)?;
     values
         .try_reserve_exact(additional)
         .map_err(|_| StorageFailure::Allocation(request))

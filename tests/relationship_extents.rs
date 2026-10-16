@@ -295,19 +295,67 @@ fn type_mismatch_checks_missing_and_unknown_ends_in_source_order() {
             .next(),
         Some(&missing)
     );
+    let held = closure(&types);
+    let closed = manifest(&types, vec![row("Q", &[PUMP], true)], 1);
+    assert_eq!(
+        held.resolve(&missing, &types, &closed),
+        Resolution::Dangling
+    );
+    let table_types = types.clone();
+    let store_types =
+        TypeEnvironment::new([], [ObjectTypeDeclaration::new(ty(PUMP), "Pump", vec![])]).unwrap();
+    let foreign_table =
+        NavigationRelationshipTable::new(&table_types, [declaration("foreign", SYS, PUMP, true)])
+            .unwrap();
+    assert_eq!(
+        RelationshipExtentStore::new(
+            &store_types,
+            &foreign_table,
+            [extent("foreign", true, vec![link()])]
+        ),
+        Err(ExtentRefusal::EndTypeMismatch {
+            relationship: "foreign",
+            extent_index: 0,
+            instance_index: 0,
+            side: EndSide::Source,
+            actual_type: ty(SYS),
+            declared_type: ty(SYS),
+        })
+    );
+    assert_eq!(
+        RelationshipExtentStore::new(
+            &types,
+            &table,
+            [extent(
+                "composition",
+                true,
+                vec![link(), (reference(9, TANK, "t"), link().1), link()],
+            )]
+        ),
+        Err(ExtentRefusal::EndTypeMismatch {
+            relationship: "composition",
+            extent_index: 0,
+            instance_index: 1,
+            side: EndSide::Source,
+            actual_type: ty(TANK),
+            declared_type: ty(SYS),
+        })
+    );
 }
 
 #[trace("TC-919", "FR-119-AC-5")]
 #[test]
 fn duplicate_triple_depends_on_end_uniqueness_and_precedes_later_faults() {
     let types = types();
-    for unique in [true, false] {
+    for (source_unique, target_unique) in
+        [(true, false), (false, true), (true, true), (false, false)]
+    {
         let table = NavigationRelationshipTable::new(
             &types,
             [NavigationRelationship {
                 key: "composition",
-                source: end(SYS, unique),
-                target: end(PUMP, false),
+                source: end(SYS, source_unique),
+                target: end(PUMP, target_unique),
             }],
         )
         .unwrap();
@@ -324,7 +372,7 @@ fn duplicate_triple_depends_on_end_uniqueness_and_precedes_later_faults() {
                 ],
             )],
         );
-        if unique {
+        if source_unique || target_unique {
             assert_eq!(
                 result,
                 Err(ExtentRefusal::DuplicateTriple {
@@ -441,12 +489,14 @@ fn reads_sort_full_reference_keys_and_retain_adjacent_repeats() {
     let p2 = reference(9, PUMP, "p2");
     let other_universe = reference(8, PUMP, "p1");
     let other_type = reference(9, SYS, "p1");
+    let same_identity_child = reference(9, PUMP, "p1");
     let instances = vec![
         (source.clone(), p2.clone()),
         (source.clone(), p1.clone()),
         (source.clone(), p1.clone()),
         (source.clone(), other_universe.clone()),
         (other_type.clone(), p1.clone()),
+        (same_identity_child.clone(), p1.clone()),
     ];
     let t1 = reference(9, TANK, "t1");
     let housing = vec![(p2.clone(), t1.clone()), (p1.clone(), t1.clone())];
@@ -472,6 +522,16 @@ fn reads_sort_full_reference_keys_and_retain_adjacent_repeats() {
         ],
     )
     .unwrap();
+    let retained_target = {
+        let query = source.clone();
+        a.targets(&"composition", &query).next().unwrap()
+    };
+    assert_eq!(retained_target, &other_universe);
+    let retained_source = {
+        let query = p1.clone();
+        a.sources(&"composition", &query).next().unwrap()
+    };
+    assert_eq!(retained_source, &other_type);
     let expected = vec![other_universe, p1.clone(), p1.clone(), p2.clone()];
     assert_eq!(
         a.targets(&"composition", &source)
@@ -487,7 +547,12 @@ fn reads_sort_full_reference_keys_and_retain_adjacent_repeats() {
     );
     assert_eq!(
         a.sources(&"composition", &p1).cloned().collect::<Vec<_>>(),
-        vec![other_type, source.clone(), source.clone()]
+        vec![
+            other_type,
+            source.clone(),
+            source.clone(),
+            same_identity_child
+        ]
     );
     assert_eq!(
         a.sources(&"housing", &t1).cloned().collect::<Vec<_>>(),
@@ -531,6 +596,9 @@ fn repeated_reads_are_pure_and_float_identity_uses_bits() {
         RelationshipExtentStore::new(&types, &table, [extent("composition", false, vec![link()])])
             .unwrap();
     let before = store.clone();
+    let complete_store =
+        RelationshipExtentStore::new(&types, &table, [extent("composition", true, vec![])])
+            .unwrap();
     let held = closure(&types);
     let held_before = held.clone();
     let partial = manifest(&types, vec![row("Q", &[SYS], false)], 1);
@@ -538,12 +606,63 @@ fn repeated_reads_are_pure_and_float_identity_uses_bits() {
     let target = reference(9, PUMP, "p1");
     let spent = types.spent();
     for _ in 0..3 {
-        assert!(!store.complete(&"composition"));
-        assert_eq!(store.targets(&"composition", &source).count(), 1);
-        assert_eq!(store.sources(&"composition", &target).count(), 1);
-        assert!(store.targets(&"housing", &source).next().is_none());
-        assert_eq!(held.resolve(&source, &types, &partial), Resolution::Present);
+        let info = allocation_counter::measure(|| assert!(complete_store.complete(&"composition")));
+        assert_eq!(info.count_total, 0, "complete listed");
+        for (key, expected) in [
+            ("composition", false),
+            ("housing", false),
+            ("absent", false),
+        ] {
+            let info = allocation_counter::measure(|| assert_eq!(store.complete(&key), expected));
+            assert_eq!(info.count_total, 0, "complete {key}");
+        }
+        for (key, query, expected) in [
+            ("composition", &source, 1),
+            ("composition", &reference(9, SYS, "missing"), 0),
+            ("housing", &source, 0),
+        ] {
+            let info = allocation_counter::measure(|| {
+                assert_eq!(store.targets(&key, query).count(), expected)
+            });
+            assert_eq!(info.count_total, 0, "targets {key}");
+        }
+        for (key, query, expected) in [
+            ("composition", &target, 1),
+            ("composition", &reference(9, PUMP, "missing"), 0),
+            ("housing", &target, 0),
+        ] {
+            let info = allocation_counter::measure(|| {
+                assert_eq!(store.sources(&key, query).count(), expected)
+            });
+            assert_eq!(info.count_total, 0, "sources {key}");
+        }
+        let complete_manifest = manifest(&types, vec![row("Q", &[PUMP], true)], 1);
+        let different = types.clone();
+        let foreign_manifest = manifest(&different, vec![row("Q", &[PUMP], true)], 1);
+        let missing = reference(9, PUMP, "missing");
+        for (outcome, query, expected) in [
+            (&partial, &source, Resolution::Present),
+            (&complete_manifest, &missing, Resolution::Dangling),
+            (&partial, &missing, Resolution::Undecidable),
+            (&foreign_manifest, &missing, Resolution::Undecidable),
+        ] {
+            let info = allocation_counter::measure(|| {
+                assert_eq!(held.resolve(query, &types, outcome), expected)
+            });
+            assert_eq!(info.count_total, 0, "resolve {expected:?}");
+            let outcome_before = (*outcome).clone();
+            let info = allocation_counter::measure(|| {
+                assert_eq!(held.resolve(query, &types, &outcome_before), expected)
+            });
+            assert_eq!(info.count_total, 0, "resolve cloned {expected:?}");
+            assert_eq!(outcome, &outcome_before);
+        }
     }
+    let control = allocation_counter::measure(|| {
+        let copied = store.clone();
+        std::hint::black_box(copied);
+    });
+    assert!(control.count_total > 0);
     assert_eq!(types.spent(), spent);
     assert_eq!(store, before);
     assert_eq!(held, held_before);
@@ -676,12 +795,12 @@ fn population_rows_and_manifest_refusals_preserve_order_and_typed_causes() {
         ClosedPopulationManifest::from_enumerator(&types, &mut duplicate, 2),
         Err(ManifestFailure::DuplicatePopulation("Q"))
     );
-    let mut unknown = Rows::<&str>::new(vec![Ok(Some(row("Q", &[UNKNOWN, 5], true)))]);
+    let mut unknown = Rows::<&str>::new(vec![Ok(Some(row("Q", &[5, UNKNOWN], true)))]);
     assert_eq!(
         ClosedPopulationManifest::from_enumerator(&types, &mut unknown, 1),
         Err(ManifestFailure::UnknownCoveredType {
             population: "Q",
-            covered_type: ty(UNKNOWN)
+            covered_type: ty(5)
         })
     );
     let closed = manifest(

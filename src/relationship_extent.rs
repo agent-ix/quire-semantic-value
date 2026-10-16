@@ -246,8 +246,8 @@ impl<K: Ord + Clone> RelationshipExtentStore<K> {
                     extent_index,
                 });
             }
-            let mut links = Vec::new();
-            for (instance_index, (source, target)) in instances.into_iter().enumerate() {
+            let mut first_mismatch = None;
+            for (instance_index, (source, target)) in instances.iter().enumerate() {
                 for (side, actual, declared) in [
                     (
                         EndSide::Source,
@@ -261,38 +261,88 @@ impl<K: Ord + Clone> RelationshipExtentStore<K> {
                     ),
                 ] {
                     if types.object_type(actual).is_none() || !types.conforms(actual, declared) {
-                        return Err(ExtentRefusal::EndTypeMismatch {
-                            relationship,
+                        first_mismatch = Some(ExtentRefusal::EndTypeMismatch {
+                            relationship: relationship.clone(),
                             extent_index,
                             instance_index,
                             side,
                             actual_type: actual,
                             declared_type: declared,
                         });
+                        break;
                     }
                 }
-                if (source_end.unique || target_end.unique)
-                    && links.iter().any(|(held_source, held_target)| {
-                        held_source == &source && held_target == &target
+                if first_mismatch.is_some() {
+                    break;
+                }
+            }
+            // Only the valid prefix can contain a duplicate that precedes the first mismatch.
+            let checked_len = match &first_mismatch {
+                Some(ExtentRefusal::EndTypeMismatch { instance_index, .. }) => *instance_index,
+                _ => instances.len(),
+            };
+            if source_end.unique || target_end.unique {
+                let mut triples = Vec::new();
+                if let Err(storage) = reserve_elements(&mut triples, checked_len, reservation) {
+                    // On a denied scratch reservation, preserve condition precedence.
+                    // This slow path is reached only when admission cannot reserve storage.
+                    for (instance_index, pair) in
+                        instances.iter().take(checked_len).enumerate().skip(1)
+                    {
+                        if instances
+                            .iter()
+                            .take(instance_index)
+                            .any(|prior| prior == pair)
+                        {
+                            return Err(ExtentRefusal::DuplicateTriple {
+                                relationship,
+                                extent_index,
+                                instance_index,
+                            });
+                        }
+                    }
+                    if let Some(mismatch) = first_mismatch {
+                        return Err(mismatch);
+                    }
+                    return Err(extent_storage(storage));
+                }
+                triples.extend(
+                    instances
+                        .iter()
+                        .take(checked_len)
+                        .enumerate()
+                        .map(|(index, (source, target))| (source, target, index)),
+                );
+                triples.sort_unstable_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)));
+                let first_duplicate = triples
+                    .windows(2)
+                    .filter_map(|pair| {
+                        (pair[0].0 == pair[1].0 && pair[0].1 == pair[1].1).then_some(pair[1].2)
                     })
-                {
+                    .min();
+                if let Some(instance_index) = first_duplicate {
                     return Err(ExtentRefusal::DuplicateTriple {
                         relationship,
                         extent_index,
                         instance_index,
                     });
                 }
-                reserve_elements(&mut links, 1, reservation).map_err(extent_storage)?;
-                links.push((source, target));
             }
+            if let Some(mismatch) = first_mismatch {
+                return Err(mismatch);
+            }
+            let mut links = Vec::new();
+            reserve_elements(&mut links, instances.len(), reservation).map_err(extent_storage)?;
+            links.extend(instances);
             links.sort_unstable();
             let mut inverse = Vec::new();
             reserve_elements(&mut inverse, links.len(), reservation).map_err(extent_storage)?;
             inverse.extend(0..links.len());
-            inverse.sort_unstable_by(|a, b| {
-                let (a_source, a_target) = &links[*a];
-                let (b_source, b_target) = &links[*b];
-                (a_target, a_source).cmp(&(b_target, b_source))
+            inverse.sort_unstable_by(|a, b| match (links.get(*a), links.get(*b)) {
+                (Some((a_source, a_target)), Some((b_source, b_target))) => {
+                    (a_target, a_source).cmp(&(b_target, b_source))
+                }
+                _ => a.cmp(b),
             });
             admitted
                 .try_insert(
@@ -327,37 +377,52 @@ impl<K: Ord + Clone> RelationshipExtentStore<K> {
     pub fn targets<'a>(
         &'a self,
         relationship: &K,
-        source: &'a ObjectReference,
+        source: &ObjectReference,
     ) -> impl Iterator<Item = &'a ObjectReference> {
-        self.extents
+        let links = self
+            .extents
             .get(relationship)
+            .map_or(&[][..], |extent| extent.links.as_slice());
+        let start = links.partition_point(|(candidate, _)| candidate < source);
+        let end = links.partition_point(|(candidate, _)| candidate <= source);
+        links
+            .get(start..end)
             .into_iter()
-            .flat_map(move |extent| {
-                extent
-                    .links
-                    .iter()
-                    .filter(move |(candidate, _)| candidate == source)
-                    .map(|(_, target)| target)
-            })
+            .flatten()
+            .map(|(_, target)| target)
     }
 
     /// Sources for the whole target reference, ordered by whole source key.
     pub fn sources<'a>(
         &'a self,
         relationship: &K,
-        target: &'a ObjectReference,
+        target: &ObjectReference,
     ) -> impl Iterator<Item = &'a ObjectReference> {
-        self.extents
-            .get(relationship)
-            .into_iter()
-            .flat_map(move |extent| {
+        let extent = self.extents.get(relationship);
+        let (start, end) = extent.map_or((0, 0), |extent| {
+            let start = extent.inverse.partition_point(|index| {
                 extent
-                    .inverse
-                    .iter()
-                    .map(move |index| &extent.links[*index])
-                    .filter(move |(_, candidate)| candidate == target)
-                    .map(|(source, _)| source)
-            })
+                    .links
+                    .get(*index)
+                    .is_some_and(|(_, candidate)| candidate < target)
+            });
+            let end = extent.inverse.partition_point(|index| {
+                extent
+                    .links
+                    .get(*index)
+                    .is_some_and(|(_, candidate)| candidate <= target)
+            });
+            (start, end)
+        });
+        extent.into_iter().flat_map(move |extent| {
+            extent
+                .inverse
+                .get(start..end)
+                .into_iter()
+                .flatten()
+                .filter_map(|index| extent.links.get(*index))
+                .map(|(source, _)| source)
+        })
     }
 }
 
@@ -725,7 +790,8 @@ impl<'t, P: Ord + Clone, E> ManifestOutcome<'t, P, E> {
             .coverage
             .binary_search_by_key(&actual, |(object_type, _)| *object_type)
             .ok()
-            .is_some_and(|position| closed.coverage[position].1)
+            .and_then(|position| closed.coverage.get(position))
+            .is_some_and(|(_, complete)| *complete)
     }
 }
 
@@ -777,6 +843,17 @@ mod tests {
     use core::cell::Cell;
     use ix_trace_rs::trace;
     use quire_exact::{ObjectId, UniverseId};
+
+    struct CapacityPolicy;
+
+    impl ReservationPolicy for CapacityPolicy {
+        fn permit(&self, _request: StorageRequest) -> bool {
+            true
+        }
+        fn check_request(&self, request: StorageRequest) -> Result<(), StorageFailure> {
+            Err(StorageFailure::Capacity(request))
+        }
+    }
 
     #[allow(
         clippy::disallowed_methods,
@@ -841,15 +918,41 @@ mod tests {
             complete: true,
             instances: vec![(reference(1), reference(2))],
         };
+        let prior_store = RelationshipExtentStore::new(&types, &table, [extent()]).unwrap();
+        let prior_before = prior_store.clone();
         observed.set(None);
         assert_eq!(
             RelationshipExtentStore::with_reservation(&types, &table, [extent()], &deny),
             Err(ExtentRefusal::Allocation(request))
         );
         assert_eq!(observed.get(), Some(request));
+        assert_eq!(prior_store, prior_before);
+        let repeated = RelationshipExtent {
+            relationship: "r",
+            complete: true,
+            instances: vec![(reference(1), reference(2)), (reference(1), reference(2))],
+        };
+        assert_eq!(
+            RelationshipExtentStore::with_reservation(&types, &table, [repeated], &deny),
+            Err(ExtentRefusal::DuplicateTriple {
+                relationship: "r",
+                extent_index: 0,
+                instance_index: 1
+            })
+        );
         let store = RelationshipExtentStore::new(&types, &table, [extent()]).unwrap();
+        let store_before = store.clone();
         assert!(store.complete(&"r"));
+        assert_eq!(store, store_before);
         assert_eq!(table, before);
+        assert_eq!(
+            NavigationRelationshipTable::with_reservation(&types, [declaration()], &CapacityPolicy),
+            Err(TableRefusal::Capacity(request))
+        );
+        assert_eq!(
+            RelationshipExtentStore::with_reservation(&types, &table, [extent()], &CapacityPolicy),
+            Err(ExtentRefusal::Capacity(request))
+        );
         let overflow = reserve_elements::<u64, _>(&mut Vec::new(), usize::MAX, &GlobalReservations)
             .expect_err("array layout cannot represent max elements");
         assert_eq!(
@@ -869,6 +972,13 @@ mod tests {
     }
 
     struct OneRow(Option<PopulationEntry<&'static str>>);
+    struct TwoRows(alloc::vec::IntoIter<PopulationEntry<&'static str>>);
+    impl PopulationEnumerator<&'static str> for TwoRows {
+        type Error = ();
+        fn next_row(&mut self) -> Result<Option<PopulationEntry<&'static str>>, Self::Error> {
+            Ok(self.0.next())
+        }
+    }
     impl PopulationEnumerator<&'static str> for OneRow {
         type Error = ();
         fn next_row(&mut self) -> Result<Option<PopulationEntry<&'static str>>, Self::Error> {
@@ -902,6 +1012,36 @@ mod tests {
         let mut retry = OneRow(Some(make_row()));
         let admitted = ClosedPopulationManifest::from_enumerator(&types, &mut retry, 1).unwrap();
         assert_eq!(admitted.state(), ManifestState::Closed);
+        let mut duplicate_source = TwoRows(vec![make_row(), make_row()].into_iter());
+        let reservations = Cell::new(0);
+        let deny_second = |_: StorageRequest| {
+            reservations.set(reservations.get() + 1);
+            reservations.get() == 1
+        };
+        assert_eq!(
+            ClosedPopulationManifest::with_reservation(
+                &types,
+                &mut duplicate_source,
+                2,
+                &deny_second
+            ),
+            Err(ManifestFailure::DuplicatePopulation("Q"))
+        );
+        assert_eq!(reservations.get(), 1);
+        assert_eq!(
+            PopulationEntry::with_reservation("Q", [ty(1)], true, &CapacityPolicy),
+            Err(PopulationEntryFailure::Capacity(request))
+        );
+        let mut capacity_source = OneRow(Some(make_row()));
+        assert_eq!(
+            ClosedPopulationManifest::with_reservation(
+                &types,
+                &mut capacity_source,
+                1,
+                &CapacityPolicy
+            ),
+            Err(ManifestFailure::Capacity(request))
+        );
         let overflow = reserve_elements::<u64, _>(&mut Vec::new(), usize::MAX, &GlobalReservations)
             .expect_err("array layout cannot represent max elements");
         assert_eq!(
