@@ -29,10 +29,29 @@ remain with [QSL FR-106](ix://agent-ix/quire-spec-language/FR-106) and FR-364.
 - An admitted `TypeEnvironment` and `ObjectClosure`.
 - Navigation-relationship declarations keyed by caller type `K: Ord + Clone`:
   each has a key and source and target ends, each end naming an effective
-  object type and its `unique` flag.
+  object type and its `unique` flag. The model owner (QSL) supplies the table
+  and end types from authenticated declarations; QSV checks end-type membership
+  in the `TypeEnvironment` but does not authenticate declarations.
 - Extents in supplied order, each naming one relationship, a `complete` flag,
   and ordered input instances of full source and target references.
-- A caller-supplied `PopulationCompleteness` implementation for `resolve`.
+- A population manifest built against the admitted `TypeEnvironment` from
+  entries naming a caller-defined population, its covered effective object
+  type, and its explicit completeness state. The QSV boundary is:
+
+  ```rust
+  pub struct PopulationEntry<P: Ord> { pub population: P, pub covered_type: EffectiveId, pub complete: bool }
+  pub struct PopulationManifestBuilder<P: Ord + Clone> { /* fallible push(entry) */ }
+  pub struct PopulationManifest<P: Ord + Clone> { /* entries sorted by P; state: Open | Closed */ }
+  impl<P: Ord + Clone> PopulationManifestBuilder<P> {
+      pub fn push(&mut self, entry: PopulationEntry<P>) -> Result<(), ManifestFailure<P>>;
+      pub fn close(self) -> PopulationManifest<P>;
+      pub fn leave_open(self) -> PopulationManifest<P>;
+  }
+  pub enum Resolution { Present, Dangling, Undecidable }
+  impl ObjectClosure {
+      pub fn resolve<P: Ord + Clone>(&self, x: &ObjectReference, types: &TypeEnvironment, m: &PopulationManifest<P>) -> Resolution;
+  }
+  ```
 
 ## Outputs
 
@@ -74,12 +93,30 @@ remain with [QSL FR-106](ix://agent-ix/quire-spec-language/FR-106) and FR-364.
    key order (universe, object type, object identity), independent of input
    order, with repeated references adjacent and retained once per instance.
    Equality SHALL use the whole key, including universe and type.
-5. `ObjectClosure::resolve(x)` SHALL return `Present` for an admitted object.
-   For a missing object it SHALL return `Dangling` exactly when the
-   caller-supplied `PopulationCompleteness` says the population owning `x` is
-   held complete; otherwise it SHALL return `Undecidable`. QSV SHALL define no
-   default implementation and no blanket true implementation of that trait.
-   QSL defines which population owns `x` and supplies the implementation.
+5. `ObjectClosure::resolve(x, types, manifest)` SHALL return `Present` exactly
+   when `x` is an admitted object, regardless of manifest completeness. For a
+   missing `x`, it SHALL return `Dangling` exactly when the manifest is `Closed`,
+   at least one entry's covered type covers `x`'s object type by FR-082
+   conformance through the admitted `TypeEnvironment`, every such covering
+   entry is complete, and the closure holds no object equal to `x`. Otherwise
+   it SHALL return `Undecidable`: this includes an `Open` manifest, no covering
+   entry, any incomplete covering entry, or an object type unknown to the
+   environment. QSV SHALL check `x`'s type membership explicitly; reflexive
+   `conforms` on an unknown equal key is not membership evidence. A covering
+   entry for a supertype counts even when a different population's entry
+   covers the exact type. `push` SHALL refuse a duplicate
+   population key or an unknown covered type with distinct typed
+   `ManifestFailure<P>` causes; denied representable storage and capacity
+   overflow SHALL have distinct typed `Allocation` and `Capacity` causes.
+   Entries SHALL remain sorted by `P`. A failed push SHALL publish no entry.
+   `close(self)` SHALL be the only way to obtain `Closed`, consuming the
+   builder after QSL has traversed every population; `leave_open(self)` SHALL
+   produce `Open`. QSV cannot verify that QSL exhausted those populations.
+   QSL-800 owns the definition of the population of `x` and the evidence for
+   completion and exhaustion. Its reviewed contract, not this FR, establishes
+   any compatibility claim. QSL-800 MUST confirm the explicit rule that no
+   covering entry yields `Undecidable`. QSV SHALL infer no completeness from
+   absence and SHALL provide no default or blanket completeness policy.
 6. The four reads SHALL be total, pure and allocation-free. They SHALL read no
    object field or population member list, charge nothing, consult no path,
    clock or global state, and leave both stores unchanged. The admitted
@@ -105,9 +142,13 @@ remain with [QSL FR-106](ix://agent-ix/quire-spec-language/FR-106) and FR-364.
 | FR-119-AC-6 | Four targets through an end declared upper 3, no instance through an end declared lower 1, and a complete empty extent all admit. No multiplicity refusal is returned at admission. | Test |
 | FR-119-AC-7 | An unlisted relationship gives `complete=false` and empty reads; a listed incomplete extent gives `complete=false` while retaining its instances in reads; a listed complete empty extent gives `complete=true` and empty reads. None is inferred from another. | Test |
 | FR-119-AC-8 | Supplying two relationships and their instances in either order yields identical `targets` and `sources` in ascending universe/type/identity order. A repeated non-unique link appears twice adjacently; inverse `sources` reads the same instances. A same-named object in another universe, and separately another type, does not match a receiver or collapse with it. | Test |
-| FR-119-AC-9 | For an admitted reference `resolve` returns `Present` even when its population is incomplete; for a missing reference a caller seam reporting its owning population complete yields `Dangling`, and the same reference with that population incomplete yields `Undecidable`. No QSV default or blanket complete policy is used. | Test |
+| FR-119-AC-9 | `resolve` returns `Present` for an admitted object even when its population entry is incomplete. | Test |
 | FR-119-AC-10 | Repeating every read gives equal results and performs zero allocations and charges; clone comparisons show the closure and store structurally unchanged, including after reads of incomplete and unlisted extents. No field, population member list, path, clock or global is consulted. | Test |
 | FR-119-AC-11 | Denying an actual representable table reservation and separately an extent reservation returns typed `Allocation` with the exact requested amount and byte or additional-element unit; capacity arithmetic overflow returns distinct typed `Capacity`. Each failure publishes no partial input, leaves prior admitted state equal to its clone, and the same input admits after denial is removed. No QSV count ceiling rejects it. | Test |
+| FR-119-AC-12 | For a missing `x` of a known type, `resolve` returns `Dangling` only with a `Closed` manifest containing at least one covering entry, every covering entry complete, and no object equal to `x` in the closure. Coverage uses FR-082 conformance through `TypeEnvironment`. | Test |
+| FR-119-AC-13 | For a missing `x`, `resolve` returns `Undecidable` separately for an `Open` manifest, an incomplete covering entry, no covering entry, and an object type unknown to the environment. No covering entry does not establish completeness. | Test |
+| FR-119-AC-14 | A `Closed` manifest with a complete entry covering `x`'s exact type and an incomplete entry for a different population covering a supertype of `x`'s type returns `Undecidable` for missing `x`. | Test |
+| FR-119-AC-15 | The manifest builder rejects duplicate population keys and unknown covered types with distinct typed `ManifestFailure<P>` causes, and denied representable storage and capacity overflow with distinct typed `Allocation` and `Capacity` causes. Each failed push publishes no entry; successful entries remain sorted by `P`. Only consuming `close` produces `Closed`; consuming `leave_open` produces `Open`. | Test |
 
 ## Dependencies
 
@@ -118,6 +159,12 @@ remain with [QSL FR-106](ix://agent-ix/quire-spec-language/FR-106) and FR-364.
   population bindings and closure checks, `observation.values` charging and
   limit enforcement, and snapshot integration. [QSL FR-084](ix://agent-ix/quire-spec-language/FR-084)
   owns population completeness and the reference-key meaning.
+- QSL-800 owns the definition of "the population of `x`", the authoritative
+  population set, completion and traversal-exhaustion evidence, and review of
+  compatibility with this manifest boundary. QSL-800 is open and blocks
+  QSL-794; this FR does not assert resolve compatibility acceptance. In
+  particular, QSL-800 must confirm that no covering entry yields
+  `Undecidable`.
 - [FR-106](./FR-106-object-closure-admission.md) supplies `ObjectClosure`;
   [FR-108](./FR-108-report-registry-allocation-failure.md) supplies the
   fallible reservation style and typed storage request units.
