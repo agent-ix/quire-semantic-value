@@ -36,38 +36,47 @@ FR-119-AC-15. This is a planned QSV counterpart of
    Inspect exact cause, relationship, zero-based extent and instance indices,
    and mismatch side and types. Put faults in competing instances and
    extents to check first-failure order. Repeat the triple with **bag** and
-   **bag-target**. For a missing end object check that type validation skips
-   that end.
+   **bag-target**. Supply a missing end object whose reference type mismatches
+   its declared end and assert `EndTypeMismatch` with the actual type; repeat
+   with an unknown actual type that compares equal to itself under `conforms`.
+   Supply a missing end object whose reference type conforms and assert that
+   the instance admits and the end remains available to `resolve`.
 4. Add `p4`, then admit four composition targets under upper 3, no housing
    link under lower 1, and an empty complete composition extent. Separately
    admit a listed incomplete extent holding one link and omit housing
    entirely. Compare all three completeness states and their held reads.
-5. Build real `PopulationManifest`s through `PopulationManifestBuilder::push`.
-   After supplying the fixture's entire population set, consume the builder
-   with `close`; separately consume a builder with `leave_open`. Pass each
-   manifest and the admitted `TypeEnvironment` to `resolve`. Assert `Present`
+5. Implement real `PopulationEnumerator`s over the fixture's authenticated
+   population set and build manifests with `from_enumerator`. One enumerator
+   returns each row then `Ok(None)`; assert that only this normal exhaustion
+   produces `ManifestOutcome::Closed` and `ManifestState::Closed`, and that the
+   closed manifest equals its clone. Pass the manifest and admitted
+   `TypeEnvironment` to `resolve`. Assert `Present`
    for an admitted reference even with an incomplete population entry. For a
    missing reference of a known type, assert `Dangling` with a `Closed`
    manifest containing at least one complete covering entry and no equal
-   closure object. Independently assert `Undecidable` for an `Open` manifest,
+   closure object. Independently assert `Undecidable` for an `Incomplete` manifest,
    an incomplete covering entry, no covering entry, and an unknown object
    type. In a `Closed` manifest, add a complete entry covering the missing
    reference's exact type and a different population's incomplete entry
    covering its supertype; assert `Undecidable`. Use FR-082 conformance through
    `TypeEnvironment` to establish both covering relationships, and repeat
    with every covering entry complete to assert `Dangling`.
-6. Push entries out of population-key order and inspect sorted manifest
-   entries. Try a duplicate population key and an unknown covered type;
-   assert their distinct typed `ManifestFailure<P>` causes. Deny a real
-   representable manifest reservation and exercise capacity overflow; assert
-   distinct typed `Allocation` with exact request amount and unit, and
-   `Capacity` causes. Record the previously accepted entries before each
-   failed push, then finish the builder and compare its published entries with
-   that record; verify no refused entry appears in either an open or a closed
-   manifest. Check that consuming `close` and `leave_open` yield the
-   respective states. Use read instrumentation and structural clones to
-   check zero allocations, zero charges, no external reads and no mutation
-   across repeated `complete`, `targets`, `sources` and `resolve`.
+6. Yield entries out of population-key order and inspect sorted retained rows.
+   Use separate real enumerators that return `Err` mid-way and hit a row limit;
+   assert each returns `ManifestOutcome::Incomplete` with its retained rows,
+   `ManifestState::Incomplete`, and respectively `EnumeratorError` or
+   `RowLimit`. For each early stop, resolve a missing object whose type the
+   retained complete row covers and assert `Undecidable`, never `Dangling`.
+   Try a duplicate population key and an unknown covered type; assert their
+   distinct typed `ManifestFailure<P>` causes and that neither row is silently
+   dropped or merged. Deny a real representable manifest reservation and
+   exercise capacity overflow; assert distinct typed `Allocation` with exact
+   request amount and unit, and `Capacity` causes. Assert there is no public
+   constructor taking a closed flag, no caller-controlled `close`, and no way
+   to build `Closed` from supplied rows. Use read instrumentation and
+   structural clones to check zero allocations, zero charges, no external
+   reads and no mutation across repeated `complete`, `targets`, `sources`
+   and `resolve`.
 7. Inject denial at actual table and extent reservation boundaries; assert
    `Allocation` carries the observed `StorageRequest` amount and unit.
    Exercise checked size overflow for `Capacity`. Compare state with its
@@ -77,12 +86,16 @@ FR-119-AC-15. This is a planned QSV counterpart of
 
 Each isolated defect produces only its distinct typed refusal with exact
 position payload, before later defects; refused input publishes nothing.
-Counts outside declared multiplicity bounds admit. Reads are pure, total and
+Counts outside declared multiplicity bounds admit. A missing end is checked
+against its reference type even when no object is held; a conforming missing
+end admits. Reads are pure, total and
 sorted by the whole reference key with repeats preserved. The three extent
 states and three resolve results remain distinct. Missing references with no
 covering population remain `Undecidable`; an incomplete covering supertype
-prevents `Dangling`. Builder refusals are typed and publish no entry, and
-denied storage never creates partial state.
+prevents `Dangling`. Only normal enumerator exhaustion closes the manifest;
+errors and row limits retain rows in `Incomplete` without enabling `Dangling`.
+Manifest refusals are typed and do not silently accept duplicate or unknown
+rows; denied storage never creates partial state.
 
 ## Status
 
