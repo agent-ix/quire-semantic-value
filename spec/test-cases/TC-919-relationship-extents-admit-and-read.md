@@ -99,6 +99,9 @@ FR-119-AC-1 through FR-119-AC-20. This is a planned QSV counterpart of
    explicit actual-type membership check; absence of coverage could also
    produce the same result. Also check a known type whose complete coverage
    differs across two environments and assert `Undecidable` from their mismatch.
+   With a held object, pass `types` as a different environment value from the
+   one used to build a `Partial` manifest; assert `Present` despite both the
+   environment mismatch and partial state.
    In a `Closed` manifest, add a complete entry covering the missing
    reference's exact type and a different population's incomplete entry
    covering its supertype; assert `Undecidable`. Repeat with the incomplete
@@ -144,14 +147,21 @@ FR-119-AC-1 through FR-119-AC-20. This is a planned QSV counterpart of
    member-list, path, clock or global access, and allocation-free reads. Inspect
    that only the transient manifest types borrow the environment. Inspect
    `ObjectClosure` for no environment field or lifetime, its unchanged `new`
-   signature, and its added `resolve` and structural `PartialEq`/`Eq`. Compare
+   signature, and its added `resolve` and hand-written structural `PartialEq`/`Eq`.
+   Admit a closure with a Float attribute containing NaN and assert it equals
+   itself and its clone. Admit two otherwise identical closures whose Float
+   attribute holds positive zero and negative zero respectively; assert they
+   compare unequal. Inspect that field values compare by exact structural
+   identity, with Float width and IEEE-754 bits compared directly, and that
+   closure equality is never used for model numeric `=`. Compare
    two closed manifests with equal rows and state but distinct, value-equal
    environment values: they must compare unequal by reference identity.
    Check that `ManifestOutcome` equality requires `E: PartialEq`; the extent
    store compares its state by value and holds no environment reference.
    Pass a closed manifest built against one environment with `types` referring
    to another value; assert `Undecidable` even when its rows would cover a
-   missing object. Inspect `resolve` for a shared `'t` and `core::ptr::eq`.
+   missing object. Inspect `resolve` for a shared `'t` and `core::ptr::eq`
+   applied only after a missing-object check.
    Inspect that QSV does not authenticate the closure and manifest's
    checked-unit/source pairing; a common `TypeEnvironment` alone cannot
    establish that the caller paired the same source.
@@ -174,6 +184,9 @@ cover a parent; an incomplete covering supertype
 prevents `Dangling`. Only normal enumerator exhaustion closes the manifest; an
 exact row limit still allows the following exhausted pull to close it. Errors
 and exceeded row limits retain rows in `Partial` without enabling `Dangling`;
+held objects remain `Present` regardless of manifest state or environment;
+closure equality is reflexive for Float values, including NaN, while signed
+zeros have distinct structural identity;
 `source_rows` counts every pulled `Some(row)`, including the row exceeding the limit,
 and excludes a failing `Err` pull.
 Manifest refusals are typed and do not silently accept duplicate or unknown

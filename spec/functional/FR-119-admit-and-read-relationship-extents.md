@@ -100,9 +100,8 @@ population bindings, charge accounting and snapshot integration remain with
    transactionally through one one-shot constructor, like `ObjectClosure::new`.
    It SHALL have no incremental add operation. A later constructor call SHALL
    build a new independent store, even when it supplies a relationship present
-   in an earlier store; cross-call duplication is not condition 2. QSL SHALL
-   supply all extents of one observation in one call. For each extent in that
-   call's order, the store SHALL check
+   in an earlier store; cross-call duplication is not condition 2. For each
+   extent in that call's order, the store SHALL check
    FR-364 condition
    1 (key is a table navigation relationship), then condition 2 (relationship
    already has an extent). For each instance in supplied order it SHALL check
@@ -136,16 +135,20 @@ population bindings, charge accounting and snapshot integration remain with
    key order (universe, object type, object identity), independent of input
    order, with repeated references adjacent and retained once per instance.
    Equality SHALL use the whole key, including universe and type.
-5. `ObjectClosure::resolve(x, types, manifest)` SHALL return `Present` exactly
-   when `x` is an admitted object and the manifest's environment reference is
-   identical to `types`, including with a `Partial` outcome. The manifest
-   types SHALL borrow the `TypeEnvironment` against which they were built;
+5. `ObjectClosure::resolve(x, types, manifest)` SHALL first return `Present`
+   whenever `x` is an admitted object, regardless of the manifest's state or
+   whether its environment reference is identical to `types`. This preserves
+   [QSL FR-364](ix://agent-ix/quire-spec-language/FR-364)'s rule that a held
+   object is present. Only when `x` is missing SHALL the manifest determine
+   `Dangling` or `Undecidable`. The manifest types SHALL borrow the
+   `TypeEnvironment` against which they were built;
    `ObjectClosure` SHALL retain no environment reference and gain no lifetime
    parameter. `resolve` SHALL use the same `'t` for `types` and the manifest,
    and SHALL compare their environment references with `core::ptr::eq` at run
-   time. The shared lifetime constrains the borrow scope but does not establish
-   that both references identify the same value; Rust may shorten compatible
-   borrows. A mismatch SHALL return `Undecidable`. This compares reference identity
+   time for a missing `x`. The shared lifetime constrains the borrow scope but
+   does not establish that both references identify the same value; Rust may
+   shorten compatible borrows. A mismatch for a missing `x` SHALL return
+   `Undecidable`. This compares reference identity
    of the environment value, without a hash, digest or pin; it does not prove
    the closure was admitted against that environment. QSV SHALL NOT authenticate
    that a closure and manifest describe the same checked unit or source. A
@@ -203,8 +206,19 @@ population bindings, charge accounting and snapshot integration remain with
    clock or global state, and leave both stores unchanged. The admitted
    `ObjectClosure` and extent store SHALL have structural equality so each
    compares equal to its clone before and after reads. `ObjectClosure` SHALL
-   change only by adding `resolve` and structural `PartialEq`/`Eq`; its fields,
-   lifetime shape and `new` signature SHALL remain unchanged. The extent store
+   change only by adding `resolve` and hand-written structural `PartialEq`/`Eq`;
+   its fields, lifetime shape and `new` signature SHALL remain unchanged.
+   Closure equality SHALL compare entries in ascending full reference-key order,
+   then corresponding field slots by exact structural identity: the same slot
+   state, `Value` variant, stored type and identity metadata, and recursively
+   the same ordered children and leaf payloads. A `Float` payload SHALL compare
+   its IEEE-754 width and bit pattern, including NaN payload and sign; identical
+   NaNs compare equal and positive and negative zero compare unequal. Thus
+   closure equality SHALL be reflexive for every admitted closure, including
+   one with a Float attribute. This identity equality serves clone and purity
+   checks; it is not the model's numeric `=` and SHALL NOT be used for model
+   equality. In particular, `quire-exact::compare_keys` excludes `Float` from
+   `=`. The extent store
    holds no environment reference and SHALL compare its stored state by value.
    Manifest equality SHALL compare rows and state by value and environment
    references by reference identity. `ManifestOutcome<'t, P, E>` equality SHALL
@@ -229,8 +243,8 @@ population bindings, charge accounting and snapshot integration remain with
 | FR-119-AC-6 | The public table input contains only type and `unique` for each end, no lower or upper bound, and the admission path performs no count comparison. For one source, 0, 1 and a large number of instances each admit; a complete empty extent admits. | Inspection + Test |
 | FR-119-AC-7 | An unlisted relationship gives `complete=false` and empty reads; a listed incomplete extent gives `complete=false` while retaining its instances in reads; a listed complete empty extent gives `complete=true` and empty reads. Listing an incomplete extent with instances does not make it complete; an unlisted relationship stays incomplete when a sibling is listed complete. | Test |
 | FR-119-AC-8 | Supplying two relationships and their instances in either order yields identical `targets` and `sources` in ascending universe/type/identity order. A repeated non-unique link appears twice adjacently; inverse `sources` reads the same instances. A same-named object in another universe, and separately another type, does not match a receiver or collapse with it. | Test |
-| FR-119-AC-9 | `resolve` returns `Present` for an admitted object with a `Partial` outcome and with a `Closed` outcome whose covering population entry is incomplete. | Test |
-| FR-119-AC-10 | Test: repeating every read gives equal results, zero allocations and charges, and closure and store equal to their pre-read clones, including after incomplete and unlisted reads. Inspection: read signatures and bodies access no object field, population member list, path, clock or global and allocate no storage. | Test + Inspection |
+| FR-119-AC-9 | `resolve` returns `Present` for an admitted object with a `Partial` outcome and with a `Closed` outcome whose covering population entry is incomplete, including when the manifest was built against a different environment value from the supplied `types`. | Test |
+| FR-119-AC-10 | Test: repeating every read gives equal results, zero allocations and charges, and closure and store equal to their pre-read clones, including after incomplete and unlisted reads. A closure with a Float attribute, including NaN, equals itself and its clone; two otherwise identical closures whose Float attribute differs only between positive and negative zero compare unequal. Inspection: read signatures and bodies access no object field, population member list, path, clock or global and allocate no storage; closure equality uses exact structural identity, not model `=`. | Test + Inspection |
 | FR-119-AC-11 | Denying an actual representable table reservation and separately an extent reservation returns typed `Allocation` with the exact requested amount and byte or additional-element unit; capacity arithmetic overflow returns distinct typed `Capacity`. Each failure publishes no partial input, leaves prior admitted state equal to its clone, and the same input admits after denial is removed. No QSV count ceiling rejects it. | Test |
 | FR-119-AC-12 | For a missing `x` of known type, with identical supplied and manifest environment references, `resolve` returns `Dangling` exactly when a `Closed` manifest has at least one covering entry and every covering entry is complete. A population entry covers type T if and only if T conforms, including reflexively, to at least one declared member type under [QSL FR-082](ix://agent-ix/quire-spec-language/FR-082) through `TypeEnvironment`. Positive cases include exact-type coverage, supertype-only coverage, and coverage through one member of a multi-type population. | Test |
 | FR-119-AC-13 | For a missing `x`, `resolve` returns `Undecidable` separately for a `Partial` outcome, a `Closed` outcome with an incomplete covering entry, no covering entry, and an actual object type unknown to the supplied environment. Test unknown-type membership with identical supplied and manifest environment references and a `Closed` manifest whose entries completely cover an admitted control type: the missing control reference resolves `Dangling`, while a missing reference of unknown actual type resolves `Undecidable`. Separately, a row naming a covered type unknown to that manifest's environment fails intake with typed `ManifestFailure::UnknownCoveredType`. Inspect `resolve` for explicit actual-type membership; the result alone can also follow from absence of coverage. No covering entry establishes no completeness. | Test + Inspection |
@@ -239,7 +253,7 @@ population bindings, charge accounting and snapshot integration remain with
 | FR-119-AC-16 | With N retained rows and one further `Some(row)` beyond `row_limit == N`, `from_enumerator` returns `Partial` retaining only N sorted rows and both `source_rows` accessors equal N + 1, with `RowLimit { limit: N }`. An excess duplicate-population row and separately an excess unknown-covered-type row yield that same partial outcome before validation. A missing object covered by a retained complete row resolves `Undecidable`, while an admitted object resolves `Present`. | Test |
 | FR-119-AC-17 | With `row_limit` exactly equal to the source row count, the next pull returns `Ok(None)` and `from_enumerator` returns `Closed`, equal to its clone by row/state value and environment reference identity. `ManifestOutcome` equality requires `E: PartialEq`. With `row_limit == 0`, `Ok(None)` on the first pull returns empty `Closed`; `Ok(Some(row))` on the first pull returns `Partial` with no retained rows, `source_rows == 1` and `StopReason::RowLimit { limit: 0 }`. Each case checks the pull before the limit check. | Test |
 | FR-119-AC-18 | After N successful `Some` pulls followed by `Err`, `from_enumerator` returns `Partial` with N rows retained in sorted order, both `source_rows` accessors equal N, and `EnumeratorError` carrying the original error. The failing pull is not counted; a missing object covered by a retained complete row still resolves `Undecidable`. | Test |
-| FR-119-AC-19 | With a missing known-type `x`, passing `types` as a different environment value from the one borrowed by a closed manifest returns `Undecidable` even when its complete rows would cover `x`. Inspection confirms the manifest types borrow their environment, `resolve` shares `'t` between `types` and the outcome and compares references by `core::ptr::eq`, while `ObjectClosure` has no environment field or lifetime and retains its `new` signature. QSV does not authenticate the closure and manifest's checked-unit/source pairing. | Test + Inspection |
+| FR-119-AC-19 | With a missing known-type `x`, passing `types` as a different environment value from the one borrowed by a closed manifest returns `Undecidable` even when its complete rows would cover `x`. The same mismatch does not prevent `Present` for a held `x`, even with a `Partial` outcome. Inspection confirms the manifest types borrow their environment, `resolve` shares `'t` between `types` and the outcome and compares references by `core::ptr::eq` only for missing `x`, while `ObjectClosure` has no environment field or lifetime and retains its `new` signature. QSV does not authenticate the closure and manifest's checked-unit/source pairing. | Test + Inspection |
 | FR-119-AC-20 | With only a child type declared in a complete population entry, a missing parent-typed reference remains `Undecidable` in a `Closed` manifest with matching environments: the parent does not conform to the child. A missing child-typed reference is `Dangling` under that same entry, demonstrating reflexive coverage. | Test |
 
 ## Dependencies
@@ -247,6 +261,9 @@ population bindings, charge accounting and snapshot integration remain with
 - [QSL FR-364](ix://agent-ix/quire-spec-language/FR-364) owns the four
   conditions and the observation read contract; the behaviors above specify
   QSV's input and output boundary without copying QSL's refusal codes or navigation rules.
+- NON-NORMATIVE: To preserve QSL FR-364's at-most-one-extent-per-relationship
+  rule for an observation, QSL supplies all of that observation's extents in
+  one QSV constructor call. QSV checks only the sequence supplied in that call.
 - QSL FR-364 condition 3 currently says an absent end skips type checking
   without limiting that skip to snapshot document ends. FR-119 applies the QSL
   owner's clarification: the skip applies only to snapshot document ends
