@@ -159,7 +159,7 @@ FR-109-AC-1 through FR-109-AC-5 execute in the default run;
 `supplied_path_arena_growth_probe_10k` is an ignored resource probe outside
 that run. The integrated Decimal controls traced to
 FR-109-AC-8 for cumulative N/N-1 and zero budgets, membership and size
-outcomes, cancellation and typed resource-error projection. Exact-kernel
+outcomes, cancellation and typed resource-error projection also execute. Exact-kernel
 TC-920 owns the actual scratch-denial and checked-capacity mechanisms. The
 union descriptor helper premises still need inspection under FR-109-AC-7.
 No numerical default is selected by this QSV requirement. Research predictions
