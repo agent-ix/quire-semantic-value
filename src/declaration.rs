@@ -1610,6 +1610,12 @@ impl From<EnvironmentFailure> for Stopped {
     }
 }
 
+impl From<StorageFailure> for Stopped {
+    fn from(failure: StorageFailure) -> Self {
+        Self::from(EnvironmentFailure::from(failure))
+    }
+}
+
 impl Stopped {
     /// This stop as the admission's stage failure, a refusal naming
     /// `declaration`.
@@ -1736,7 +1742,7 @@ impl EnvironmentFailure {
 }
 
 /// Injects denial at the same reservation boundary used in production.
-trait ReservationPolicy {
+pub(crate) trait ReservationPolicy {
     fn permit(&self, request: StorageRequest) -> bool;
 
     fn phase(&self, _phase: StoragePhase) {}
@@ -1749,7 +1755,7 @@ impl<F: Fn(StorageRequest) -> bool> ReservationPolicy for F {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum StoragePhase {
+pub(crate) enum StoragePhase {
     Registry,
     MemberTypes,
     Traversal,
@@ -1759,7 +1765,7 @@ enum StoragePhase {
     KeyJoin,
 }
 
-struct GlobalReservations;
+pub(crate) struct GlobalReservations;
 
 impl ReservationPolicy for GlobalReservations {
     fn permit(&self, _request: StorageRequest) -> bool {
@@ -1770,7 +1776,7 @@ impl ReservationPolicy for GlobalReservations {
 /// A reservation that produced no storage: the two classifications every
 /// checked reservation distinguishes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum StorageFailure {
+pub(crate) enum StorageFailure {
     /// A representable reservation was denied.
     Allocation(StorageRequest),
     /// Reservation size arithmetic or representation overflowed.
@@ -1786,7 +1792,7 @@ impl From<StorageFailure> for EnvironmentFailure {
     }
 }
 
-fn reserve_elements<T, R: ReservationPolicy>(
+pub(crate) fn reserve_elements<T, R: ReservationPolicy>(
     values: &mut Vec<T>,
     additional: usize,
     policy: &R,
@@ -1868,7 +1874,7 @@ fn try_clone_field_ref<R: ReservationPolicy>(value: &FieldRef, policy: &R) -> Ad
 /// Ordered index whose growth is reserved before it changes. It has the
 /// same ascending iteration and binary-search lookup as the old tree index.
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct OrderedIndex<K, V> {
+pub(crate) struct OrderedIndex<K, V> {
     entries: Vec<(K, V)>,
 }
 
@@ -1881,7 +1887,7 @@ impl<K, V> Default for OrderedIndex<K, V> {
 }
 
 impl<K: Ord, V> OrderedIndex<K, V> {
-    fn get(&self, key: &K) -> Option<&V> {
+    pub(crate) fn get(&self, key: &K) -> Option<&V> {
         self.entries
             .binary_search_by(|(item, _)| item.cmp(key))
             .ok()
@@ -1895,7 +1901,7 @@ impl<K: Ord, V> OrderedIndex<K, V> {
             .map(|at| &mut self.entries[at].1)
     }
 
-    fn contains_key(&self, key: &K) -> bool {
+    pub(crate) fn contains_key(&self, key: &K) -> bool {
         self.get(key).is_some()
     }
 
@@ -1906,7 +1912,7 @@ impl<K: Ord, V> OrderedIndex<K, V> {
             .map(|at| self.entries.remove(at).1)
     }
 
-    fn values(&self) -> impl Iterator<Item = &V> {
+    pub(crate) fn values(&self) -> impl Iterator<Item = &V> {
         self.entries.iter().map(|(_, value)| value)
     }
 
@@ -1918,16 +1924,16 @@ impl<K: Ord, V> OrderedIndex<K, V> {
         self.entries.iter().map(|(key, _)| key)
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
-    fn try_insert<R: ReservationPolicy>(
+    pub(crate) fn try_insert<R: ReservationPolicy>(
         &mut self,
         key: K,
         value: V,
         reserve: &R,
-    ) -> Admission<Option<V>> {
+    ) -> Result<Option<V>, StorageFailure> {
         match self.entries.binary_search_by(|(item, _)| item.cmp(&key)) {
             Ok(at) => Ok(Some(core::mem::replace(&mut self.entries[at].1, value))),
             Err(at) => {

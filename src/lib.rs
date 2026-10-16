@@ -22,6 +22,7 @@ pub mod location;
 pub mod loss;
 pub mod object_closure;
 pub mod quantity;
+pub mod relationship_extent;
 pub mod semantic_node;
 pub mod stop;
 pub mod supplied_membership;
