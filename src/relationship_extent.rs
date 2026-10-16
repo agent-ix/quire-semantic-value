@@ -202,7 +202,7 @@ pub enum ExtentRefusal<K> {
 struct StoredExtent {
     complete: bool,
     links: Vec<(ObjectReference, ObjectReference)>,
-    inverse: Vec<usize>,
+    inverse: Vec<(ObjectReference, ObjectReference)>,
 }
 
 /// One transactionally admitted sequence of relationship extents.
@@ -261,14 +261,17 @@ impl<K: Ord + Clone> RelationshipExtentStore<K> {
                     ),
                 ] {
                     if types.object_type(actual).is_none() || !types.conforms(actual, declared) {
-                        first_mismatch = Some(ExtentRefusal::EndTypeMismatch {
-                            relationship: relationship.clone(),
-                            extent_index,
+                        first_mismatch = Some((
                             instance_index,
-                            side,
-                            actual_type: actual,
-                            declared_type: declared,
-                        });
+                            ExtentRefusal::EndTypeMismatch {
+                                relationship: relationship.clone(),
+                                extent_index,
+                                instance_index,
+                                side,
+                                actual_type: actual,
+                                declared_type: declared,
+                            },
+                        ));
                         break;
                     }
                 }
@@ -277,10 +280,9 @@ impl<K: Ord + Clone> RelationshipExtentStore<K> {
                 }
             }
             // Only the valid prefix can contain a duplicate that precedes the first mismatch.
-            let checked_len = match &first_mismatch {
-                Some(ExtentRefusal::EndTypeMismatch { instance_index, .. }) => *instance_index,
-                _ => instances.len(),
-            };
+            let checked_len = first_mismatch
+                .as_ref()
+                .map_or(instances.len(), |(instance_index, _)| *instance_index);
             if source_end.unique || target_end.unique {
                 let mut triples = Vec::new();
                 if let Err(storage) = reserve_elements(&mut triples, checked_len, reservation) {
@@ -301,7 +303,7 @@ impl<K: Ord + Clone> RelationshipExtentStore<K> {
                             });
                         }
                     }
-                    if let Some(mismatch) = first_mismatch {
+                    if let Some((_, mismatch)) = first_mismatch {
                         return Err(mismatch);
                     }
                     return Err(extent_storage(storage));
@@ -328,7 +330,7 @@ impl<K: Ord + Clone> RelationshipExtentStore<K> {
                     });
                 }
             }
-            if let Some(mismatch) = first_mismatch {
+            if let Some((_, mismatch)) = first_mismatch {
                 return Err(mismatch);
             }
             let mut links = Vec::new();
@@ -337,13 +339,12 @@ impl<K: Ord + Clone> RelationshipExtentStore<K> {
             links.sort_unstable();
             let mut inverse = Vec::new();
             reserve_elements(&mut inverse, links.len(), reservation).map_err(extent_storage)?;
-            inverse.extend(0..links.len());
-            inverse.sort_unstable_by(|a, b| match (links.get(*a), links.get(*b)) {
-                (Some((a_source, a_target)), Some((b_source, b_target))) => {
-                    (a_target, a_source).cmp(&(b_target, b_source))
-                }
-                _ => a.cmp(b),
-            });
+            inverse.extend(
+                links
+                    .iter()
+                    .map(|(source, target)| (target.clone(), source.clone())),
+            );
+            inverse.sort_unstable();
             admitted
                 .try_insert(
                     relationship,
@@ -398,31 +399,17 @@ impl<K: Ord + Clone> RelationshipExtentStore<K> {
         relationship: &K,
         target: &ObjectReference,
     ) -> impl Iterator<Item = &'a ObjectReference> {
-        let extent = self.extents.get(relationship);
-        let (start, end) = extent.map_or((0, 0), |extent| {
-            let start = extent.inverse.partition_point(|index| {
-                extent
-                    .links
-                    .get(*index)
-                    .is_some_and(|(_, candidate)| candidate < target)
-            });
-            let end = extent.inverse.partition_point(|index| {
-                extent
-                    .links
-                    .get(*index)
-                    .is_some_and(|(_, candidate)| candidate <= target)
-            });
-            (start, end)
-        });
-        extent.into_iter().flat_map(move |extent| {
-            extent
-                .inverse
-                .get(start..end)
-                .into_iter()
-                .flatten()
-                .filter_map(|index| extent.links.get(*index))
-                .map(|(source, _)| source)
-        })
+        let inverse = self
+            .extents
+            .get(relationship)
+            .map_or(&[][..], |extent| extent.inverse.as_slice());
+        let start = inverse.partition_point(|(candidate, _)| candidate < target);
+        let end = inverse.partition_point(|(candidate, _)| candidate <= target);
+        inverse
+            .get(start..end)
+            .into_iter()
+            .flatten()
+            .map(|(_, source)| source)
     }
 }
 
