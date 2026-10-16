@@ -52,6 +52,11 @@ pub enum InputRefusal {
     /// `wrong-role-mapping`.
     #[error("the observations were admitted for another clause or frame")]
     ObservationsMismatch,
+    /// QSL FR-107: `evaluate_clause_set`'s slice names one clause twice:
+    /// `invalid_runtime_input` / `duplicate-member` (the catalogue pair QSL
+    /// FR-106-AC-43 also uses).
+    #[error("the clause set names {0} more than once")]
+    DuplicateClause(String),
 }
 
 impl InputRefusal {
@@ -60,9 +65,10 @@ impl InputRefusal {
     pub fn code(&self) -> &'static str {
         match self {
             Self::UnknownFunction(_) | Self::UnknownClause(_) => "missing_declaration",
-            Self::Arity { .. } | Self::WrongValueKind { .. } | Self::ObservationsMismatch => {
-                "invalid_runtime_input"
-            }
+            Self::Arity { .. }
+            | Self::WrongValueKind { .. }
+            | Self::ObservationsMismatch
+            | Self::DuplicateClause(_) => "invalid_runtime_input",
             Self::DanglingReference { .. } => "dangling_reference",
         }
     }
@@ -74,6 +80,7 @@ impl InputRefusal {
             Self::Arity { .. } | Self::WrongValueKind { .. } => "wrong-value-kind",
             Self::DanglingReference { .. } => "absent-target-in-complete-population",
             Self::ObservationsMismatch => "wrong-role-mapping",
+            Self::DuplicateClause(_) => "duplicate-member",
         }
     }
 }
@@ -118,6 +125,11 @@ mod tests {
                 InputRefusal::ObservationsMismatch,
                 "invalid_runtime_input",
                 "wrong-role-mapping",
+            ),
+            (
+                InputRefusal::DuplicateClause(String::from("c")),
+                "invalid_runtime_input",
+                "duplicate-member",
             ),
         ];
         for (refusal, code, cause) in cases {
