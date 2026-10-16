@@ -13,8 +13,10 @@ relationships:
 
 Verify [FR-119](../functional/FR-119-admit-and-read-relationship-extents.md)
 through QSV's public table, extent and `ObjectClosure` APIs, using full
-references supplied by a model-layer caller. Scope: FR-119-AC-1 through
-FR-119-AC-18. This is a planned QSV counterpart of
+references supplied by a model-layer caller. The reservation-denial and
+capacity cases of AC-11 and AC-15 use in-crate unit tests beside the code and
+the existing crate-private reservation seam, as in FR-108/TC-907. Scope:
+FR-119-AC-1 through FR-119-AC-19. This is a planned QSV counterpart of
 [QSL TC-1033](ix://agent-ix/quire-spec-language/TC-1033).
 
 ## Test Procedure
@@ -26,46 +28,74 @@ FR-119-AC-18. This is a planned QSV counterpart of
    table supplied by the model owner from authenticated declarations; try a
    repeated key and unknown type on each end. Assert the exact typed causes
    and payloads of FR-119-AC-1, including explicit end-type membership checks.
+   Give a duplicate key an unknown end type and require `DuplicateRelationshipKey`;
+   give one declaration unknown source and target types and require the source cause.
 2. Supply composition `s1`-`p2`, `s1`-`p1` and housing `p2`-`t1`, `p1`-`t1`
    as complete extents. Reverse the extent and instance input orders in a
    second store. Compare every forward and inverse read and complete state.
    Add full references named `p1` in another universe and another type;
    query each as receiver and check that neither aliases `Pump p1`.
-3. Independently submit an extent for `pipe`, then an unknown key, a duplicate
+3. Map the fixture's non-navigation `pipe` to a key absent from QSV's table;
+   submit it and then an unknown key in separate calls, followed by a duplicate
    composition extent, `t1`-`p1`, `s1`-`t1`, and repeated `s1`-`p1`.
-   Inspect exact cause, relationship, zero-based extent and instance indices,
-   and mismatch side and types. Put faults in competing instances and
-   extents to check first-failure order. Repeat the triple with **bag** and
+   Inspect exact cause, relationship, zero-based position within each call and
+   instance indices, and mismatch side and types. In one call submit valid
+   extent 0 followed by absent-key extent 1; assert neither appears after refusal,
+   and an earlier successfully built store stays unchanged. In another call make
+   extent 1 repeat extent 0 and contain otherwise invalid instances; require
+   `DuplicateExtent` and no extent from that call. Put a duplicate triple at
+   instance 1 before a type mismatch at instance 2 and require `DuplicateTriple`.
+   Put a type mismatch in extent 0 before a duplicate extent at index 1 and
+   require `EndTypeMismatch`. Repeat the triple with **bag** and
    **bag-target**. Supply a missing end object whose full reference type mismatches
    its authenticated declared end and assert `EndTypeMismatch` with the actual type; repeat
-   with an unknown actual type that compares equal to itself under `conforms`.
+   with an actual type unknown to the declared environment; inspect the explicit
+   membership check separately from the behavioral assertion.
    Supply a missing end object whose reference type conforms and assert that
    the instance admits and the end remains available to `resolve`.
-4. Add `p4`, then admit four composition targets under upper 3, no housing
-   link under lower 1, and an empty complete composition extent. Separately
+4. Inspect the public table input and admission path: each end carries only
+   type and `unique`, no lower/upper bound or count comparison. Add many targets
+   for one source and admit 0, 1 and that large count in separate fixtures,
+   including an empty complete extent. QSL fixture bounds are not passed to QSV. Separately
    admit a listed incomplete extent holding one link and omit housing
-   entirely. Compare all three completeness states and their held reads.
+   entirely. Compare all three completeness states and their held reads. Assert
+   incomplete with instances remains incomplete and that a sibling listed
+   complete leaves the unlisted relationship incomplete.
 5. Implement real `PopulationEnumerator`s over the fixture's authenticated
-   population set and build outcomes with `ClosedPopulationManifest::from_enumerator`,
+   population set: population `Q` has one entry with caller-ordered
+   `covered_types = [Sys, Pump, Tank]`, rather than three repeated `Q` rows.
+   Construct entries fallibly and check typed empty and duplicate-covered-type
+   refusals. Build outcomes with `ClosedPopulationManifest::from_enumerator`,
    passing a finite `row_limit: usize` on every call. One enumerator
    returns each row then `Ok(None)`; assert that only this normal exhaustion
-   produces `ManifestOutcome::Closed` and that the closed manifest equals its
+   produces the `Closed` outcome and that the closed manifest equals its
    clone. Pass the outcome and admitted `TypeEnvironment` to `resolve`. Assert `Present`
    for an admitted reference even with an incomplete population entry. For a
    missing reference of a known type, assert `Dangling` with a `Closed`
    outcome containing at least one complete covering entry and no equal
-   closure object. Independently assert `Undecidable` for a `Partial` outcome,
+   closure object. Check positive `Dangling` cases for exact-type coverage,
+   supertype-only coverage, and coverage through one member of the multi-type
+   Q entry, using a fixture with an admitted subtype for the supertype case.
+   Independently assert `Undecidable` for a `Partial` outcome,
    an incomplete covering entry, no covering entry, and an unknown object
-   type. In a `Closed` manifest, add a complete entry covering the missing
+   type. For the unknown-type case, build the closed manifest against a different
+   `TypeEnvironment` that knows and covers that type, then resolve against the
+   closure's declared environment and assert `Undecidable`; also check a known
+   type whose complete coverage differs across the two environments. In a
+   `Closed` manifest, add a complete entry covering the missing
    reference's exact type and a different population's incomplete entry
-   covering its supertype; assert `Undecidable`. Use FR-082 conformance through
+   covering its supertype; assert `Undecidable`. Repeat with the incomplete
+   supertype as one member of a multi-type entry. Use
+   [QSL FR-082](ix://agent-ix/quire-spec-language/FR-082) conformance through
    `TypeEnvironment` to establish both covering relationships, and repeat
    with every covering entry complete to assert `Dangling`.
 6. Yield entries out of population-key order and inspect sorted retained rows.
    Set `row_limit` below the source row count. Assert that `from_enumerator`
    pulls the next `Some(row)` before checking the limit, counts that pulled row
-   in both `source_rows` fields, does not retain or validate it, and returns
-   `ManifestOutcome::Partial { rows, source_rows, stop: RowLimit { limit } }`.
+   in both `source_rows` accessors as N + 1 for N retained rows, does not retain
+   or validate it, and returns `Partial` with `RowLimit { limit: N }`.
+   Repeat with an excess row that duplicates `P`, then one with an unknown
+   covered type; each must still yield `Partial`/`RowLimit` before validation.
    Resolve a missing object covered by a retained complete row as `Undecidable`,
    and an admitted object as `Present`. With `row_limit` equal to the row count,
    assert that the next pull is `Ok(None)` and yields `Closed`. With `row_limit`
@@ -73,20 +103,28 @@ FR-119-AC-18. This is a planned QSV counterpart of
    producing empty `Closed`, and a nonempty enumerator producing `Partial` with
    zero retained rows, `source_rows == 1`, and `RowLimit { limit: 0 }`.
    Separately return `Err` after retained rows. Assert `Partial` with those
-   rows, equal `source_rows` counts, and `EnumeratorError` carrying the original
-   error; resolve a missing object covered by a retained complete row as
+   rows, both `source_rows` accessors equal N for N successful `Some` pulls,
+   and `EnumeratorError` carrying the original error; the failing pull is not
+   counted. Resolve a missing object covered by a retained complete row as
    `Undecidable`.
-   Try a duplicate population key and an unknown covered type; assert their
+   Try a duplicate population key that also has an unknown covered type;
+   require `DuplicatePopulation` before type validation or reservation. Then
+   try an unknown covered type alone; assert their
    distinct typed `ManifestFailure<P>` causes and that neither row is silently
    dropped or merged. Deny a real representable manifest reservation and
    exercise capacity overflow; assert distinct typed `Allocation` with exact
    request amount and unit, and `Capacity` causes. Assert there is no public
-   constructor taking a closed flag, no caller-controlled `close`, no state
-   flag, no `resolve` on `PartialPopulationRows`, and no conversion of partial
-   rows into a closed manifest. Use read instrumentation and
-   structural clones to check zero allocations, zero charges, no external
-   reads and no mutation across repeated `complete`, `targets`, `sources`
-   and `resolve`.
+   constructor taking a closed flag, no caller-controlled `close`, no mutable
+   manifest fields, no `resolve` on `PartialPopulationRows`, and no conversion
+   of partial rows into a closed manifest. Check read-only accessors for state,
+   rows in `P` order, `source_rows` and stop. Use read instrumentation and
+   structural clones to check equal repeated results, zero allocations and
+   charges, and no mutation across `complete`, `targets`, `sources` and
+   `resolve`. Inspect read signatures and bodies for no object-field, population
+   member-list, path, clock or global access, and allocation-free reads. Inspect
+   the closure and manifest's lifetime-bound environment borrows and reference
+   identity comparison; a closed manifest built against another environment
+   must give `Undecidable` for a missing object even when its rows would cover it.
 7. Inject denial at actual table and extent reservation boundaries; assert
    `Allocation` carries the observed `StorageRequest` amount and unit.
    Exercise checked size overflow for `Capacity`. Compare state with its
@@ -96,7 +134,7 @@ FR-119-AC-18. This is a planned QSV counterpart of
 
 Each isolated defect produces only its distinct typed refusal with exact
 position payload, before later defects; refused input publishes nothing.
-Counts outside declared multiplicity bounds admit. A missing end is checked
+The QSV input has no multiplicity bounds; 0, 1 and many instances admit. A missing end is checked
 against its reference type even when no object is held; a conforming missing
 end admits. Reads are pure, total and
 sorted by the whole reference key with repeats preserved. The three extent
@@ -105,7 +143,8 @@ covering population remain `Undecidable`; an incomplete covering supertype
 prevents `Dangling`. Only normal enumerator exhaustion closes the manifest; an
 exact row limit still allows the following exhausted pull to close it. Errors
 and exceeded row limits retain rows in `Partial` without enabling `Dangling`;
-`source_rows` counts every pulled `Some(row)`, including the row exceeding the limit.
+`source_rows` counts every pulled `Some(row)`, including the row exceeding the limit,
+and excludes a failing `Err` pull.
 Manifest refusals are typed and do not silently accept duplicate or unknown
 rows; denied storage never publishes partially admitted state.
 
