@@ -60,6 +60,9 @@ Round 1 on reviewed head `b6004d37b13eff375c7ee7b4e6fc44b5c30ee9f8` against the 
 | FND-004 | fixed | Status now says the ruling was relayed and is not a ticket record, names QSpec FR-181 as the authority, and says the QSL amendment has no ticket yet. |
 | FND-005 | fixed | Behavior 9: cmp/partial_cmp take no limits, never fail, allocate nothing, and agree with canonical_bytes; AC-15 measures zero allocations. |
 | FND-006 | fixed | Description now says QSL FR-120 writes the receiver as argument 0 and FR-101 and ADR-016 ID-9 have no receiver member. |
+| FND-007 | fixed | AC-7 now requires the `to_vec` error, through `IdentityRefusal::from`, to equal the `canonical_bytes` `IdentityRefusal` (equal `bound` and `required`); `impl From<quire_canonical::Error> for IdentityRefusal` exists in src/semantic_node.rs. |
+
+Round 2 on reviewed head `725d2884580816e69880cc52ba6c6563ced0f3bc`, scoped to `git diff b6004d3..725d288` of FR-120 and TC-920: the final 1 row of the table above is round 2 and is the latest outcome for the disposition-pass-1 finding it names. No new findings.
 
 ## New findings (disposition pass 1)
 

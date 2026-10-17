@@ -48,6 +48,9 @@ Round 1 on reviewed head `b6004d37b13eff375c7ee7b4e6fc44b5c30ee9f8` against the 
 | FND-001 | fixed | TC-920 Expected step 3 now says `Argument(0)` for the second case. |
 | FND-002 | fixed | The untestable deny clause is gone: allocation mapping is AC-14, by Inspection of the source, and TC-920 no longer names a reservation seam. |
 | FND-003 | fixed | TC-920 step 2 expected now says `Receiver` for the last two. |
+| FND-004 | fixed | Behavior 6 now requires re-reading each text inside `encode_into` and mapping `ReadError::Allocation` to `quire_canonical::Error::Allocation`, a read limit to `Error::Limit`, and anything else to an `Error` variant, with no unwrap, expect or abort. All of these are constructible at 5dc4e12 (`LimitExceeded` has public fields). AC-14 now lists the `encode_into` re-read among the inspected mappings. AC-14 still says 'Inspection of `new` and `canonical_bytes`' and 'neither'; the `encode_into` panic-path rule is in Behavior 6. That is accepted wording, not a defect. |
+
+Round 2 on reviewed head `725d2884580816e69880cc52ba6c6563ced0f3bc`, scoped to `git diff b6004d3..725d288` of FR-120 and TC-920: the final 1 row of the table above is round 2 and is the latest outcome for the disposition-pass-1 finding it names. No new findings.
 
 ## New findings (disposition pass 1)
 
