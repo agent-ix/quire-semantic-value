@@ -211,8 +211,9 @@ thumbv7em-none-eabi` (`make build-no-std`) and `cargo clippy --lib --target
 thumbv7em-none-eabi -- -D warnings` both succeed with `ModelTransition` present,
 and `src/model_transition.rs` names no `std` path.
 
-IMPLEMENTED/TESTS PASSED: FR-120-AC-11. `git diff origin/main` shows no change to
-`Cargo.toml` or `Cargo.lock`, and `cargo build --locked` succeeds.
+IMPLEMENTED/INSPECTED: FR-120-AC-11. No test backs this criterion. Inspection of
+`git diff origin/main` shows no change to `Cargo.toml` or `Cargo.lock`, and
+`cargo build --locked` succeeds.
 
 IMPLEMENTED/INSPECTED: FR-120-AC-9. No test backs this criterion. Inspection of
 `src/model_transition.rs` found the private fields `operation`, `receiver` and

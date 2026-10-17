@@ -205,8 +205,9 @@ fn check(text: &str, limits: Limits) -> Result<(), TransitionCause> {
         ReadError::Malformed { .. } | ReadError::NumberOutOfRange { .. } => {
             TransitionCause::NotCanonicalJson
         }
-        // `ReadError` is non-exhaustive: `_` is for refusals that do not exist
-        // yet, so a new one is reviewed here rather than assumed to be bad text.
+        // `ReadError` is non-exhaustive, so `_` is required. A refusal added
+        // later falls through to `NotCanonicalJson` with no compile signal:
+        // check this arm whenever `quire-canonical` is bumped.
         _ => TransitionCause::NotCanonicalJson,
     })?;
     let canonical = to_vec(&document, limits).map_err(|error| match error {
@@ -232,7 +233,9 @@ fn check(text: &str, limits: Limits) -> Result<(), TransitionCause> {
         // text source, or a `quire-canonical` that can fault here) must add a
         // cause to FR-120 and its inventory rather than blame the text.
         Error::Protocol(_) | Error::Internal { .. } => TransitionCause::NotCanonicalJson,
-        // `Error` is non-exhaustive: `_` is for refusals that do not exist yet.
+        // `Error` is non-exhaustive, so `_` is required. A refusal added later
+        // falls through to `NotCanonicalJson` with no compile signal: check
+        // this arm whenever `quire-canonical` is bumped.
         _ => TransitionCause::NotCanonicalJson,
     })?;
     if canonical == text.as_bytes() {

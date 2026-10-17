@@ -61,3 +61,12 @@ Ticket: IR-830, PR quire-semantic-value#41 at a43b13fc941d12ca397fe10717e92cf759
 ## Verdict
 
 CHANGES REQUESTED: one medium (a test gap in the receiver kinds of the AC-15 order set), one low (status wording). Recorded clean: AC-1 (verbatim accessors, None, empty, 64 arguments), AC-2 (four bad operations, two bad receivers), AC-3 (site order and lowest index), AC-4 (exact bytes, null receiver, [], argument order), AC-5 (the 14-fixture equality/bytes matrix; the difference is only the receiver member), AC-6 (escape reversal x vs x/y, `[1,2]` before `[1]`), AC-7 (to_vec == canonical_bytes, same refusal one byte short), AC-8 (per-site InputBytes with bound and required; texts that fit one by one but not together are admitted), AC-12 (NullReceiver; cmp Equal iff ==), AC-13, AC-16. The production code is correct. The finding is about test strength.
+
+## Dispositions
+
+Round 1, reviewed at 3b73897e0d134190bce7b29d8f248b83705a5756 (fix commits 52e46bc, 3b73897). `quire matrix --strict` still exits 1 on FR-109-AC-6 only, which predates this PR; FR-120 rows unchanged.
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | `fixtures()` adds 17 receivers: false, true, 0, 1, -1, 1.5, [], [1], [1,2], [[1]], {}, {"a":1}, a nested object holding null, and strings with `\"`, `\\`, `\n` and `é`. The set feeds AC-5, AC-12 and AC-15, and AC-15 now also asserts `a.cmp(b) == bytes(a).cmp(&bytes(b))` for every pair. Re-run at head: `unwrap_or("zz")` for an absent receiver, `receiver.bytes().flat_map(Escaped::new)`, and the absent receiver as `""` are each KILLED by `cmp_allocates_nothing_and_sorts_like_the_bytes`. Not escaping backslashes still survives; it is equivalent for order, as before. |
+| FND-002 | fixed | FR-120 Status now records the evidence for AC-9, 10, 11 and 14 in the repo, in the FR-119 style, and TC-920 points to it. I re-measured it at head and it holds. `IMPLEMENTED/INSPECTED` is accepted: the ecosystem has no existing token for inspection-only evidence, and this one is unambiguous next to `IMPLEMENTED/TESTS PASSED`. Non-blocking: AC-11 is verified by inspection of a `git diff`, so `IMPLEMENTED/INSPECTED` would fit it better than `TESTS PASSED`. AC-10 is a build and lint run, so `TESTS PASSED` is fine there. |
