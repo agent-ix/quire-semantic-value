@@ -95,7 +95,6 @@ fn bytes(value: &ModelTransition) -> Vec<u8> {
     value.canonical_bytes(BIG).unwrap()
 }
 
-/// Trace: FR-120-AC-1
 #[trace("TC-920", "FR-120-AC-1")]
 #[test]
 fn new_retains_operation_receiver_and_arguments_verbatim() {
@@ -114,7 +113,6 @@ fn new_retains_operation_receiver_and_arguments_verbatim() {
     assert_eq!(sixty_four.arguments(), many.as_slice());
 }
 
-/// Trace: FR-120-AC-2
 #[trace("TC-920", "FR-120-AC-2")]
 #[test]
 fn new_refuses_a_non_canonical_operation_or_receiver() {
@@ -135,7 +133,6 @@ fn new_refuses_a_non_canonical_operation_or_receiver() {
     }
 }
 
-/// Trace: FR-120-AC-3
 #[trace("TC-920", "FR-120-AC-3")]
 #[test]
 fn new_checks_operation_then_receiver_then_arguments_in_order() {
@@ -153,7 +150,6 @@ fn new_checks_operation_then_receiver_then_arguments_in_order() {
     assert_eq!(error.site(), TransitionSite::Receiver);
 }
 
-/// Trace: FR-120-AC-4
 #[trace("TC-920", "FR-120-AC-4")]
 #[test]
 fn canonical_bytes_are_the_jcs_transition_object() {
@@ -181,7 +177,6 @@ fn canonical_bytes_are_the_jcs_transition_object() {
         .starts_with(r#"{"arguments":[1,2],"operation":"#));
 }
 
-/// Trace: FR-120-AC-5
 #[trace("TC-920", "FR-120-AC-5")]
 #[test]
 fn equality_is_field_wise_and_agrees_with_the_identity_bytes() {
@@ -222,7 +217,6 @@ fn equality_is_field_wise_and_agrees_with_the_identity_bytes() {
     assert!(prefix + suffix + 1 == present.len());
 }
 
-/// Trace: FR-120-AC-6
 #[trace("TC-920", "FR-120-AC-6")]
 #[test]
 fn order_is_the_byte_order_not_the_field_order() {
@@ -243,7 +237,6 @@ fn order_is_the_byte_order_not_the_field_order() {
     assert_eq!(one_two.cmp(&one), Ordering::Less);
 }
 
-/// Trace: FR-120-AC-7
 #[trace("TC-920", "FR-120-AC-7")]
 #[test]
 fn encode_writes_the_canonical_bytes_and_the_same_refusal() {
@@ -264,7 +257,6 @@ fn encode_writes_the_canonical_bytes_and_the_same_refusal() {
     }
 }
 
-/// Trace: FR-120-AC-8
 #[trace("TC-920", "FR-120-AC-8")]
 #[test]
 fn new_bounds_each_text_on_its_own() {
@@ -308,7 +300,6 @@ fn new_bounds_each_text_on_its_own() {
     assert_eq!(admitted.arguments().len(), 2);
 }
 
-/// Trace: FR-120-AC-12
 #[trace("TC-920", "FR-120-AC-12")]
 #[test]
 fn a_null_receiver_is_refused_and_cmp_agrees_with_equality() {
@@ -324,7 +315,6 @@ fn a_null_receiver_is_refused_and_cmp_agrees_with_equality() {
     }
 }
 
-/// Trace: FR-120-AC-13
 #[trace("TC-920", "FR-120-AC-13")]
 #[test]
 fn canonical_bytes_refuses_a_limit_below_the_identity() {
@@ -341,7 +331,6 @@ fn canonical_bytes_refuses_a_limit_below_the_identity() {
     );
 }
 
-/// Trace: FR-120-AC-15
 #[trace("TC-920", "FR-120-AC-15")]
 #[test]
 fn cmp_allocates_nothing_and_sorts_like_the_bytes() {
@@ -395,7 +384,6 @@ fn cmp_allocates_nothing_and_sorts_like_the_bytes() {
     }
 }
 
-/// Trace: FR-120-AC-16
 #[trace("TC-920", "FR-120-AC-16")]
 #[test]
 fn deep_nesting_does_not_overflow_the_stack() {
