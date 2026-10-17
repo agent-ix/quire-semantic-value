@@ -203,8 +203,12 @@ which cannot state a depth that follows the arguments.
 
 ## Status
 
-PLANNED: FR-120-AC-1 through FR-120-AC-16. Spec only; the code and TC-920 tests
-follow in a later pull request.
+IMPLEMENTED/TESTS PASSED: FR-120-AC-1 through FR-120-AC-8, FR-120-AC-12, FR-120-AC-13,
+FR-120-AC-15 and FR-120-AC-16 (`tests/model_transition.rs`, traced to TC-920).
+
+PLANNED: FR-120-AC-9, FR-120-AC-10, FR-120-AC-11 and FR-120-AC-14. These are
+inspection and analysis criteria with no traced test; the evidence for them is
+recorded on the implementing pull request.
 
 The design points below were ruled by the QSL planner (terra:QSL:plan, relayed
 by the IR planner to this author); the ticket IR-830 records only the narrower
