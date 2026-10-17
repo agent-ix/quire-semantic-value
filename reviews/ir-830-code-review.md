@@ -54,3 +54,9 @@ Round 1, reviewed at 3b73897e0d134190bce7b29d8f248b83705a5756 (fix commits 52e46
 | FND | outcome | reason |
 | --- | --- | --- |
 | FND-001 | fixed | `check` now names `ReadError::Malformed` / `NumberOutOfRange` and every current `quire_canonical::Error` text-fault variant explicitly; `_` remains only for variants that do not exist yet. `Error::Protocol` / `Error::Internal` are named and still map to `NotCanonicalJson`, by the IR leader's decision to keep FR-120 at four causes; the code comment and the FR-120 AC-14 Status rationale state this plainly and the claim holds: the document was just produced by `read`, and `Document::encode_into` emits a well-ordered event stream from its own explicit stack. The comment also names the trigger (a new text source or a faulting quire-canonical) that must add a cause instead. Accepted. |
+
+Round 2, reviewed at c07bb80bd636f53074cd01053f0609161e20e152. A clean target dir, shared with no other worktree: `make fmt-check lint test build-no-std docs` green.
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-002 | fixed | Both `_` arms in `check` now say what the code does: "`ReadError` is non-exhaustive, so `_` is required. A refusal added later falls through to `NotCanonicalJson` with no compile signal: check this arm whenever `quire-canonical` is bumped." The `Error` arm has the same wording. |
