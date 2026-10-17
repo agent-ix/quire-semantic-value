@@ -20,6 +20,7 @@ pub mod definition;
 pub mod enumeration;
 pub mod location;
 pub mod loss;
+pub mod model_transition;
 pub mod object_closure;
 pub mod quantity;
 pub mod relationship_extent;

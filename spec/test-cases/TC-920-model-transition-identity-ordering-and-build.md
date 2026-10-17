@@ -14,8 +14,9 @@ Verify [FR-120](../functional/FR-120-model-transition-identity-type.md)
 through QSV's public `model_transition` API. Scope: FR-120-AC-1 through
 FR-120-AC-8, AC-12, AC-13, AC-15 and AC-16 as tests; FR-120-AC-9 and AC-14 by
 inspection of the public items and source; FR-120-AC-10 by `make build-no-std` and `make lint`; FR-120-AC-11 by the
-`Cargo.toml` and `Cargo.lock` diff of the implementing change. Planned; the
-tests are written with the code.
+`Cargo.toml` and `Cargo.lock` diff of the implementing change. Implemented: steps 1-12 are
+`tests/model_transition.rs`; step 13 (AC-9, AC-10, AC-11, AC-14) was run as inspection and
+analysis, and its evidence is recorded in the FR-120 Status section.
 
 ## Test Procedure
 

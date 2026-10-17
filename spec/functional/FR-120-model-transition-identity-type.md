@@ -203,8 +203,33 @@ which cannot state a depth that follows the arguments.
 
 ## Status
 
-PLANNED: FR-120-AC-1 through FR-120-AC-16. Spec only; the code and TC-920 tests
-follow in a later pull request.
+IMPLEMENTED/TESTS PASSED: FR-120-AC-1 through FR-120-AC-8, FR-120-AC-12, FR-120-AC-13,
+FR-120-AC-15 and FR-120-AC-16 (`tests/model_transition.rs`, traced to TC-920).
+
+IMPLEMENTED/TESTS PASSED: FR-120-AC-10. `cargo build --locked --target
+thumbv7em-none-eabi` (`make build-no-std`) and `cargo clippy --lib --target
+thumbv7em-none-eabi -- -D warnings` both succeed with `ModelTransition` present,
+and `src/model_transition.rs` names no `std` path.
+
+IMPLEMENTED/INSPECTED: FR-120-AC-11. No test backs this criterion. Inspection of
+`git diff origin/main` shows no change to `Cargo.toml` or `Cargo.lock`, and
+`cargo build --locked` succeeds.
+
+IMPLEMENTED/INSPECTED: FR-120-AC-9. No test backs this criterion. Inspection of
+`src/model_transition.rs` found the private fields `operation`, `receiver` and
+`arguments` only, the accessors of the same three, and the new public items
+`ModelTransition`, `InvalidModelTransition`, `TransitionSite` and
+`TransitionCause`; no probability, reward or weight member exists.
+
+IMPLEMENTED/INSPECTED: FR-120-AC-14. No test backs this criterion. Inspection of
+`new`, `check`, `canonical_bytes` and `embed` found that a `ReadError::Allocation`
+or `Error::Allocation` maps to `TransitionCause::Allocation`,
+`IdentityRefusal::Allocation` or `quire_canonical::Error::Allocation`
+respectively, with no `unwrap`, `expect`, indexing or `abort` on those paths, and
+no storage reserved by QSV itself. `check` names an encoder fault
+(`Error::Protocol`, `Error::Internal`) and reports it as `NotCanonicalJson`: the
+IR leader settled that FR-120's cause list stays at four causes, because such a
+fault is unreachable by construction for a document `read` has just produced.
 
 The design points below were ruled by the QSL planner (terra:QSL:plan, relayed
 by the IR planner to this author); the ticket IR-830 records only the narrower
