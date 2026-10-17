@@ -223,9 +223,14 @@ fn check(text: &str, limits: Limits) -> Result<(), TransitionCause> {
         | Error::DuplicateMemberName { .. }
         | Error::SerdeJsonPrivateToken(_)
         | Error::Serialize(_) => TransitionCause::NotCanonicalJson,
-        // A fault of the encoder, not of the text: FR-120 has no cause for it
-        // (decision pending on PR #41), so it is reported as the closest
-        // listed refusal and named here so it is not absorbed by `_`.
+        // Encoder faults, not faults of the text. They are unreachable here:
+        // `document` was just read by `read`, and `Document`'s encoder emits a
+        // well-ordered event stream (no `Protocol`) and holds its own
+        // invariants (no `Internal`). FR-120 deliberately keeps four causes,
+        // so these are named, not absorbed by `_`, and reported as
+        // `NotCanonicalJson`. A change that makes either reachable (a new
+        // text source, or a `quire-canonical` that can fault here) must add a
+        // cause to FR-120 and its inventory rather than blame the text.
         Error::Protocol(_) | Error::Internal { .. } => TransitionCause::NotCanonicalJson,
         // `Error` is non-exhaustive: `_` is for refusals that do not exist yet.
         _ => TransitionCause::NotCanonicalJson,

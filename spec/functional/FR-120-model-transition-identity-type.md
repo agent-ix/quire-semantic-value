@@ -225,10 +225,10 @@ IMPLEMENTED/INSPECTED: FR-120-AC-14. No test backs this criterion. Inspection of
 or `Error::Allocation` maps to `TransitionCause::Allocation`,
 `IdentityRefusal::Allocation` or `quire_canonical::Error::Allocation`
 respectively, with no `unwrap`, `expect`, indexing or `abort` on those paths, and
-no storage reserved by QSV itself. `check` maps an encoder fault
-(`Error::Protocol`, `Error::Internal`) to `NotCanonicalJson` because the
-inventory has no cause for it; that gap is raised on the implementing pull
-request.
+no storage reserved by QSV itself. `check` names an encoder fault
+(`Error::Protocol`, `Error::Internal`) and reports it as `NotCanonicalJson`: the
+IR leader settled that FR-120's cause list stays at four causes, because such a
+fault is unreachable by construction for a document `read` has just produced.
 
 The design points below were ruled by the QSL planner (terra:QSL:plan, relayed
 by the IR planner to this author); the ticket IR-830 records only the narrower
