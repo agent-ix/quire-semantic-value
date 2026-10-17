@@ -202,8 +202,11 @@ fn check(text: &str, limits: Limits) -> Result<(), TransitionCause> {
             required: limit.required,
         },
         ReadError::Allocation { requested } => TransitionCause::Allocation { requested },
-        // `ReadError` is non-exhaustive: malformed input and an out-of-range
-        // number are both text that is not canonical JSON.
+        ReadError::Malformed { .. } | ReadError::NumberOutOfRange { .. } => {
+            TransitionCause::NotCanonicalJson
+        }
+        // `ReadError` is non-exhaustive: `_` is for refusals that do not exist
+        // yet, so a new one is reviewed here rather than assumed to be bad text.
         _ => TransitionCause::NotCanonicalJson,
     })?;
     let canonical = to_vec(&document, limits).map_err(|error| match error {
@@ -212,8 +215,19 @@ fn check(text: &str, limits: Limits) -> Result<(), TransitionCause> {
             required: limit.required,
         },
         Error::Allocation { requested } => TransitionCause::Allocation { requested },
-        // `Error` is non-exhaustive: any other refusal means the document has
-        // no RFC 8785 encoding.
+        Error::NonFiniteNumber(_)
+        | Error::IntegerMagnitudeAboveMaximum(_)
+        | Error::UnsignedIntegerMagnitudeAboveMaximum(_)
+        | Error::WideIntegerMagnitudeAboveMaximum(_)
+        | Error::NonStringMemberName { .. }
+        | Error::DuplicateMemberName { .. }
+        | Error::SerdeJsonPrivateToken(_)
+        | Error::Serialize(_) => TransitionCause::NotCanonicalJson,
+        // A fault of the encoder, not of the text: FR-120 has no cause for it
+        // (decision pending on PR #41), so it is reported as the closest
+        // listed refusal and named here so it is not absorbed by `_`.
+        Error::Protocol(_) | Error::Internal { .. } => TransitionCause::NotCanonicalJson,
+        // `Error` is non-exhaustive: `_` is for refusals that do not exist yet.
         _ => TransitionCause::NotCanonicalJson,
     })?;
     if canonical == text.as_bytes() {

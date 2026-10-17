@@ -49,7 +49,7 @@ fn fixtures() -> Vec<ModelTransition> {
     let x = node("x");
     let xy = node("x/y");
     let other = node("other");
-    vec![
+    let mut fixtures = vec![
         build(INCREMENT, Some(r#""c1""#), &["true"]),
         build(INCREMENT, Some(r#""c1""#), &["true"]),
         build(&other, Some(r#""c1""#), &["true"]),
@@ -64,7 +64,31 @@ fn fixtures() -> Vec<ModelTransition> {
         build(&xy, Some(r#""c1""#), &["true"]),
         build(INCREMENT, Some(r#""c1""#), &["[1]"]),
         build(INCREMENT, Some(r#""c1""#), &["[1,2]"]),
-    ]
+    ];
+    // Receivers that are not strings, and strings that need escaping: the
+    // receiver is embedded as the JSON value it is, and an absent one is `null`.
+    for receiver in [
+        "false",
+        "true",
+        "0",
+        "1",
+        "-1",
+        "1.5",
+        "[]",
+        "[1]",
+        "[1,2]",
+        "[[1]]",
+        "{}",
+        r#"{"a":1}"#,
+        r#"{"a":[true,{"b":null}]}"#,
+        r#""a\"b""#,
+        r#""a\\b""#,
+        r#""a\nb""#,
+        r#""é""#,
+    ] {
+        fixtures.push(build(INCREMENT, Some(receiver), &["true"]));
+    }
+    fixtures
 }
 
 fn bytes(value: &ModelTransition) -> Vec<u8> {
@@ -360,6 +384,7 @@ fn cmp_allocates_nothing_and_sorts_like_the_bytes() {
     for a in &values {
         for b in &values {
             assert_eq!(a.cmp(b), b.cmp(a).reverse());
+            assert_eq!(a.cmp(b), bytes(a).cmp(&bytes(b)));
             assert_eq!(a.partial_cmp(b), Some(a.cmp(b)));
             for c in &values {
                 if a <= b && b <= c {
