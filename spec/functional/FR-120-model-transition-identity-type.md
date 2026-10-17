@@ -153,8 +153,12 @@ which cannot state a depth that follows the arguments.
    identity. `limits.max_bytes()` SHALL bound the whole identity; an excess is
    `IdentityRefusal::InputBytes` and no bytes are returned.
 6. `Encode` SHALL write the same bytes as `canonical_bytes` under the same
-   limits, by pushing events from an explicit stack and embedding each retained
-   document through its own non-recursive `quire-canonical` encoding. No step of
+   limits, by pushing events from an explicit stack. It SHALL read each stored text
+   again inside `encode_into` and embed the resulting document through its own
+   non-recursive `quire-canonical` encoding, and SHALL map a `ReadError::Allocation`
+   from that read to `quire_canonical::Error::Allocation`, a read limit to
+   `Error::Limit` and any other read refusal to a `quire_canonical::Error`
+   variant, never an unwrap, expect or abort. No step of
    `new`, `Encode`, equality, comparison, `Clone`, `Debug` or `Drop` SHALL
    recurse once per nesting level of an operation, receiver or argument.
 7. Two values SHALL be equal exactly when their operation texts are equal, their
@@ -186,14 +190,14 @@ which cannot state a depth that follows the arguments.
 | FR-120-AC-4 | For operation `{"digest_domain":"sha256-jcs","node":"test/counters/Counter/increment","package":"test/counters"}`, receiver `"c1"` and the single argument `true`, `canonical_bytes` equals exactly `{"arguments":[true],"operation":"{\"digest_domain\":\"sha256-jcs\",\"node\":\"test/counters/Counter/increment\",\"package\":\"test/counters\"}","receiver":"c1","type":"transition"}`; with an absent receiver the member is `"receiver":null`; with no arguments the array is `[]`; with arguments `1` then `2` they appear in that order. | Test (TC-920) |
 | FR-120-AC-5 | Values with the same operation, receiver and arguments are equal and have equal `canonical_bytes`; a different operation, a different argument, the same arguments in swapped order, a prefix of the arguments, a different receiver, and an absent receiver against the receiver document `"null"` (a string) are each unequal with unequal bytes; two values differing only in receiver have identities differing only in `receiver`. | Test (TC-920) |
 | FR-120-AC-6 | With equal receiver and arguments, the values over operation texts whose nodes are `x` and `x/y` in one package order as their `canonical_bytes` do, the opposite of the order of the two operation texts compared as raw strings; with equal operation and receiver, arguments `[1]` order after arguments `[1,2]`, as their bytes do. | Test (TC-920) |
-| FR-120-AC-7 | `quire_canonical::to_vec` of a `ModelTransition` under the same `Limits` yields bytes equal to `canonical_bytes` for the AC-4 values, and the same refusal when the limit is too small. | Test (TC-920) |
+| FR-120-AC-7 | `quire_canonical::to_vec` of a `ModelTransition` under the same `Limits` yields bytes equal to `canonical_bytes` for the AC-4 values, and, when the limit is too small, an error whose `IdentityRefusal::from` equals the `IdentityRefusal` that `canonical_bytes` returns (equal `bound` and `required`). | Test (TC-920) |
 | FR-120-AC-8 | `new` under a `Limits` smaller than one text refuses with that text's site (`Operation`, `Receiver` or `Argument(i)`) and cause `InputBytes{bound, required}` with `bound` equal to the limit and `required` greater than it; texts each within the limit are admitted although together over it. | Test (TC-920) |
 | FR-120-AC-9 | The private fields of `ModelTransition` and its public accessors hold exactly `operation`, `receiver` and `arguments`: no probability, reward, weight or other member exists, and `ModelTransition` is the only new public value type of the module besides the refusal types of the inventory. | Inspection (public API of `model_transition`) |
 | FR-120-AC-10 | With `ModelTransition` present, `make build-no-std` (`cargo build --locked --target thumbv7em-none-eabi`) and `cargo clippy --lib --target thumbv7em-none-eabi -- -D warnings` succeed, and the module names no `std` path. | Analysis (`make build-no-std`, `make lint`) |
 | FR-120-AC-11 | The `[dependencies]` table of `Cargo.toml` is unchanged by the change that adds `ModelTransition`: exactly `quire-exact`, `quire-canonical` (default features off), `serde` and `thiserror`, each with its prior source and features; `[dev-dependencies]` and the `Cargo.lock` package set are unchanged, and `cargo build --locked` succeeds. | Inspection (`git diff` of `Cargo.toml` and `Cargo.lock`) |
 | FR-120-AC-12 | `new` refuses the receiver text `null` with site `Receiver` and cause `NullReceiver`, and builds no value; for every pair of values built over the AC-5 and AC-6 fixtures, `cmp` returns `Equal` exactly when `==` is true. | Test (TC-920) |
 | FR-120-AC-13 | `canonical_bytes` under a `Limits` smaller than the identity returns `IdentityRefusal::InputBytes` with `bound` equal to the limit and `required` greater than it, and returns no bytes; under exactly the identity length it succeeds. | Test (TC-920) |
-| FR-120-AC-14 | Inspection of `new` and `canonical_bytes` confirms every `quire_canonical` allocation refusal (read tree, writer buffer) is mapped to `Allocation{requested}` or `IdentityRefusal::Allocation`, and neither contains an `unwrap`, `expect`, indexing panic or `abort` path; QSV reserves no storage itself on these paths. | Inspection (`model_transition` source) |
+| FR-120-AC-14 | Inspection of `new` and `canonical_bytes` confirms every `quire_canonical` allocation refusal (read tree in `new`, the re-read inside `encode_into`, writer buffer) is mapped to `Allocation{requested}`, `IdentityRefusal::Allocation` or `quire_canonical::Error::Allocation` respectively, and neither contains an `unwrap`, `expect`, indexing panic or `abort` path; QSV reserves no storage itself on these paths. | Inspection (`model_transition` source) |
 | FR-120-AC-15 | `cmp` and `partial_cmp` allocate zero bytes (measured with `allocation-counter`), take no `Limits`, and over at least 20 values mixing operations, receivers (present, absent) and argument counts, the sorted order of the values equals the sorted order of their `canonical_bytes`, and `cmp` is antisymmetric and transitive over the set. | Test (TC-920) |
 | FR-120-AC-16 | A value whose receiver and an argument are each an array nested 100,000 levels deep is built by `new`, encoded by `quire_canonical::to_vec` and `canonical_bytes`, compared, cloned, formatted with `Debug` and dropped without stack overflow, and the two encodings are equal. | Test (TC-920) |
 
@@ -210,7 +214,10 @@ a separate receiver, canonical-JCS text elements, validation by RFC 8785
 re-encoding, RFC 8785 member order and byte-order `Ord`. Round 2 of review
 changed the encoding route to `quire_canonical::Encode`, which QSL's
 `TransitionSystem::TransitionId` binds (qsl-eval `simulation/explore.rs`), and
-dropped `Serialize`; the QSL planner has been asked to confirm that route.
+dropped `Serialize`. The QSL planner (terra:QSL:plan) confirmed the `Encode`
+route (the `TransitionId` bound at qsl-eval `simulation/explore.rs:35` and
+ADR-030 D-4.7) and the null-receiver refusal, relayed by the IR lane; that is
+not a ticket record.
 
 ## Dependencies
 

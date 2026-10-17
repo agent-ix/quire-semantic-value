@@ -47,3 +47,22 @@ Verified as claimed: FR-120 and TC-920 ids are free in QSV; QSpec FR-181 defines
 ## Verdict
 
 Changes requested. The identity shape, the golden bytes, the member order, the counterexample, the no_std/build/dependency facts and the scope (no FR-187 fields, no arity check) are correct and well-grounded. Two high defects block it. The specified encoding route (Serialize) is not the one the QSL consumer binds (`quire_canonical::Encode`), and it cannot meet AC-7 at arbitrary depth. A `null` receiver text collides with an absent receiver, which breaks Eq/Ord consistency. Two medium traceability defects (a vacuous TC-390 rationale and a planner ruling not on record) and one medium gap (an infallible `cmp` over a fallible encoding) should be fixed in the same round.
+
+## Dispositions
+
+Round 1 on reviewed head `b6004d37b13eff375c7ee7b4e6fc44b5c30ee9f8` against the review-pass head `a22519b3f16a10e9158082892c8eccf36aae6456`, scoped to `git diff a22519b..b6004d3` of FR-120 and TC-920. Each outcome was checked against the new spec text and, for the Encode claims, against quire-canonical at the locked revision 5dc4e12; the original finding rows above remain unchanged.
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | Inventory adds `impl quire_canonical::Encode` (explicit stack) and drops Serialize; Behavior 6 requires Encode bytes equal canonical_bytes with no per-level recursion; AC-7 now tests `to_vec`. Matches the 5dc4e12 trait `encode_into<S: Sink + ?Sized>(&self, &mut Writer<'_, S>)` and its explicit-stack guidance; `Document`/`NodeRef` encode non-recursively. |
+| FND-002 | fixed | Behavior 3 refuses a `null` receiver document with `NullReceiver`; AC-12 tests it and `cmp == Equal` iff `==`; AC-5 adds absent vs the string `"null"`. |
+| FND-003 | fixed | Behavior 10 now cites ADR-011 X-11; no TC-390 claim remains. |
+| FND-004 | fixed | Status now says the ruling was relayed and is not a ticket record, names QSpec FR-181 as the authority, and says the QSL amendment has no ticket yet. |
+| FND-005 | fixed | Behavior 9: cmp/partial_cmp take no limits, never fail, allocate nothing, and agree with canonical_bytes; AC-15 measures zero allocations. |
+| FND-006 | fixed | Description now says QSL FR-120 writes the receiver as argument 0 and FR-101 and ADR-016 ID-9 have no receiver member. |
+
+## New findings (disposition pass 1)
+
+| ID | Severity | Summary | Refs |
+| --- | --- | --- | --- |
+| FND-007 | low | AC-7 asks `to_vec` and `canonical_bytes` for 'the same refusal when the limit is too small', but `to_vec` returns `quire_canonical::Error::Limit(LimitExceeded)` and `canonical_bytes` returns `IdentityRefusal::InputBytes`, two types. State the comparison as `IdentityRefusal::from(to_vec error) == canonical_bytes error`, or as equal `bound` and `required`. | spec/functional/FR-120-model-transition-identity-type.md:189 |

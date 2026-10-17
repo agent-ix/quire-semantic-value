@@ -38,3 +38,19 @@ Ticket: IR-830. PR quire-semantic-value#40, reviewed head a22519b3f16a10e9158082
 ## Verdict
 
 FAIL for this method. All eleven criteria are mapped to TC-920 steps, and the matrix state is the honest spec-slice state. But one expected result contradicts its criterion (FND-001, high), and AC-8's allocation clause has no seam to test it through (FND-002, medium). The Ord/Eq collision in SR-11975 FND-002 also needs an AC-5/AC-6 case once it is fixed.
+
+## Dispositions
+
+Round 1 on reviewed head `b6004d37b13eff375c7ee7b4e6fc44b5c30ee9f8` against the review-pass head `a22519b3f16a10e9158082892c8eccf36aae6456`, scoped to `git diff a22519b..b6004d3` of FR-120 and TC-920. Each outcome was checked against the new spec text and, for the Encode claims, against quire-canonical at the locked revision 5dc4e12; the original finding rows above remain unchanged.
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | TC-920 Expected step 3 now says `Argument(0)` for the second case. |
+| FND-002 | fixed | The untestable deny clause is gone: allocation mapping is AC-14, by Inspection of the source, and TC-920 no longer names a reservation seam. |
+| FND-003 | fixed | TC-920 step 2 expected now says `Receiver` for the last two. |
+
+## New findings (disposition pass 1)
+
+| ID | Severity | Summary | Refs |
+| --- | --- | --- | --- |
+| FND-004 | low | AC-14 inspects allocation mapping in `new` and `canonical_bytes` only. The `Encode` impl (Behavior 6) must re-read each retained text inside `encode_into`, and that `read` can fail `ReadError::Allocation`, which has to become `quire_canonical::Error::Allocation`. Neither Behavior 6 nor AC-14 covers that path. Add `Encode` to AC-14's inspected entry points and state the mapping in Behavior 6. | spec/functional/FR-120-model-transition-identity-type.md:155-159,196 |

@@ -37,3 +37,14 @@ Ticket: IR-830. PR quire-semantic-value#40, reviewed head a22519b3f16a10e9158082
 ## Verdict
 
 Approve with findings for this method. The Description and Behavior 1-3 and 5-7 are ubiquitous SHALL statements with one responsible subject. AC-5 is a list of cases of one property and AC-7 is singular; both can fail (AC-7's substantive defect is in SR-11975 FND-001). AC-8 is compound and contradicts the inventory (medium). AC-9's wording and AC-6's missing precondition are low.
+
+## Dispositions
+
+Round 1 on reviewed head `b6004d37b13eff375c7ee7b4e6fc44b5c30ee9f8` against the review-pass head `a22519b3f16a10e9158082892c8eccf36aae6456`, scoped to `git diff a22519b..b6004d3` of FR-120 and TC-920. Each outcome was checked against the new spec text and, for the Encode claims, against quire-canonical at the locked revision 5dc4e12; the original finding rows above remain unchanged.
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | AC-8 is now `new` only, with InputBytes{bound, required} and the per-text rule; `canonical_bytes` limits moved to AC-13 (IdentityRefusal, no site); allocation moved to AC-14. |
+| FND-002 | fixed | AC-9 now reads 'private fields ... and its public accessors' and 'the only new public value type of the module besides the refusal types'. |
+| FND-003 | fixed | AC-6 states 'With equal receiver and arguments' and the sort/antisymmetry property moved to AC-15. |
+| FND-004 | fixed | Behavior 7 now reads 'Two values SHALL be equal exactly when ...'. |

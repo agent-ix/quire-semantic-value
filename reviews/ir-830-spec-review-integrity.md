@@ -37,3 +37,13 @@ Ticket: IR-830. PR quire-semantic-value#40, reviewed head a22519b3f16a10e9158082
 ## Verdict
 
 Approve with findings for this method. FR-120 and TC-920 agree on scope, numbering and verification methods, and every criterion has a TC-920 step. The one medium gap is the unstated meaning of `Limits` in `new`. The refusal-vocabulary drift and the incomplete ordering rationale are low.
+
+## Dispositions
+
+Round 1 on reviewed head `b6004d37b13eff375c7ee7b4e6fc44b5c30ee9f8` against the review-pass head `a22519b3f16a10e9158082892c8eccf36aae6456`, scoped to `git diff a22519b..b6004d3` of FR-120 and TC-920. Each outcome was checked against the new spec text and, for the Encode claims, against quire-canonical at the locked revision 5dc4e12; the original finding rows above remain unchanged.
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | Behavior 4 and Inputs: `limits.max_bytes()` bounds each text on its own as read input bound and re-encoding bound, not the texts together; AC-8 tests the together-over case. |
+| FND-002 | fixed | TransitionCause gains `InputBytes { bound, required }` and `Allocation { requested }` with IdentityRefusal's payloads, and canonical_bytes returns `semantic_node::IdentityRefusal`. `NotCanonicalJson` vs `NonCanonical` remain distinct names for distinct causes, which is correct. |
+| FND-003 | fixed | Behavior 8 states that `arguments` sorts before `operation`, that a longer sequence orders before its prefix, and that escaping can reverse operations; AC-6 tests the prefix case (verified: `,` 0x2C < `]` 0x5D). |
