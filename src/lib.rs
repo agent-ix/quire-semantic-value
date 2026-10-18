@@ -18,6 +18,7 @@ pub mod containment;
 pub mod declaration;
 pub mod definition;
 pub mod enumeration;
+pub mod fairness;
 pub mod location;
 pub mod loss;
 pub mod model_transition;

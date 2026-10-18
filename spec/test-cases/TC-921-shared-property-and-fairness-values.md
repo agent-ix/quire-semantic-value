@@ -15,7 +15,7 @@ through the public `quire_semantic_value::fairness` API. The tests use two
 distinct caller-supplied `EffectiveId` fixtures, including an all-zero digest;
 they do not ask QSV to mint an identity. Steps 1 through 5 are executable
 tests. Step 6 is the implementing PR's API/dependency inspection and build
-gate. This case is planned and unrun until that code change.
+gate. The implementing diff supplies five traced tests and the AC-6 inspection.
 
 ## Test Procedure
 
@@ -57,4 +57,5 @@ gate. This case is planned and unrun until that code change.
 
 ## Status
 
-PLANNED / UNRUN (IR-872). No implementation test has been tagged yet.
+IMPLEMENTED (IR-872). The five traced tests pass, and the AC-6 diff inspection,
+`make build-no-std`, `make lint` and `cargo build --locked` gates pass.
