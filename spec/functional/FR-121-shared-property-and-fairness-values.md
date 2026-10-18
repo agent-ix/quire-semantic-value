@@ -28,9 +28,9 @@ An operation in a checked fairness constraint is the pair of the declaring
 type's caller-minted `quire_exact::EffectiveId` and the resolved operation
 name. The pair is necessary because two declaring types can have operations
 with the same name. QSV retains that pair; it neither mints nor decodes an
-`EffectiveId` (FR-060). QSL FR-123 currently names a `DeclarationKey` for the
-operation. The QSL lane must confirm and amend that consumer wording before
-this requirement is merged.
+`EffectiveId` (FR-060). The companion QSL FR-123 amendment (QSL PR #955)
+uses this same pair for the checked fairness operation. That amendment
+remains a separate QSL-owned change.
 
 ## Use case
 
@@ -149,6 +149,7 @@ by executable tests yet.
   the caller.
 - [QSL FR-123](ix://agent-ix/quire-spec-language/FR-123) and
   [QSL FR-129](ix://agent-ix/quire-spec-language/FR-129) own temporal checks,
-  default resolution, deduplication and source order.
+  default resolution, deduplication and source order. QSL PR #955 aligns
+  FR-123's checked-value wording with the operation identity above.
 - [QSL ADR-011 X-11](ix://agent-ix/quire-spec-language/ADR-011) places shared
   values in QSV below QSL, IR and CG.
