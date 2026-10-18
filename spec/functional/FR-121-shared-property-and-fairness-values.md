@@ -139,9 +139,11 @@ under an old module path.
 
 ## Status
 
-PLANNED / UNRUN (IR-872). This specification precedes the tests-first code
-change. TC-921 names the verification procedure; no new criterion is tagged
-by executable tests yet.
+IMPLEMENTED (IR-872). Five `src/fairness.rs` tests trace TC-921 and
+FR-121-AC-1 through AC-5. AC-6 was inspected on the implementing diff:
+the public `fairness` module adds no normal dependency or compatibility
+re-export, production code does not mint an `EffectiveId`, and the no-std,
+lint and locked host-build gates pass. QSL retains temporal checking.
 
 ## Dependencies
 
