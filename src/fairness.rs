@@ -380,6 +380,12 @@ mod tests {
             to_vec(operation, limits(4096)).expect("operation"),
             expected
         );
+        let letter_digest = FairnessOperation::new(id(0xab), String::from("tick"));
+        let expected_lowercase = b"{\"declaring_type\":\"abababababababababababababababababababababababababababababababab\",\"name\":\"tick\"}";
+        assert_eq!(
+            to_vec(&letter_digest, limits(4096)).expect("lowercase digest"),
+            expected_lowercase
+        );
         let complete = to_vec(&value, limits(4096)).expect("constraint");
         let length = u64::try_from(complete.len()).expect("test output length");
         assert_eq!(
