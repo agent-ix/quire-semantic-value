@@ -2922,7 +2922,7 @@ mod tests {
     /// Every coefficient endpoint is checked in expected-first order, even
     /// when a metadata field already differs.
     /// Trace: FR-118-AC-2
-    #[trace("TC-918", "FR-118-AC-2")]
+    #[trace("TC-918", "FR-118-AC-2", "FR-122-AC-3")]
     #[test]
     fn bounded_decimal_type_link_checks_four_endpoints_and_metadata() {
         use quire_exact::NumericTypeEndpoint as Endpoint;
@@ -3364,7 +3364,7 @@ mod tests {
     /// including those reached through a retained nested type. The plain
     /// Integer kind still has a fixed-time kind check.
     /// Trace: FR-109-AC-7
-    #[trace("TC-908", "FR-109-AC-7")]
+    #[trace("TC-908", "FR-109-AC-7", "FR-122-AC-3")]
     #[test]
     fn supplied_api_reports_unqualified_numeric_domain_before_comparison() {
         let interval = IntegerInterval::spanning(Integer::zero(), Integer::from(10_i64));
@@ -3453,7 +3453,7 @@ mod tests {
     /// The supplied API stops before the bool-only Decimal domain helper,
     /// both at a direct value and at a retained nested type comparison.
     /// Trace: FR-109-AC-7
-    #[trace("TC-908", "FR-109-AC-7")]
+    #[trace("TC-908", "FR-109-AC-7", "FR-122-AC-3")]
     #[test]
     fn supplied_api_reports_unqualified_decimal_before_the_helper() {
         let decimal_type = ValueType::Decimal(
@@ -3521,7 +3521,15 @@ mod tests {
     /// declared minimum scale bounds the normalization shift without a
     /// separate helper event or per-limb charge.
     /// Trace: FR-109-AC-1, FR-109-AC-2, FR-109-AC-8, FR-372-AC-5
-    #[trace("TC-908", "FR-109-AC-1", "FR-109-AC-2", "FR-109-AC-8", "FR-372-AC-5")]
+    #[trace(
+        "TC-908",
+        "FR-109-AC-1",
+        "FR-109-AC-2",
+        "FR-109-AC-8",
+        "FR-372-AC-5",
+        "FR-122-AC-2",
+        "FR-122-AC-3"
+    )]
     #[test]
     fn bounded_decimal_uses_cumulative_exact_event_boundary() {
         let expected = ValueType::Decimal(
@@ -3614,7 +3622,14 @@ mod tests {
     /// The magnitude premise is checked before invoking the helper; a
     /// completed nonmember is still a typed payload refusal at the same root.
     /// Trace: FR-109-AC-4, FR-109-AC-8, FR-372-AC-5
-    #[trace("TC-908", "FR-109-AC-4", "FR-109-AC-8", "FR-372-AC-5")]
+    #[trace(
+        "TC-908",
+        "FR-109-AC-4",
+        "FR-109-AC-8",
+        "FR-372-AC-5",
+        "FR-122-AC-2",
+        "FR-122-AC-3"
+    )]
     #[test]
     fn bounded_decimal_retains_size_and_nonmembership_locus() {
         let expected = ValueType::Decimal(
@@ -3725,7 +3740,7 @@ mod tests {
     /// actual native request and rooted locus. Exact TC-920 tests the kernel's
     /// production allocation and checked-capacity mechanisms separately.
     /// Trace: FR-109-AC-8, FR-372-AC-5
-    #[trace("TC-908", "FR-109-AC-8", "FR-372-AC-5")]
+    #[trace("TC-908", "FR-109-AC-8", "FR-372-AC-5", "FR-122-AC-2")]
     #[test]
     fn decimal_kernel_resource_failures_project_without_partial_admission() {
         let arena = MembershipPathArena::new().expect("arena");
@@ -3773,7 +3788,14 @@ mod tests {
     /// Cancellation observed by the kernel after the owning value event
     /// retains the original handle's cause and the already-spent budget.
     /// Trace: FR-109-AC-3, FR-109-AC-8, FR-372-AC-5
-    #[trace("TC-908", "FR-109-AC-3", "FR-109-AC-8", "FR-372-AC-5")]
+    #[trace(
+        "TC-908",
+        "FR-109-AC-3",
+        "FR-109-AC-8",
+        "FR-372-AC-5",
+        "FR-122-AC-2",
+        "FR-122-AC-3"
+    )]
     #[test]
     fn bounded_decimal_maps_original_handle_cancellation_during_helper() {
         use core::sync::atomic::{AtomicUsize, Ordering};
