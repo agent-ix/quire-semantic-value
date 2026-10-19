@@ -49,10 +49,26 @@ backed only by source-text inspection that is tagged as Test evidence.
 - Semantic review: ran over FR-122-AC-1 (dispatch brief), with 16 mutations plus one equivalent refactor
 - Spec status wording: FR-122 Status is honest about which rows are inspected rather than exercised. TC-908's FR-109-AC-6 "remains planned" note is honest and matches the matrix (untagged)
 
+## New findings (disposition pass 1)
+
+| ID | Severity | Summary | Refs |
+| --- | --- | --- | --- |
+| FND-004 | low | Narrowed FR-122-AC-1 says "each reachable equality operand failure", but "reachable" is undefined. quire-exact FR-369 calls every conversion-shape, admission, unresolved-unit, nonintegral and unexpected-placement failure a checked-program internal fault, so a reader could treat every operand row as unreachable and excluded. Name the single exclusion instead, e.g. "each equality operand failure other than the non-exact placement row in AC-4" | FR-122-AC-1, spec/functional/FR-122-supplied-membership-owner-obligations.md:37 |
+
 ## Dispositions
+
+Round 1, at head 7f0e1bea702453aec8c2be3a9d7352c9c1a7ce2b. An earlier copy of this file ended with stray tool-call text; this version removes it.
+
+`quire matrix` now has 107 criteria: tagged 93, untagged 2 (FR-109-AC-6, FR-121-AC-6), method-without-symbol 12. Against 5e9ab39, FR-122-AC-4 is the new row and is method-without-symbol (Inspection, no symbol); everything else is unchanged.
+
+- FR-122-AC-1 has nine tagged tests.
+- `quire matrix --strict` exits 1; the two untagged rows predate this PR.
+- `quire validate` over spec/ and reviews/ passes.
+- `make fmt-check` and `make lint` pass, and `cargo test --lib` passes 132 (1 ignored).
 
 | FND | Outcome | Reason |
 | --- | --- | --- |
-| FND-001 | fixed | The AC-1 tuple test now asserts failed deferred admission returns `DeferredResultNotAdmitted`; bypassing tuple admission failed the test. |
-| FND-002 | partially fixed; need decision | `ExpectedIntegerPlacement` is asserted behaviorally and its wrong-cause mutant failed. Both source-reading tests are gone. The unreachable `EqualityQuantityNonExactPlacement` row needs an Inspection disposition or test seam. |
-| FND-003 | fixed | TC-906 step 2 no longer claims to exercise the unreachable nonexact placement and its Status names the unverified row. |
+| FND-001 | fixed | The AC-1 tuple test now asserts a failed position. The `evaluate_tuple`-skips-`admitted()` mutant now fails `deferred_record_and_tuple_evaluation_preserve_admission_and_prior_refusal` |
+| FND-002 | fixed | `ExpectedIntegerPlacement` is asserted behaviorally. `EqualityQuantityNonExactPlacement` moved out of AC-1 into the Inspection criterion FR-122-AC-4, which carries the configurable-target note. AC-4's facts hold on the tree: `operand_value` hard-codes `&QuantityTarget::Exact` (src/declaration.rs:5665), `convert_quantity` maps it to `Target::Exact` (src/quantity.rs:436), and `convert` returns only `ConvertedValue::Exact` for it. Together, AC-1 and AC-4 carry every QSV row of the quire-exact FR-369 table on main. All cause-swap mutants die under AC-1-tagged tests |
+| FND-003 | fixed | TC-906 step 2 no longer exercises the nonexact placement. Step 4, Expected Results and Status describe the AC-4 inspection consistently |
+| FND-004 | still-open | New this round. Replace "reachable" with the explicit AC-4 exclusion |

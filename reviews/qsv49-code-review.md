@@ -62,9 +62,18 @@ them replaces a behavioral test that is feasible.
 | FND-001 | medium | `scale_zero_integer_conversion_names_noninteger_placement` greps `quantity.rs` text instead of exercising the branch. The branch is reachable in-crate: a `#[cfg(test)]` module in `quantity.rs` calling private `convert` with `Target::Integer { placement: <max_scale 1>, .. }` returns `CheckedInvariant { ExpectedIntegerPlacement }` (reviewer reproduced, test passed). A behavioral test is feasible and should replace the source check | src/declaration.rs:6073-6090, src/quantity.rs:789-802 |
 | FND-002 | medium | `exact_equality_conversion_names_unexpected_nonexact_placement` asserts exact whitespace and pattern order of `declaration.rs` via `include_str!` of its own file. A semantically equivalent reorder of the or-pattern fails it: `split_once` then matches the test's own string literal (panic at :6068). It checks spelling, not behavior, and breaks under rustfmt or refactor | src/declaration.rs:6054-6071, src/declaration.rs:5677-5681 |
 
+## New findings (disposition pass 1)
+
+| ID | Severity | Summary | Refs |
+| --- | --- | --- | --- |
+| FND-003 | low | The committed `reviews/qsv49-code-review.md` and `reviews/qsv49-gap-analysis.md` carry a coder-authored `## Dispositions` section. Its outcomes ("fixed; need decision", "partially fixed; need decision") are outside the outcome set, and dispositions belong to the reviewer. Replace both files with the reviewer's dispositioned SR files before merge | reviews/qsv49-code-review.md:64-70, reviews/qsv49-gap-analysis.md:51-58 |
+
 ## Dispositions
+
+Round 1, at head 7f0e1bea702453aec8c2be3a9d7352c9c1a7ce2b (fix commits e7a0e8f, a186dc9, 7f0e1be). An earlier copy of this file ended with stray tool-call text; this version removes it. The committed copy had already dropped it.
 
 | FND | Outcome | Reason |
 | --- | --- | --- |
-| FND-001 | fixed | Replaced the source-reading check with an in-module `convert()` test using an admitted scale-one placement; the wrong-cause mutant failed. |
-| FND-002 | fixed; need decision | Deleted the source-reading check. `Target::Exact` can only return `ConvertedValue::Exact`, so the nonexact defensive row has no behavioral assertion; Inspection disposition or a test seam needs owner choice. |
+| FND-001 | fixed | The source check is deleted. `quantity::checked_invariant_tests::integer_conversion_rejects_an_admitted_noninteger_placement` (src/quantity.rs:879-929, tagged FR-122-AC-1) calls the private `convert()` with an admitted scale-one `Target::Integer` placement and asserts `ExpectedIntegerPlacement`. The reviewer re-ran three mutants and all died: the cause swapped to `ValueKindMismatch`, the refusal replaced by `unwrap_or_else`, and the production placement given scale 1 |
+| FND-002 | fixed | The self-reading `include_str!` check is deleted, and no `include_str!` or `include_bytes!` remains in src/ or tests/. Reordering the or-pattern to `Integer { .. } \| Decimal(_)` now leaves every AC-1 test passing. The unreachable row moved to the Inspection criterion FR-122-AC-4 |
+| FND-003 | still-open | Open until the reviewer's SR files replace the committed copies under reviews/ |
