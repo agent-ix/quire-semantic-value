@@ -109,7 +109,13 @@ exact/one-less parity remain QSL consumer
 controls under QSL-778. Numerical default hypotheses and hosted source
 predictions are not an oracle for N. The Decimal caller tests are traced to
 FR-122-AC-2; bounded Integer/Rational and absent-B NumericDomain caller tests
-are traced to FR-122-AC-3. The Decimal caller accepts an explicit
+are traced to FR-122-AC-3. These supplied-path tests do not cover
+FR-122-AC-1 or the Inspection-only FR-122-AC-4; TC-906 records those owner
+obligations. The Decimal caller accepts an explicit
 magnitude bound and derives its alignment-shift bound from the declared minimum
 scale; it adds no fifth helper-entry event or numeric default. The union helper
 premises still need inspection under FR-109-AC-7.
+FR-109-AC-6 remains planned. Existing budget and cancellation unit tests cover
+individual observations, but no integrated supplied-path test establishes every
+event charge alongside the absence of a conversion budget, evaluation meter and
+evaluated `FunctionCall` result.

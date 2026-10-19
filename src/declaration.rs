@@ -5823,8 +5823,7 @@ mod checked_invariant_tests {
         ));
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9", "FR-369-AC-5")]
+    #[trace("TC-906", "FR-122-AC-1", "FR-369-AC-5")]
     #[test]
     fn deferred_result_names_failed_admission_and_preserves_prior_stop() {
         refusal(
@@ -5885,8 +5884,7 @@ mod checked_invariant_tests {
         assert_eq!(actual, prior_stop);
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-122-AC-1")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies checked declaration identities without minting them in production"
@@ -5950,6 +5948,21 @@ mod checked_invariant_tests {
                 if composite.declaration() == tuple
                     && matches!(composite.slots(), [FieldValue::Present(Value::Boolean(true))])
         ));
+        let result = environment
+            .evaluate_tuple(
+                tuple,
+                vec![Box::new(|_| {
+                    Outcome::Completed(Value::Integer(Integer::one()))
+                })],
+                &mut meter(),
+            )
+            .unwrap();
+        assert!(matches!(
+            result,
+            Outcome::Refused(Refusal::CheckedInvariant {
+                cause: CheckedInvariantCause::DeferredResultNotAdmitted
+            })
+        ));
         let prior = Refusal::IntegerOutOfDomain {
             target: Box::new(quire_exact::IntegerInterval::spanning(
                 Integer::zero(),
@@ -5966,8 +5979,7 @@ mod checked_invariant_tests {
         assert!(matches!(result, Outcome::Refused(actual) if actual == prior));
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-122-AC-1")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies a checked unit identity without minting one in production"
@@ -6054,8 +6066,7 @@ mod checked_invariant_tests {
         );
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-122-AC-1")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies a checked node identity without minting one in production"
@@ -6115,8 +6126,7 @@ mod checked_invariant_tests {
         ));
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-122-AC-1")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies checked enum identities without minting them in production"
@@ -6154,8 +6164,7 @@ mod checked_invariant_tests {
         ));
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-122-AC-1")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies a checked enum identity without minting it in production"
@@ -6183,8 +6192,7 @@ mod checked_invariant_tests {
         ));
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-122-AC-1")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies checked unit identities without minting them in production"
@@ -6250,8 +6258,7 @@ mod checked_invariant_tests {
         );
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-122-AC-1")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies checked unit identities without minting them in production"
