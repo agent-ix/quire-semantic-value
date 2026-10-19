@@ -875,3 +875,55 @@ fn compare(
     charge_retain(meter)?;
     Ok(left.cmp(&right))
 }
+
+#[cfg(test)]
+mod checked_invariant_tests {
+    use super::*;
+    use ix_trace_rs::trace;
+    use quire_exact::ScalarLimits;
+
+    #[trace("TC-906", "FR-122-AC-1")]
+    #[test]
+    fn integer_conversion_rejects_an_admitted_noninteger_placement() {
+        let unit = QuantityUnit::Compound(UnitGraph::default().compound_unit(&[]).unwrap());
+        let mut table = UnitTable::default();
+        let unit_id = table.insert(unit.clone()).unwrap();
+        let quantity = Quantity::new(Rational::from_integer(Integer::one()), unit_id);
+        let domain = IntegerInterval::spanning(Integer::zero(), Integer::from(10_i64));
+        let placement = DecimalType::new(
+            Integer::zero(),
+            Integer::from(10_i64),
+            0,
+            1,
+            RoundingMode::Exact,
+        )
+        .unwrap();
+        let target = Target::Integer {
+            placement,
+            domain: &domain,
+        };
+        let mut meter = Meter::new(ScalarLimits {
+            integer_bits: 1024,
+            decimal_digits: 1024,
+            scale_expansion: 1024,
+            text_input_bytes: 1024,
+            text_scalars: 1024,
+            normalized_scalars: 1024,
+            unit_edges: 1024,
+            value_occurrences: 1024,
+            work_units: 1024,
+            result_units: 1024,
+        });
+        assert!(matches!(
+            convert(
+                table.resolve(&quantity).unwrap(),
+                &unit,
+                &target,
+                &mut meter
+            ),
+            Err(Stop::Refused(Refusal::CheckedInvariant {
+                cause: CheckedInvariantCause::ExpectedIntegerPlacement
+            }))
+        ));
+    }
+}

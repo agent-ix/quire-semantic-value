@@ -31,12 +31,12 @@ result and charge behavior.
 2. Exercise the equality operand conversion in `src/declaration.rs` with a
    source value outside its checked type, a nonintegral decimal sent to an
    integer target, an unresolved unit, a rejected exact quantity conversion,
-   an unexpected nonexact placement, an unmatched conversion shape, and a
+   an unmatched conversion shape, and a
    converted value outside its target type. Assert the corresponding
    `EqualityOperandSourceNotAdmitted`,
    `EqualityOperandNonIntegralDecimal`, `EqualityUnitUnresolved`,
    `EqualityQuantityConversionRejected { cause }`,
-   `EqualityQuantityNonExactPlacement`, `EqualityConversionShapeMismatch`,
+   `EqualityConversionShapeMismatch`,
    and `EqualityOperandTargetNotAdmitted` payloads from FR-369's table.
 3. Exercise `CheckedEquality::evaluate` (given the checking `TypeEnvironment`) with a missing captured enum variant,
    an unresolved quantity unit, a value shape outside its selected text,
@@ -46,10 +46,11 @@ result and charge behavior.
    `ScheduledComparisonRefused { cause }` respectively. Compare the original
    `IllTypedCause` payloads in steps 2 and 3 with their resulting payloads;
    exercise a prior charge stop on each path.
-4. Exercise successful integer quantity placement in `src/quantity.rs`.
-   Inspect its noninteger retained-value branch for
-   `ExpectedIntegerPlacement`; inspect every QSV production constructor to
-   confirm the precise FR-369 table cause with no generic default.
+4. Exercise successful scale-zero integer quantity placement and call the
+   private converter with an admitted scale-one integer placement in
+   `src/quantity.rs`. Assert `ExpectedIntegerPlacement` for the latter.
+   Inspect every QSV production constructor to confirm the precise FR-369
+   table cause with no generic default.
 5. For each reached QSV checked-invariant refusal, assert the public result
    carries the typed payload and `Refusal::code()` and `Refusal::cause()` both
    return `None`. Check an ordinary refusal retains its catalog mapping.
@@ -60,15 +61,16 @@ Admitted deferred values and successful integer conversion return their
 ordinary results. Each failed premise yields the exact cause assigned in
 FR-369, and the two `IllTypedCause` payloads survive unchanged. Earlier
 stops keep their original outcomes. Every checked-invariant refusal has no
-catalog code or cause, while the ordinary refusal keeps both. The inspected
-integer noninteger branch selects `ExpectedIntegerPlacement`, and each QSV
+catalog code or cause, while the ordinary refusal keeps both. The admitted
+scale-one integer placement returns `ExpectedIntegerPlacement`, and each QSV
 constructor has one specified cause without a generic default.
 
 ## Status
 
-The eight behavioral tests and two defensive cause source checks are tagged
-`FR-122-AC-1` (and `FR-369-AC-5` where catalog absence is checked). The
-`EqualityQuantityNonExactPlacement` and `ExpectedIntegerPlacement` checks
-inspect their constructor mappings because valid current conversion inputs
-cannot reach those defensive branches. The behavioral tests exercise the
-reachable causes, payloads, prior outcomes and charge stops.
+The eight declaration tests and the integer converter test are tagged
+`FR-122-AC-1` (and `FR-369-AC-5` where catalog absence is checked). They
+exercise the reachable causes, payloads, prior outcomes and charge stops,
+including failed tuple admission and the private converter's noninteger
+placement. No behavioral test asserts `EqualityQuantityNonExactPlacement`:
+the equality path requests `Exact`, whose converter returns only `Exact`.
+That defensive row needs a decision on Inspection evidence or a test seam.

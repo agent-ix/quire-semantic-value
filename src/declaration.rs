@@ -5948,6 +5948,21 @@ mod checked_invariant_tests {
                 if composite.declaration() == tuple
                     && matches!(composite.slots(), [FieldValue::Present(Value::Boolean(true))])
         ));
+        let result = environment
+            .evaluate_tuple(
+                tuple,
+                vec![Box::new(|_| {
+                    Outcome::Completed(Value::Integer(Integer::one()))
+                })],
+                &mut meter(),
+            )
+            .unwrap();
+        assert!(matches!(
+            result,
+            Outcome::Refused(Refusal::CheckedInvariant {
+                cause: CheckedInvariantCause::DeferredResultNotAdmitted
+            })
+        ));
         let prior = Refusal::IntegerOutOfDomain {
             target: Box::new(quire_exact::IntegerInterval::spanning(
                 Integer::zero(),
@@ -6049,44 +6064,6 @@ mod checked_invariant_tests {
             ),
             CheckedInvariantCause::EqualityUnitUnresolved,
         );
-    }
-
-    #[trace("TC-906", "FR-122-AC-1")]
-    #[test]
-    fn exact_equality_conversion_names_unexpected_nonexact_placement() {
-        // The production conversion requests Exact, so a nonexact result cannot
-        // be produced by the current converter. Inspect the defensive arm.
-        let source = include_str!("declaration.rs");
-        let conversion = source
-            .split_once("&QuantityTarget::Exact, meter")
-            .expect("equality conversion must request an exact quantity result")
-            .1;
-        let arm = conversion
-            .split_once("ConvertedValue::Decimal(_) | ConvertedValue::Integer { .. } => {")
-            .expect("equality conversion must reject nonexact result variants")
-            .1;
-        assert!(arm.starts_with(
-            "\n                    return Err(invariant(\n                        CheckedInvariantCause::EqualityQuantityNonExactPlacement,"
-        ));
-    }
-
-    #[trace("TC-906", "FR-122-AC-1")]
-    #[test]
-    fn scale_zero_integer_conversion_names_noninteger_placement() {
-        // A scale-zero DecimalType currently makes into_integer() Some;
-        // inspect the defensive error mapping that cannot be reached here.
-        let source = include_str!("quantity.rs");
-        let placement = source
-            .split_once("let (coefficient, loss) = place(&exact, placement, Retained::Integer(domain), meter)?")
-            .expect("integer conversion must use its scale-zero placement")
-            .1;
-        let missing_integer = placement
-            .split_once(".into_integer()")
-            .expect("integer conversion must request an integer result")
-            .1;
-        assert!(missing_integer.starts_with(
-            "\n                .ok_or(Stop::Refused(Refusal::CheckedInvariant {\n                    cause: CheckedInvariantCause::ExpectedIntegerPlacement,"
-        ));
     }
 
     #[trace("TC-906", "FR-122-AC-1")]
