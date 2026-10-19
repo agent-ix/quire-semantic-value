@@ -41,3 +41,10 @@ Ticket: IR-878. Planless gap analysis of head aea435e16a77c862b7f52345afb253521c
 origin/main: 93/103 rows backed, 9 unbacked, 0 contradicted. Head: 93/106 rows backed, 12 unbacked (+FR-122-AC-1, AC-2, AC-3), 0 contradicted. FR-109-AC-6 is unbacked in both.
 
 Plan completion: not assessed
+
+## Dispositions
+
+| FND | Outcome | Reason |
+| --- | --- | --- |
+| FND-001 | fixed | Round 1. FR-109 Status now marks FR-109-AC-6 PLANNED for a direct QSV test and credits no existing tag to it. Strict coverage is unchanged from round 0: 93/106 backed, 12 unbacked, 0 contradicted. |
+| FND-002 | fixed | Round 1. FR-122 Status names the eight TC-906 tests and the four membership.rs tests, all verified to exist. It states they are rebound to FR-122-AC-1/2 when quire-exact #56 merges, and claims no credit. |

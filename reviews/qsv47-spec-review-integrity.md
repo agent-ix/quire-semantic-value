@@ -44,3 +44,18 @@ Ticket: IR-878. Integrity lens over head aea435e16a77c862b7f52345afb253521ce92df
 There is no `spec/tests.md` in this repo, so no matrix rows or counts were affected. The TC findings above are the traceability gap.
 
 Plan completion: not assessed
+
+## New findings (disposition pass 1)
+
+| ID | Severity | Summary | Refs |
+| --- | --- | --- | --- |
+| FND-005 | low | TC-906 Status now says "Its tests bind to the authoritative `FR-122-AC-1` criterion", but all eight tests are still tagged `FR-369-AC-9`. FR-122 Status itself says they will be rebound when quire-exact #56 merges. The TC states a planned binding as current. | spec/test-cases/TC-906-qsv-checked-invariant-causes.md:69-71 |
+
+## Dispositions
+
+| FND | Outcome | Reason |
+| --- | --- | --- |
+| FND-001 | fixed | Round 1. TC-906 now verifies QSV FR-122, scoped to FR-122-AC-1 and kernel FR-369-AC-5. TC-908 adds a verifies edge to FR-122 for AC-2/3. |
+| FND-002 | fixed | Round 1. TC-908 step 6 now exercises only the supplied-membership budget and defers evaluator and conversion observations to QSL FR-394. Step 8 says "additional supplied-admission charge". The Expected Results no longer claim evaluation accounting or a FunctionCall mutant; QSV has no FunctionCall type in src/. |
+| FND-003 | fixed | Round 1. The Description now says "the QSV supplied-caller portion of FR-372-AC-5". |
+| FND-004 | fixed | Round 1. The FR-109 Dependencies note now records that FR-394-AC-3 carries the evaluator-charge clause removed from FR-109-AC-8. |

@@ -43,3 +43,10 @@ Ticket: IR-878 (item 4, owner allocation of unbacked strict-coverage criteria). 
 `quire coverage --scope . --strict`: origin/main 93/103 rows backed with 9 unbacked; head 93/106 rows backed with 12 unbacked (+3: FR-122-AC-1..3, PLANNED as expected). 0 contradicted statuses on both. FR-109-AC-6 is unbacked on both. See the gap-analysis artifact.
 
 Plan completion: not assessed
+
+## Dispositions
+
+| FND | Outcome | Reason |
+| --- | --- | --- |
+| FND-001 | fixed | Round 1 (head df8a3dae). QSL #995 (head 6862c2f0, rebased on QSL main) renumbered the requirement to FR-394. QSL main has FR-390..393 only, and no other open QSL PR adds FR-394. QSV FR-109:135 and FR-122:44 now link FR-394. |
+| FND-002 | fixed | Round 1. FR-122-AC-3 now names `SuppliedAdmissionError::UnsupportedHelper { family: UnsupportedHelperFamily::NumericDomain, .. }`. |

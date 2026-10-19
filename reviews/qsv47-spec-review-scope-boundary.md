@@ -40,3 +40,9 @@ Ticket: IR-878. Scope-boundary lens over head aea435e16a77c862b7f52345afb253521c
 Not applicable to this lens; see SR-13044.
 
 Plan completion: not assessed
+
+## Dispositions
+
+| FND | Outcome | Reason |
+| --- | --- | --- |
+| FND-001 | fixed | Round 1. FR-122-AC-3 now asserts only the direct QSV caller's no-default and absent-B result. It points the exact-helper no-default control to quire-exact FR-380-AC-7, which exists on quire-exact #56 head c58ab92d. The leftover copy of that clause in QSL FR-394-AC-2 is a defect in QSL #995, flagged by the author for the QSL owner. It is not in QSV #47. |
