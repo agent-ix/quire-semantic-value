@@ -3,7 +3,7 @@ id: TC-906
 title: "QSV reports the cause of each reached checked-invariant condition"
 type: TC
 relationships:
-  - target: ix://agent-ix/quire-exact/FR-369
+  - target: ix://agent-ix/quire-semantic-value/FR-122
     type: verifies
 ---
 # TC-906: QSV reports the cause of each reached checked-invariant condition
@@ -11,14 +11,14 @@ relationships:
 ## Description
 
 Verify the QSV source-site mapping in
-[kernel FR-369](ix://agent-ix/quire-exact/FR-369), especially FR-369-AC-9,
+[QSV FR-122](ix://agent-ix/quire-semantic-value/FR-122), especially FR-122-AC-1,
 through QSV's deferred-value, checked-equality and quantity-conversion paths.
 The operational contracts remain
 [QSpec FR-143](ix://agent-ix/quire-specification/FR-143) for deferred record
 and tuple results,
 [QSpec FR-149](ix://agent-ix/quire-specification/FR-149) for checked equality,
 and [QSpec FR-142](ix://agent-ix/quire-specification/FR-142) for quantity
-conversion. Scope: FR-369-AC-5 and FR-369-AC-9; FR-142-AC-7,
+conversion. Scope: FR-122-AC-1 and kernel FR-369-AC-5; FR-142-AC-7,
 FR-143-AC-8, and FR-149-AC-7/AC-10 cover the corresponding operational
 result and charge behavior.
 
@@ -67,5 +67,5 @@ constructor has one specified cause without a generic default.
 ## Status
 
 Planned with the IR-712 QSV implementation. Its tests bind to the authoritative
-`FR-369-AC-9` criterion (and `FR-369-AC-5` where they check catalog absence),
+`FR-122-AC-1` criterion (and `FR-369-AC-5` where they check catalog absence),
 with operational criteria from QSpec as applicable.

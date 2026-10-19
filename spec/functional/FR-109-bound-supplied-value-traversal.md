@@ -132,9 +132,9 @@ caller/admission input bound and the helper operation it constrains.
 - [QSL FR-098](ix://agent-ix/quire-spec-language/FR-098) retains ownership of
   per-argument converted-node and occurrence bounds, without evaluator debit.
   This requirement does not reinterpret converted nodes as membership events.
-- [QSL FR-391](ix://agent-ix/quire-spec-language/FR-391) owns the evaluator
+- [QSL FR-394](ix://agent-ix/quire-spec-language/FR-394) owns the evaluator
   meter and charge-sequence control, conversion phase allocation, and
-  `FunctionCall` projection formerly combined in FR-109-AC-6.
+  `FunctionCall` projection formerly combined in FR-109-AC-6. Its FR-394-AC-3 also carries the evaluator-charge clause removed from FR-109-AC-8; QSV retains the supplied-budget and typed-projection portions.
 - QSL owns `supplied.admission_work_units`,
   `supplied.conversion_work_units`, defaults and public typed phase projection.
   The authoritative runtime request/result envelope is owned by
@@ -165,5 +165,5 @@ FR-109-AC-8 for cumulative N/N-1 and zero budgets, membership and size
 outcomes, cancellation and typed resource-error projection also execute. Exact-kernel
 TC-920 owns the actual scratch-denial and checked-capacity mechanisms. The
 union descriptor helper premises still need inspection under FR-109-AC-7.
-No numerical default is selected by this QSV requirement. Research predictions
+FR-109-AC-6 is PLANNED for a direct QSV test of the newly narrowed supplied-caller contract; no existing tag is credited to that complete criterion. No numerical default is selected by this QSV requirement. Research predictions
 are not qualified defaults, event-table evidence or runtime acceptance results.

@@ -5,12 +5,14 @@ type: TC
 relationships:
   - target: ix://agent-ix/quire-semantic-value/FR-109
     type: verifies
+  - target: ix://agent-ix/quire-semantic-value/FR-122
+    type: verifies
 ---
 # TC-908: Supplied membership retains its phase, cumulative work and original cancellation
 
 ## Description
 
-Verify [FR-109](../functional/FR-109-bound-supplied-value-traversal.md)
+Verify [FR-109](../functional/FR-109-bound-supplied-value-traversal.md) and [FR-122-AC-2/3](../functional/FR-122-supplied-membership-owner-obligations.md)
 through the real bounded supplied-membership API after its supported-family
 helpers are qualified. Source-enumerate the fixture's logical event sequence;
 do not obtain the expected count by reading the counter being tested.
@@ -40,11 +42,7 @@ do not obtain the expected count by reading the counter being tested.
    membership logic. Compare the reported allocation amount/unit with the
    real reservation request. Separately trigger checked representation/size
    overflow. Retry without denial and compare membership with the fresh run.
-6. Observe an external evaluator meter before and after membership and inspect
-   the supplied result. Assert no semantic debit or evaluated FunctionCall
-   failure. Exercise a shared helper initiated once from conversion and once
-   from admission with their distinct caller-owned budgets; each call spends
-   only its initiating budget, with no duplicate phase charge.
+6. Exercise a membership-triggered shared helper through `src/supplied_membership.rs` with one cumulative supplied-admission budget. Assert each logical event is charged once to that budget, with the original cancellation handle and typed locus retained on a denied event. QSL FR-394 owns conversion and evaluator observations.
 7. Inspect every claimed helper against its authoritative implementation and
    actual input bounds. Establish comparisons/arithmetic, peak temporary storage,
    cancellation response boundary and reservation route. For Decimal, check the
@@ -62,7 +60,7 @@ do not obtain the expected count by reading the counter being tested.
    nonmembership against an independent oracle. Cancel the original handle at
    an observed boundary and assert its typed cause, Decimal locus, cumulative
    spend and no partial admission, extra helper-entry or per-limb event, or
-   evaluator charge. Confirm a caller without source-backed `B` or `S` does not
+   additional supplied-admission charge. Confirm a caller without source-backed `B` or `S` does not
    claim Decimal support or select a default.
 9. Construct the typed exact-kernel capacity and allocation failure variants
    with distinct measured fields and pass each through QSV's production Decimal
@@ -80,10 +78,8 @@ Exact N succeeds; N-1 and zero return the real denied supplied-admission event
 with configured ceiling, successful spend and next request. Multi-argument and
 nested calls preserve one cumulative budget and original cancellation. Caches
 do not change logical accounting. Invalid/cancel/allocation/capacity outcomes
-remain distinct, no partial result escapes, and evaluation accounting is
-unchanged. A missing helper premise prevents qualification rather than
-establishing supported behavior. Mutants for reset, fresh Cancel, fabricated
-FunctionCall, duplicate phase debit, false storage cause and partial success
+remain distinct, no partial result escapes, and supplied-admission accounting follows the independently enumerated events. A missing helper premise prevents qualification rather than
+establishing supported behavior. Mutants for reset, fresh Cancel, duplicate supplied debit, false storage cause and partial success
 are killed by the corresponding assertions. Integrated Decimal caller controls
 retain the kernel's Boolean result and cancellation at the same rooted
 supplied-admission locus without adding a logical event. Separate projection
