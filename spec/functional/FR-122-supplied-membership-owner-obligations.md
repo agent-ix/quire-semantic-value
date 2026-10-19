@@ -45,4 +45,4 @@ The QSV producer paths SHALL use the precise shared causes. The supplied caller 
 
 ## Status
 
-FR-122-AC-2 is backed by the bounded Decimal tests; FR-122-AC-3 is backed by the bounded Integer/Rational and missing-bound NumericDomain supplied-caller tests in `src/declaration/membership.rs`. FR-122-AC-1 remains planned: the eight TC-906 tests in `src/declaration.rs` retain their former owner tags pending test evidence for the noninteger `ExpectedIntegerPlacement` branch and the remaining equality-operand rows.
+FR-122-AC-1 is backed by the eight TC-906 behavioral tests in `src/declaration.rs` and two source checks for unreachable defensive rows: equality conversion requests `Exact`, so `EqualityQuantityNonExactPlacement` cannot be returned by the current converter; integer conversion constructs a scale-zero placement, so an admitted result has an integer view. Those checks assert the precise cause constructors without claiming a runtime refusal. FR-122-AC-2 is backed by the bounded Decimal tests; FR-122-AC-3 is backed by the bounded Integer/Rational and missing-bound NumericDomain supplied-caller tests in `src/declaration/membership.rs`.

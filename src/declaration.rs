@@ -5823,8 +5823,7 @@ mod checked_invariant_tests {
         ));
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9", "FR-369-AC-5")]
+    #[trace("TC-906", "FR-122-AC-1", "FR-369-AC-5")]
     #[test]
     fn deferred_result_names_failed_admission_and_preserves_prior_stop() {
         refusal(
@@ -5885,8 +5884,7 @@ mod checked_invariant_tests {
         assert_eq!(actual, prior_stop);
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-122-AC-1")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies checked declaration identities without minting them in production"
@@ -5966,8 +5964,7 @@ mod checked_invariant_tests {
         assert!(matches!(result, Outcome::Refused(actual) if actual == prior));
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-122-AC-1")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies a checked unit identity without minting one in production"
@@ -6054,8 +6051,45 @@ mod checked_invariant_tests {
         );
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-122-AC-1")]
+    #[test]
+    fn exact_equality_conversion_names_unexpected_nonexact_placement() {
+        // The production conversion requests Exact, so a nonexact result cannot
+        // be produced by the current converter. Inspect the defensive arm.
+        let source = include_str!("declaration.rs");
+        let conversion = source
+            .split_once("&QuantityTarget::Exact, meter")
+            .expect("equality conversion must request an exact quantity result")
+            .1;
+        let arm = conversion
+            .split_once("ConvertedValue::Decimal(_) | ConvertedValue::Integer { .. } => {")
+            .expect("equality conversion must reject nonexact result variants")
+            .1;
+        assert!(arm.starts_with(
+            "\n                    return Err(invariant(\n                        CheckedInvariantCause::EqualityQuantityNonExactPlacement,"
+        ));
+    }
+
+    #[trace("TC-906", "FR-122-AC-1")]
+    #[test]
+    fn scale_zero_integer_conversion_names_noninteger_placement() {
+        // A scale-zero DecimalType currently makes into_integer() Some;
+        // inspect the defensive error mapping that cannot be reached here.
+        let source = include_str!("quantity.rs");
+        let placement = source
+            .split_once("let (coefficient, loss) = place(&exact, placement, Retained::Integer(domain), meter)?")
+            .expect("integer conversion must use its scale-zero placement")
+            .1;
+        let missing_integer = placement
+            .split_once(".into_integer()")
+            .expect("integer conversion must request an integer result")
+            .1;
+        assert!(missing_integer.starts_with(
+            "\n                .ok_or(Stop::Refused(Refusal::CheckedInvariant {\n                    cause: CheckedInvariantCause::ExpectedIntegerPlacement,"
+        ));
+    }
+
+    #[trace("TC-906", "FR-122-AC-1")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies a checked node identity without minting one in production"
@@ -6115,8 +6149,7 @@ mod checked_invariant_tests {
         ));
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-122-AC-1")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies checked enum identities without minting them in production"
@@ -6154,8 +6187,7 @@ mod checked_invariant_tests {
         ));
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-122-AC-1")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies a checked enum identity without minting it in production"
@@ -6183,8 +6215,7 @@ mod checked_invariant_tests {
         ));
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-122-AC-1")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies checked unit identities without minting them in production"
@@ -6250,8 +6281,7 @@ mod checked_invariant_tests {
         );
     }
 
-    /// Trace: FR-369-AC-9
-    #[trace("TC-906", "FR-369-AC-9")]
+    #[trace("TC-906", "FR-122-AC-1")]
     #[allow(
         clippy::disallowed_methods,
         reason = "the test supplies checked unit identities without minting them in production"

@@ -66,6 +66,9 @@ constructor has one specified cause without a generic default.
 
 ## Status
 
-Planned with the IR-712 QSV implementation. Its eight tests remain tagged `FR-369-AC-9` and are planned for re-tagging to the authoritative
-`FR-122-AC-1` criterion (and `FR-369-AC-5` where they check catalog absence),
-with operational criteria from QSpec as applicable.
+The eight behavioral tests and two defensive cause source checks are tagged
+`FR-122-AC-1` (and `FR-369-AC-5` where catalog absence is checked). The
+`EqualityQuantityNonExactPlacement` and `ExpectedIntegerPlacement` checks
+inspect their constructor mappings because valid current conversion inputs
+cannot reach those defensive branches. The behavioral tests exercise the
+reachable causes, payloads, prior outcomes and charge stops.
