@@ -66,6 +66,6 @@ constructor has one specified cause without a generic default.
 
 ## Status
 
-Planned with the IR-712 QSV implementation. Its tests bind to the authoritative
+Planned with the IR-712 QSV implementation. Its eight tests remain tagged `FR-369-AC-9` and are planned for re-tagging to the authoritative
 `FR-122-AC-1` criterion (and `FR-369-AC-5` where they check catalog absence),
 with operational criteria from QSpec as applicable.
