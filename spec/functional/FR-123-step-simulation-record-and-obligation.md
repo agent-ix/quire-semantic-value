@@ -100,8 +100,9 @@ identity-bearing values is `Encode` (FR-121).
    `{"kind":"step","row":<position>}`. `Encode` of a `StepSimulationRecord`
    SHALL write an object with `hypotheses` (array of lowercase 64-hex node
    keys, in order), `obligation` and `refinement` (lowercase 64-hex node key)
-   members, in RFC 8785 member order. The caller's `Limits` bounds the whole
-   output through `quire-canonical`'s typed error path.
+   members, in RFC 8785 member order. Each `Encode` SHALL bound the whole
+   output by the caller's `Limits` and report an excess through
+   `quire-canonical`'s typed error path.
 4. The module SHALL use only `core`, `alloc` and the crate's existing
    dependencies, call no identity-minting method and add no re-export.
 
