@@ -108,7 +108,8 @@ defaults, value-occurrence limits, replay converted nodes and evaluation
 exact/one-less parity remain QSL consumer
 controls under QSL-778. Numerical default hypotheses and hosted source
 predictions are not an oracle for N. The Decimal caller tests are traced to
-FR-122-AC-2 and FR-122-AC-3. The Decimal caller accepts an explicit
+FR-122-AC-2; bounded Integer/Rational and absent-B NumericDomain caller tests
+are traced to FR-122-AC-3. The Decimal caller accepts an explicit
 magnitude bound and derives its alignment-shift bound from the declared minimum
 scale; it adds no fifth helper-entry event or numeric default. The union helper
 premises still need inspection under FR-109-AC-7.

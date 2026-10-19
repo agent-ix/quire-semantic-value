@@ -45,4 +45,4 @@ The QSV producer paths SHALL use the precise shared causes. The supplied caller 
 
 ## Status
 
-FR-122-AC-2 and FR-122-AC-3 are backed by the bounded Decimal and missing-bound supplied-caller tests in `src/declaration/membership.rs`. FR-122-AC-1 remains planned: the eight TC-906 tests in `src/declaration.rs` retain their former owner tags pending test evidence for the noninteger `ExpectedIntegerPlacement` branch and the remaining equality-operand rows.
+FR-122-AC-2 is backed by the bounded Decimal tests; FR-122-AC-3 is backed by the bounded Integer/Rational and missing-bound NumericDomain supplied-caller tests in `src/declaration/membership.rs`. FR-122-AC-1 remains planned: the eight TC-906 tests in `src/declaration.rs` retain their former owner tags pending test evidence for the noninteger `ExpectedIntegerPlacement` branch and the remaining equality-operand rows.
