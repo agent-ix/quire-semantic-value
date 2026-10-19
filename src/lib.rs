@@ -26,6 +26,7 @@ pub mod object_closure;
 pub mod quantity;
 pub mod relationship_extent;
 pub mod semantic_node;
+pub mod step_simulation;
 pub mod stop;
 pub mod supplied_membership;
 pub mod unit;
