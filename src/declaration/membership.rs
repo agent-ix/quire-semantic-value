@@ -1918,8 +1918,7 @@ mod tests {
 
     /// Every numeric operand is checked against the explicit bit ceiling
     /// after its value-visit event has been charged.
-    /// Trace: FR-109-AC-1, FR-109-AC-7
-    #[trace("TC-908", "FR-109-AC-1", "FR-109-AC-7")]
+    #[trace("TC-908", "FR-109-AC-1", "FR-109-AC-7", "FR-122-AC-3")]
     #[test]
     fn bounded_numeric_value_checks_all_three_integer_and_six_rational_operands() {
         use quire_exact::NumericMembershipOperand as Operand;
@@ -2011,8 +2010,7 @@ mod tests {
 
     /// The value event precedes the numeric helper, and the same budget covers
     /// later arguments. Zero needs one bit, even when the integer is zero.
-    /// Trace: FR-109-AC-1, FR-109-AC-2, FR-109-AC-3
-    #[trace("TC-908", "FR-109-AC-1", "FR-109-AC-2", "FR-109-AC-3")]
+    #[trace("TC-908", "FR-109-AC-1", "FR-109-AC-2", "FR-109-AC-3", "FR-122-AC-3")]
     #[test]
     fn bounded_numeric_respects_event_order_zero_and_original_cancel() {
         let expected = ValueType::Int(IntegerInterval::spanning(Integer::zero(), Integer::one()));
@@ -2106,8 +2104,7 @@ mod tests {
 
     /// The seventh poll is the first borrowed-limb comparison after the
     /// value event, helper entry, three operand checks, and comparison entry.
-    /// Trace: FR-109-AC-3
-    #[trace("TC-908", "FR-109-AC-3")]
+    #[trace("TC-908", "FR-109-AC-3", "FR-122-AC-3")]
     #[test]
     fn bounded_numeric_maps_cancellation_during_kernel_comparison() {
         use core::sync::atomic::{AtomicUsize, Ordering};
@@ -2244,8 +2241,7 @@ mod tests {
 
     /// Numeric links use one charged event and report a rooted typed endpoint
     /// stop before comparing any of the four or eight retained operands.
-    /// Trace: FR-117-AC-1, FR-117-AC-2
-    #[trace("TC-917", "FR-117-AC-1", "FR-117-AC-2")]
+    #[trace("TC-917", "FR-117-AC-1", "FR-117-AC-2", "FR-122-AC-3")]
     #[test]
     fn bounded_numeric_type_links_check_expected_then_actual_endpoints() {
         use quire_exact::NumericTypeEndpoint as Endpoint;
@@ -2921,7 +2917,6 @@ mod tests {
 
     /// Every coefficient endpoint is checked in expected-first order, even
     /// when a metadata field already differs.
-    /// Trace: FR-118-AC-2
     #[trace("TC-918", "FR-118-AC-2")]
     #[test]
     fn bounded_decimal_type_link_checks_four_endpoints_and_metadata() {
@@ -3363,8 +3358,7 @@ mod tests {
     /// Supplied numeric domains stop before unbounded BigInt comparisons,
     /// including those reached through a retained nested type. The plain
     /// Integer kind still has a fixed-time kind check.
-    /// Trace: FR-109-AC-7
-    #[trace("TC-908", "FR-109-AC-7")]
+    #[trace("TC-908", "FR-109-AC-7", "FR-122-AC-3")]
     #[test]
     fn supplied_api_reports_unqualified_numeric_domain_before_comparison() {
         let interval = IntegerInterval::spanning(Integer::zero(), Integer::from(10_i64));
@@ -3452,7 +3446,6 @@ mod tests {
 
     /// The supplied API stops before the bool-only Decimal domain helper,
     /// both at a direct value and at a retained nested type comparison.
-    /// Trace: FR-109-AC-7
     #[trace("TC-908", "FR-109-AC-7")]
     #[test]
     fn supplied_api_reports_unqualified_decimal_before_the_helper() {
@@ -3520,10 +3513,12 @@ mod tests {
     /// Two Decimal arguments have exactly two owning value visits. The
     /// declared minimum scale bounds the normalization shift without a
     /// separate helper event or per-limb charge.
-    /// Trace: FR-109-AC-1, FR-109-AC-2, FR-109-AC-8, FR-372-AC-5
-    #[trace("TC-908", "FR-109-AC-1", "FR-109-AC-2", "FR-109-AC-8", "FR-372-AC-5")]
+    #[trace("TC-908", "FR-109-AC-1", "FR-109-AC-2", "FR-109-AC-8", "FR-122-AC-2")]
     #[test]
     fn bounded_decimal_uses_cumulative_exact_event_boundary() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
         let expected = ValueType::Decimal(
             DecimalType::new(
                 Integer::zero(),
@@ -3562,6 +3557,11 @@ mod tests {
         assert_eq!(exact.spent(), 2);
 
         let mut one_less = SuppliedMembershipBudget::new(1);
+        let denied_polls = Arc::new(AtomicUsize::new(0));
+        let observed_polls = Arc::clone(&denied_polls);
+        let denied_cancel = Cancel::observing(move || {
+            observed_polls.fetch_add(1, Ordering::SeqCst);
+        });
         assert_eq!(
             environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
                 &expected,
@@ -3581,7 +3581,7 @@ mod tests {
                 &mut arena,
                 second,
                 &mut one_less,
-                &cancel,
+                &denied_cancel,
                 7,
             ),
             Err(BoundedSuppliedAdmissionError::Admission(Stop::Limit {
@@ -3593,6 +3593,7 @@ mod tests {
             }))
         );
         assert_eq!(one_less.spent(), 1);
+        assert_eq!(denied_polls.load(Ordering::SeqCst), 1);
         assert_eq!(arena.resolve(second).expect("second root").argument(), 1);
 
         let mut zero = SuppliedMembershipBudget::new(0);
@@ -3613,8 +3614,7 @@ mod tests {
 
     /// The magnitude premise is checked before invoking the helper; a
     /// completed nonmember is still a typed payload refusal at the same root.
-    /// Trace: FR-109-AC-4, FR-109-AC-8, FR-372-AC-5
-    #[trace("TC-908", "FR-109-AC-4", "FR-109-AC-8", "FR-372-AC-5")]
+    #[trace("TC-908", "FR-109-AC-4", "FR-109-AC-8", "FR-122-AC-2")]
     #[test]
     fn bounded_decimal_retains_size_and_nonmembership_locus() {
         let expected = ValueType::Decimal(
@@ -3702,7 +3702,24 @@ mod tests {
         );
         assert_eq!(lower_budget.spent(), 1);
 
-        let mut invalid_budget = SuppliedMembershipBudget::new(1);
+        let prior = MembershipLocus {
+            path: arena.root(4),
+            part: MembershipPart::Value,
+        };
+        let mut invalid_budget = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &Value::Decimal(Decimal::new(Integer::one(), 0)),
+                &mut arena,
+                prior,
+                &mut invalid_budget,
+                &Cancel::new(),
+                7,
+            ),
+            Ok(())
+        );
+        assert_eq!(invalid_budget.spent(), 1);
         assert_eq!(
             environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
                 &expected,
@@ -3718,14 +3735,13 @@ mod tests {
                 locus: at,
             }))
         );
-        assert_eq!(invalid_budget.spent(), 1);
+        assert_eq!(invalid_budget.spent(), 2);
     }
 
     /// The QSV projection preserves a constructed kernel resource failure's
     /// actual native request and rooted locus. Exact TC-920 tests the kernel's
     /// production allocation and checked-capacity mechanisms separately.
-    /// Trace: FR-109-AC-8, FR-372-AC-5
-    #[trace("TC-908", "FR-109-AC-8", "FR-372-AC-5")]
+    #[trace("TC-908", "FR-109-AC-8", "FR-122-AC-2")]
     #[test]
     fn decimal_kernel_resource_failures_project_without_partial_admission() {
         let arena = MembershipPathArena::new().expect("arena");
@@ -3772,8 +3788,7 @@ mod tests {
 
     /// Cancellation observed by the kernel after the owning value event
     /// retains the original handle's cause and the already-spent budget.
-    /// Trace: FR-109-AC-3, FR-109-AC-8, FR-372-AC-5
-    #[trace("TC-908", "FR-109-AC-3", "FR-109-AC-8", "FR-372-AC-5")]
+    #[trace("TC-908", "FR-109-AC-3", "FR-109-AC-8", "FR-122-AC-2")]
     #[test]
     fn bounded_decimal_maps_original_handle_cancellation_during_helper() {
         use core::sync::atomic::{AtomicUsize, Ordering};
@@ -3811,7 +3826,24 @@ mod tests {
             path: arena.root(8),
             part: MembershipPart::Value,
         };
-        let mut budget = SuppliedMembershipBudget::new(1);
+        let prior = MembershipLocus {
+            path: arena.root(7),
+            part: MembershipPart::Value,
+        };
+        let mut budget = SuppliedMembershipBudget::new(2);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &value,
+                &mut arena,
+                prior,
+                &mut budget,
+                &Cancel::new(),
+                7,
+            ),
+            Ok(())
+        );
+        assert_eq!(budget.spent(), 1);
         assert_eq!(
             environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
                 &expected,
@@ -3824,12 +3856,12 @@ mod tests {
             ),
             Err(BoundedSuppliedAdmissionError::Admission(Stop::Cancelled {
                 cause: CancelCause::Deadline,
-                spent: 1,
+                spent: 2,
                 event: MembershipEvent::ValueVisit,
                 locus: at,
             }))
         );
-        assert_eq!(budget.spent(), 1);
+        assert_eq!(budget.spent(), 2);
         assert_eq!(cancel.tripped(), Some(CancelCause::Deadline));
         assert!(polls.load(Ordering::SeqCst) >= 4);
     }
