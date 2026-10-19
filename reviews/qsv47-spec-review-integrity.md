@@ -59,3 +59,4 @@ Plan completion: not assessed
 | FND-002 | fixed | Round 1. TC-908 step 6 now exercises only the supplied-membership budget and defers evaluator and conversion observations to QSL FR-394. Step 8 says "additional supplied-admission charge". The Expected Results no longer claim evaluation accounting or a FunctionCall mutant; QSV has no FunctionCall type in src/. |
 | FND-003 | fixed | Round 1. The Description now says "the QSV supplied-caller portion of FR-372-AC-5". |
 | FND-004 | fixed | Round 1. The FR-109 Dependencies note now records that FR-394-AC-3 carries the evaluator-charge clause removed from FR-109-AC-8. |
+| FND-005 | fixed | Round 2 (head d6f631d5). TC-906 Status now says the eight tests remain tagged FR-369-AC-9 and are planned for re-tagging to FR-122-AC-1. |
