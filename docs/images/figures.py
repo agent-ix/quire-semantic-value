@@ -34,7 +34,7 @@ def hero():
         "hero",
         980,
         330,
-        "A quantity is an exact magnitude plus a unit id, not a bare number. A unit table resolves "
+        "A quantity is an exact magnitude plus a unit id. A unit table resolves "
         "the id to a dimension and a conversion path. An operation first type-checks the units; "
         "mismatched dimensions are ill-typed and consume nothing. Otherwise it is evaluated under "
         "a meter and ends as completed (a value plus any loss record), undefined, refused or "
