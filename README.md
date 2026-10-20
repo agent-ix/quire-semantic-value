@@ -7,9 +7,8 @@ records of what an operation dropped and where. It builds on the exact-value
 kernel in [quire-exact](https://github.com/agent-ix/quire-exact) and uses only
 `core` and `alloc`.
 
-A rule evaluator, a compiler and a code-generating backend share these values,
-so they agree on what `3 km` is, what `Shape::Rect(2, 3)` is, and what it means
-when an operation cannot produce a value.
+The QSL evaluator, the compiler and the code-generating backends share these
+values, including the result of an operation that produces no value.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.svg">
