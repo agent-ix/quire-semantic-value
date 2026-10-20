@@ -36,3 +36,8 @@ pairing with `invalid_package`, the closed cause set and the selection codes.
 - Step 3: the match compiles; no variant spells a digest-mismatch cause.
 - Step 4: the eight codes in check order; every code round-trips; the three
   other strings give `None`.
+
+## Status
+
+IMPLEMENTED (IR-882). The four traced tests in `tests/definition_closure_refusal.rs` pass,
+including the exhaustive no-wildcard `PackageCause` match, and `make ci` passes.
