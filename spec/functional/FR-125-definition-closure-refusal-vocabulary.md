@@ -94,7 +94,8 @@ consumer, not a silent fallthrough.
 
 ## Status
 
-Implemented in `src/definition.rs`; the TC-924 tests are pending.
+IMPLEMENTED (IR-882). `src/definition.rs` implements the vocabulary; four tests in
+`tests/definition_closure_refusal.rs` trace TC-924 and FR-125-AC-1 through AC-4.
 
 ## References
 
