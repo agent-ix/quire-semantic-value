@@ -71,3 +71,10 @@ design. Both should be fixed before the implementing PR binds tests to the wrong
 ## Evidence
 
 RT clone at /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv52/rt (65febe7); QSpec clone at /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv52/qspec.
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | round 1 head aa62a43e1 |
+| FND-002 | still-open | Fixed at three of the four sites the finding named: Use case line 49, AC-2 line 117 and TC-923 line 18, plus a new relationship edge to QSpec TC-187. Dependencies line 128 still reads 'RT FR-275-AC-23 and TC-187 U25 are the consumer's criteria that this handoff serves'. That sentence still makes TC-187 RT's, a consumer criterion. Fix: 'RT FR-275-AC-23 is the consumer's criterion; QSpec TC-187 U25 is the fixture'. |

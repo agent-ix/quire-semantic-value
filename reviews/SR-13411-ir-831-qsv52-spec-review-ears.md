@@ -44,3 +44,9 @@ subject is the method or the system. The Description's `SHALL turn ...` is ubiqu
 ## Evidence
 
 quire validate output: /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv52/specval.log (only the 3 FR-110 warnings that are also on main).
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | round 1 head aa62a43e1 |

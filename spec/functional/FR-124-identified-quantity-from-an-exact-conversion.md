@@ -86,7 +86,7 @@ pub enum HandoffRefusal {
 1. When the conversion's value is `ConvertedValue::Exact(v)`,
    `identified_quantity` SHALL return the quantity with magnitude `v` and the
    unit id of the conversion's target unit, paired with the `IdentifiedUnit`
-   of that unit, whose `unit()` equals the conversion's `unit()`. 
+   of that unit, whose `unit()` equals the conversion's `unit()`.
 2. When the conversion's value is a decimal or an integer representation,
    `identified_quantity` SHALL return `HandoffRefusal::NotExact` and form no
    quantity: such a value is a number in the target representation, not a

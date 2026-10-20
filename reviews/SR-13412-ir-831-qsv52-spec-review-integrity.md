@@ -67,3 +67,13 @@ procedure that, followed as written, cannot reach the refusal it tests.
 ## Evidence
 
 Probe: /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv52/zz_probe_ir831.rs; quoin matrix: /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv52/matrix.json (FR-124-AC-1..6 untagged / no run evidence, as expected for PLANNED).
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | round 1 head aa62a43e1 |
+| FND-002 | fixed | round 1 head aa62a43e1 |
+| FND-003 | fixed | round 1 head aa62a43e1 |
+| FND-004 | fixed | round 1 head aa62a43e1 |
+| FND-005 | fixed | round 1 head aa62a43e1 |
