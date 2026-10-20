@@ -374,6 +374,38 @@ impl Conversion {
     pub fn unit(&self) -> &QuantityUnit {
         &self.unit
     }
+
+    /// The converted value as a kernel [`Quantity`] in the target unit, with
+    /// the target unit identified once, for a later operation that reads the
+    /// quantity through [`UnitScope::resolve`] after [`UnitScope::form`]
+    /// records the unit. It charges no meter: the conversion has charged its
+    /// work.
+    ///
+    /// # Errors
+    ///
+    /// [`HandoffRefusal::NotExact`] when the value is a decimal or an
+    /// integer, which is a number in the target representation, not a
+    /// quantity of the unit. [`HandoffRefusal::Identity`] when the target
+    /// compound unit has no id, as [`QuantityUnit::id`].
+    pub fn identified_quantity(&self) -> Result<(Quantity, IdentifiedUnit), HandoffRefusal> {
+        let ConvertedValue::Exact(value) = &self.value else {
+            return Err(HandoffRefusal::NotExact);
+        };
+        let unit = IdentifiedUnit::new(self.unit.clone())?;
+        Ok((Quantity::new(value.clone(), unit.id()), unit))
+    }
+}
+
+/// Why [`Conversion::identified_quantity`] produced no quantity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum HandoffRefusal {
+    /// The conversion's value is a decimal or an integer, not an exact
+    /// rational.
+    #[error("the conversion's value is not an exact quantity")]
+    NotExact,
+    /// The target compound unit has no id.
+    #[error(transparent)]
+    Identity(#[from] IdentityRefusal),
 }
 
 /// Evaluate a quantity operation under `quire.value.accounting/v1`. The
