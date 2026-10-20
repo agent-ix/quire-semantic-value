@@ -88,3 +88,19 @@ implemented and traced. None of the findings is a code defect.
 ## Evidence
 
 Gate: /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv53/ci.log (`make ci` EXIT 0: fmt-check, clippy -D warnings host and thumbv7em, 205 tests incl. 5/5 in tests/identified_quantity.rs in 4.91 s debug, build-no-std --locked, cargo deny ok, rustdoc -D warnings); `cargo build --locked` clean. Mutants: /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv53/mutate.py, /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv53/runmut.sh, /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv53/mut.log. Probes: /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv53/probe-identified_quantity.rs, /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv53/probe-results.txt. Matrix: /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv53/matrix.json.
+
+## New findings (disposition pass 1)
+
+Reviewed at c0217fce29512f2658b90f6959bb42f406839c63.
+
+| ID | Severity | Summary | Refs |
+| --- | --- | --- | --- |
+| FND-004 | low | The new precedence test is tagged #[trace("TC-923", "FR-124-AC-3", "FR-124-AC-4")], but its doc comment says 'Trace: FR-124-AC-3' only. AC-4 is about an exact conversion refused with `Identity`, and this test asserts the opposite outcome, so it is not evidence for AC-4. No AC states the NotExact-first precedence that Behavior 2 now adds. Either extend AC-3 ('... including into a target whose id would be refused') and tag the test AC-3 only, or drop the AC-4 tag. Doc comment and tag should agree. | tests/identified_quantity.rs:424-425 |
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | round 1 head c0217fc |
+| FND-002 | fixed | round 1 head c0217fc |
+| FND-003 | fixed | round 1 head c0217fc |

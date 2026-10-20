@@ -83,3 +83,10 @@ assertion is vacuous. The commit convention matches main: author and committer P
 ## Evidence
 
 Gate: /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv53/ci.log (`make ci` EXIT 0: fmt-check, clippy -D warnings host and thumbv7em, 205 tests incl. 5/5 in tests/identified_quantity.rs in 4.91 s debug, build-no-std --locked, cargo deny ok, rustdoc -D warnings); `cargo build --locked` clean. Mutants: /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv53/mutate.py, /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv53/runmut.sh, /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv53/mut.log. Probes: /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv53/probe-identified_quantity.rs, /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv53/probe-results.txt. Matrix: /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv53/matrix.json.
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | round 1 head c0217fc |
+| FND-002 | fixed | round 1 head c0217fc |

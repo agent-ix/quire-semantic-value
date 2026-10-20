@@ -422,7 +422,7 @@ fn a_declared_and_a_compound_unit_with_equal_digest_bytes_keep_distinct_ids() {
 }
 
 /// Trace: FR-124-AC-3
-#[trace("TC-923", "FR-124-AC-3", "FR-124-AC-4")]
+#[trace("TC-923", "FR-124-AC-3")]
 #[test]
 fn a_non_exact_conversion_into_an_unidentifiable_target_is_not_exact() {
     let (graph, target) = cancelling(200_000);
