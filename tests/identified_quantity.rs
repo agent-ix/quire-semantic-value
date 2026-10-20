@@ -6,11 +6,12 @@
 )]
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU64;
 
 use ix_trace_rs::trace;
 use quire_exact::{
-    Integer, IntegerInterval, Meter, NodeKey, Outcome, Quantity, Rational, RoundingMode,
-    ScalarLimits, UnitDomain, UnitId,
+    ChargePoint, InjectedDenial, Integer, IntegerInterval, Meter, NodeKey, Outcome, Quantity,
+    Rational, RoundingMode, ScalarLimits, UnitDomain, UnitId,
 };
 use quire_semantic_value::quantity::{
     convert_quantity, Conversion, HandoffRefusal, QuantityTarget, QuantityUnit, UnitScope,
@@ -216,6 +217,80 @@ fn the_handed_over_quantity_resolves_and_converts_on_to_joules() {
         assert_eq!(meter.admission_count(), 3);
         assert_eq!(meter.consumed(quire_exact::LimitKind::UnitEdges), 0);
     }
+
+    // The same, per charge point, through the injected-denial seam: denying
+    // occurrence 1 stops the conversion at that point, and denying
+    // occurrence 2 (or any edge) never fires because each is charged once.
+    let hop_back = declared(&table, JOULE);
+    let hops = [
+        (&start, &compound, &table),
+        (
+            &quantity,
+            &hop_back,
+            &table_with(&table, &identified_unit(&conversion)),
+        ),
+    ];
+    for (source, target, table) in hops {
+        for point in [
+            ChargePoint::UnitIdentityRead,
+            ChargePoint::UnitTargetDomain,
+            ChargePoint::UnitResultRetain,
+        ] {
+            let denied = convert_denying(table, source, target, point, 1);
+            assert!(
+                matches!(&denied, Outcome::Incomplete(record) if record.charge_point == point),
+                "occurrence 1 of {point:?} fires"
+            );
+            assert!(
+                matches!(
+                    convert_denying(table, source, target, point, 2),
+                    Outcome::Completed(_)
+                ),
+                "occurrence 2 of {point:?} never fires"
+            );
+        }
+        assert!(matches!(
+            convert_denying(table, source, target, ChargePoint::UnitEdge, 1),
+            Outcome::Completed(_)
+        ));
+    }
+}
+
+fn identified_unit(conversion: &Conversion) -> quire_semantic_value::quantity::IdentifiedUnit {
+    conversion.identified_quantity().unwrap().1
+}
+
+/// A copy of `table` that also holds the identified unit.
+fn table_with(
+    table: &UnitTable,
+    unit: &quire_semantic_value::quantity::IdentifiedUnit,
+) -> UnitTable {
+    let mut scope = UnitScope::new(table);
+    scope.form(unit.clone());
+    let mut copy = UnitTable::default();
+    copy.append(table.clone());
+    copy.append(scope.into_formed());
+    copy
+}
+
+fn convert_denying(
+    table: &UnitTable,
+    source: &Quantity,
+    target: &QuantityUnit,
+    point: ChargePoint,
+    occurrence: u64,
+) -> Outcome<Conversion> {
+    let mut denying = meter().with_injected_denial(InjectedDenial {
+        point,
+        occurrence: NonZeroU64::new(occurrence).unwrap(),
+    });
+    convert_quantity(
+        table.resolve(source).unwrap(),
+        target,
+        &QuantityTarget::Exact,
+        &mut denying,
+    )
+    .unwrap()
 }
 
 /// Trace: FR-124-AC-3
@@ -312,10 +387,9 @@ fn an_unidentifiable_target_is_refused_with_the_identity_refusal() {
         conversion.identified_quantity(),
         Err(HandoffRefusal::Identity(refusal))
     );
-    // The refusal formed nothing: only the source unit, which the caller
-    // inserted into the package table, resolves.
+    // `identified_quantity` takes `&self` and no scope, so it cannot form a
+    // unit; the scope still resolves only what the caller inserted.
     assert_eq!(scope.resolve(&source).unwrap().unit(), &source_unit);
-    assert_eq!(scope.into_formed().ids().count(), 0);
 }
 
 /// Trace: FR-124-AC-5
@@ -345,4 +419,32 @@ fn a_declared_and_a_compound_unit_with_equal_digest_bytes_keep_distinct_ids() {
     assert_eq!(scope.resolve(&compound_quantity).unwrap().unit(), &compound);
     assert_ne!(scope.resolve(&compound_quantity).unwrap().unit(), &twin);
     assert_eq!(declared_quantity.unit(), declared_unit.id());
+}
+
+/// Trace: FR-124-AC-3
+#[trace("TC-923", "FR-124-AC-3", "FR-124-AC-4")]
+#[test]
+fn a_non_exact_conversion_into_an_unidentifiable_target_is_not_exact() {
+    let (graph, target) = cancelling(200_000);
+    let target = QuantityUnit::Compound(target);
+    let source_unit = QuantityUnit::Compound(graph.compound_unit(&[]).unwrap());
+    let mut table = UnitTable::declared(&graph);
+    let source_id = table.insert(source_unit).unwrap();
+    let source = Quantity::new(rational(1), source_id);
+    let decimal =
+        quire_exact::DecimalType::new(int(0), int(10), 0, 0, RoundingMode::Exact).unwrap();
+    let Outcome::Completed(conversion) = convert_quantity(
+        table.resolve(&source).unwrap(),
+        &target,
+        &QuantityTarget::Decimal(decimal),
+        &mut meter(),
+    )
+    .unwrap() else {
+        panic!("the conversion completes");
+    };
+    assert!(target.id().is_err());
+    assert_eq!(
+        conversion.identified_quantity(),
+        Err(HandoffRefusal::NotExact)
+    );
 }

@@ -90,8 +90,10 @@ pub enum HandoffRefusal {
 2. When the conversion's value is a decimal or an integer representation,
    `identified_quantity` SHALL return `HandoffRefusal::NotExact` and form no
    quantity: such a value is a number in the target representation, not a
-   quantity of the unit.
-3. When the target unit's id is refused with any `IdentityRefusal` (the identity
+   quantity of the unit. Exactness is checked first: for such a value the
+   target unit's id is never computed, so a decimal or integer conversion into
+   a target whose id would be refused is `NotExact`, not `Identity`.
+3. When the conversion's value is exact and the target unit's id is refused with any `IdentityRefusal` (the identity
    byte limit, a failed allocation, or a preimage with no RFC 8785
    encoding), `identified_quantity` SHALL return `HandoffRefusal::Identity`
    carrying that refusal and return no quantity and no unit.
@@ -130,5 +132,4 @@ pub enum HandoffRefusal {
 
 ## Status
 
-PLANNED (IR-831; RT AD-004 step 4). Updating RT AD-004's proposed `exact_quantity` signature to this one is a follow-up under IR-831. The public items, the tests and the RT
-cutover follow this specification.
+IMPLEMENTED (IR-831; RT AD-004 step 4). Updating RT AD-004's proposed `exact_quantity` signature to this one is a follow-up under IR-831. The RT cutover follows.
