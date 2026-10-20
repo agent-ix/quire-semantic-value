@@ -1,17 +1,15 @@
 # quire-semantic-value
 
-A `no_std` Rust library of the runtime values that sit above a plain number: a
-quantity that knows its unit, an enumeration member that knows its declaration,
-a record, tuple or union checked against its declared shape, an object
-reference that is only a name, and the records that say what an operation
-dropped and where it happened. It builds on the exact-value kernel in
-[quire-exact](https://github.com/agent-ix/quire-exact) and uses only `core` and
-`alloc`.
+quire-semantic-value is a `no_std` Rust library of runtime values for the
+Quire stack: quantities with units, enumeration members, records, tuples and
+unions checked against their declared shape, object references, and the
+records of what an operation dropped and where. It builds on the exact-value
+kernel in [quire-exact](https://github.com/agent-ix/quire-exact) and uses only
+`core` and `alloc`.
 
-A rule evaluator, a compiler and a code-generating backend all need to agree on
-what `3 km` is, what `Shape::Rect(2, 3)` is, and what it means when an
-operation cannot produce a value. This crate holds that meaning once, so the
-layers above do not each rebuild it and drift apart.
+A rule evaluator, a compiler and a code-generating backend share these values,
+so they agree on what `3 km` is, what `Shape::Rect(2, 3)` is, and what it means
+when an operation cannot produce a value.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.svg">
@@ -21,22 +19,22 @@ layers above do not each rebuild it and drift apart.
 > **Status: public prerelease.** The API is still changing and the crate is not
 > published (`publish = false`). Expect breaking changes.
 
-## What it carries beyond a number
+## Values
 
 | A raw number lacks | This crate adds | Module |
 | --- | --- | --- |
 | a unit | an exact magnitude plus a unit id, resolved through a unit table to a dimension and an exact conversion path to a canonical root; mismatched dimensions are refused before anything is charged | `quantity`, `unit` |
-| a stated way to end | every computation stops as completed, undefined, refused or incomplete (the kernel's outcome), never as a silent wrong value | `stop` |
+| a stated way to end | every computation stops as completed, undefined, refused or incomplete (the kernel's outcome) | `stop` |
 | a record of what was dropped | a loss record for each rounding or IEEE conversion step, tied to the expression that produced it | `loss`, `location` |
 | a place | an origin (which declaration) and a child-index path inside it | `location` |
 | a declared shape | records, tuples, unions and model object types checked against a registry, with checked equality | `declaration`, `enumeration` |
 | structure | finite values built from a containment graph; shared nodes become one immutable value and a cycle is refused | `containment` |
 | identity for objects | references that are terminal names, resolved only through an object closure; no reference can dangle | `object_closure` |
 
-The crate never mints a node, effective or population identity. It checks the
+The crate does not mint a node, effective or population identity. It checks the
 ones it is handed.
 
-## A first look
+## Usage
 
 The smallest runnable use is in `tests/union_registry.rs`. It declares a
 `Shape` union with members `Rect(Integer, Integer)`, `Circle(Integer)` and
@@ -59,7 +57,7 @@ assert!(env.admits(&ValueType::Composite(key(1)), &value).unwrap());
 ```
 
 `shape()`, `key` and `variant` are small helpers defined in that file. A
-payload with the wrong number or type of positions is refused, not coerced.
+payload with the wrong number or type of positions is refused.
 
 ## Modules
 
@@ -73,14 +71,14 @@ payload with the wrong number or type of positions is refused, not coerced.
 | `stop`, `loss`, `location` | how a computation ends, what it dropped, and where |
 | `call`, `checking`, `definition`, `semantic_node` | refusal vocabularies and admission limits that callers and backends share |
 
-## The Quire ecosystem
+## Quire ecosystem
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/ecosystem-dark.svg">
   <img alt="The Quire repositories. The main chain runs from the standard, quire-specification, to the compiler, quire-spec-language, then quire-contract-ir, quire-contract-codegen and quire-contract-runtime. quire-spec-language also feeds quire-protocol, and quire-contract-ir feeds quire-analyze. quire-observation feeds quire-protocol and quire-mltl. Above the chain, quire-driver runs it, quire-integration tests it and quire-verification plans verification. Below it, shared libraries used throughout: quire-exact, quire-semantic-value, quire-walk, quire-canonical and quire-verification-contracts." src="docs/images/ecosystem-light.svg">
 </picture>
 
-This crate is a foundation. It depends on
+This crate depends on
 [quire-exact](https://github.com/agent-ix/quire-exact) for the exact values and
 meter, and on [quire-canonical](https://github.com/agent-ix/quire-canonical)
 for the one RFC 8785 encoder (without `std`). It is used by
