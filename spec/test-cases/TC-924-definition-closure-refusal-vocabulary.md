@@ -20,7 +20,8 @@ pairing with `invalid_package`, the closed cause set and the selection codes.
    spellings in QSpec FR-272's `invalid_package` row (FR-125-AC-1).
 2. Build `PackageRefusal::invalid_package` for each cause and read `code` and
    `cause`; inspect the public items for another pairing (FR-125-AC-2).
-3. Compile an exhaustive `match` over `PackageCause` with no wildcard arm, and
+3. Compile, in an integration test under `tests/` (a crate other than the
+   defining one), an exhaustive `match` over `PackageCause` with no wildcard arm, and
    compare the three spellings against `byte-digest-mismatch`,
    `digest-domain-mismatch` and `content-mismatch` (FR-125-AC-3).
 4. Compare `SelectionRefusalCode::ALL` with the eight codes in order, round-trip
