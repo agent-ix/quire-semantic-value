@@ -48,3 +48,10 @@ statements say the same thing.
 ## Evidence
 
 quire 0.36.2 `quire validate --scope . 'spec/**/*.md'`: exit 0; 3 warnings, all FR-110, both at the head and on main.
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | round 1 head d5a01ca5e: d5a01ca5e: Behavior 4 now holds only the pairing. The cannot-fail clause is replaced by its own Behavior 5, 'Every `PackageRefusal` SHALL carry `PackageRefusalCode::InvalidPackage`'. |
+| FND-002 | fixed | round 1 head d5a01ca5e: d5a01ca5e: 'SHALL be a closed enumeration' is deleted. Behaviors 1 and 7 (exactly three variants, not `#[non_exhaustive]`) carry the meaning. |

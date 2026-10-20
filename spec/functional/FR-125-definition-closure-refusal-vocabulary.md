@@ -22,7 +22,9 @@ QSpec FR-272 ("typed diagnostic cause") is the upstream authority for the
 `proposals/quire-v1/definitions/value-complete.md` is the upstream authority for
 the eight selection codes and their check order. This requirement restates
 the subset that definition-closure admission raises and closes it: the crate
-declares no cause, and no code family, that FR-272 does not list.
+declares no `invalid_package` cause and no diagnostic code that FR-272 does not
+list. The eight selection codes are not FR-272's; they come from
+`value-complete.md`.
 
 ## Use case
 

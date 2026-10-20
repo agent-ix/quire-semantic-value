@@ -19,7 +19,7 @@ pairing with `invalid_package`, the closed cause set and the selection codes.
 1. Compare each `PackageCause::as_str` and `PackageRefusalCode::as_str` with the
    spellings in QSpec FR-272's `invalid_package` row (FR-125-AC-1).
 2. Build `PackageRefusal::invalid_package` for each cause and read `code` and
-   `cause`; inspect the public items for another pairing (FR-125-AC-2).
+   `cause`; check that `PackageRefusalCode` has the single variant `InvalidPackage` (FR-125-AC-2).
 3. Compile, in an integration test under `tests/` (a crate other than the
    defining one), an exhaustive `match` over `PackageCause` with no wildcard arm, and
    compare the three spellings against `byte-digest-mismatch`,
@@ -32,8 +32,7 @@ pairing with `invalid_package`, the closed cause set and the selection codes.
 
 - Step 1: `missing-member`, `conflicting-definition`, `incompatible-definition`
   and `invalid_package`, byte-equal to FR-272.
-- Step 2: `InvalidPackage` with the given cause for each of the three; no other
-  pairing is public.
+- Step 2: `InvalidPackage` with the given cause for each of the three; `PackageRefusalCode` has no other variant.
 - Step 3: the match compiles; no variant spells a digest-mismatch cause.
 - Step 4: the eight codes in check order; every code round-trips; the three
   other strings give `None`.

@@ -66,3 +66,18 @@ the crate's own unit tests, it cannot fail.
 ## Evidence
 
 Probe (non_exhaustive added to PackageCause in a scratch copy): the in-crate unit test with an exhaustive no-wildcard match passed; the same match in tests/probe_fr125.rs failed with E0004 'PackageCause is marked as non-exhaustive'. Copy at /private/tmp/claude-501/-Users-peter-dev/be6a486a-dbff-4734-b40c-5d7654187d9c/scratchpad/sr-qsv54/probe.
+
+## New findings (disposition pass 1)
+
+| ID | Severity | Summary | Refs |
+| --- | --- | --- | --- |
+| FND-005 | low | TC-924 step 2 and its Expected Result still test the AC-2 clause that round 1 removed: 'inspect the public items for another pairing' and 'no other pairing is public'. AC-2's inspection is now '`PackageRefusalCode` has the one variant `InvalidPackage`' (Behavior 5's basis). Reword step 2 to 'inspect that `PackageRefusalCode` has the one variant `InvalidPackage`', and its expected result to match, so the TC follows the AC. | spec/test-cases/TC-924-definition-closure-refusal-vocabulary.md:21-22, 35-36 |
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | round 1 head d5a01ca5e: d5a01ca5e: AC-3 and TC-924 step 3 require the match in an integration test under `tests/`. Re-probed at the PR's source: with `#[non_exhaustive]` added, the in-crate match still compiles while the `tests/probe_fr125.rs` match fails E0004; without it, the integration test passes. So the check can now fail. |
+| FND-002 | fixed | round 1 head d5a01ca5e: d5a01ca5e: AC-2 Verification is 'Test and Inspection (TC-924)', and its clause is now 'PackageRefusalCode has the one variant InvalidPackage'. |
+| FND-003 | fixed | round 1 head d5a01ca5e: d5a01ca5e: References is reduced to the bare 'Linear IR-882'. |
+| FND-004 | fixed | round 1 head d5a01ca5e: d5a01ca5e adds '## Status: Implemented in `src/definition.rs`; the TC-924 tests are pending.' |

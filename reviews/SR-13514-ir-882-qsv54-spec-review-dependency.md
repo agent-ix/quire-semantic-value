@@ -43,3 +43,10 @@ have no upstream edge. One edge points at a requirement that is not related.
 ## Evidence
 
 QSpec main 240faeb: `git grep selection_refusal_codes` finds only proposals/quire-v1/definitions/complete-value-lock.json, complete-model-lock.json and value-complete.md (plus QSpec tests); FR-272 has no selection_* code.
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | round 1 head d5a01ca5e: d5a01ca5e: the Description and Dependencies name QSpec `proposals/quire-v1/definitions/value-complete.md` as the authority for the selection codes and their check order, and note that the lock array is sorted alphabetically. Rightly, no `relationships` edge was added: the proposal file is not a spec artifact. |
+| FND-002 | fixed | round 1 head d5a01ca5e: d5a01ca5e removes the FR-060 `references` edge and its Dependencies line. The only remaining edge is the FR-272 one, to a real artifact. |

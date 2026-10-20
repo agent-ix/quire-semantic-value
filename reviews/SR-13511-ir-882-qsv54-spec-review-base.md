@@ -63,3 +63,16 @@ explanatory sentences misstate who raises the causes and what a new cause would 
 ## Evidence
 
 FR-272 copy: QSpec `git show 240faeb:spec/objects/foundation/FR-272-typed-diagnostic-cause.md` (invalid_package row at line 74). QSL raise sites: `qsl-semantics/src/value/definition.rs` at 469f8b4 (admit_selection, admit_integer_division, resolve_division, admit_ieee_profile).
+
+## New findings (disposition pass 1)
+
+| ID | Severity | Summary | Refs |
+| --- | --- | --- | --- |
+| FND-003 | medium | The Description's closing clause contradicts the crate. It says 'the crate declares no cause, and no code family, that FR-272 does not list'. But the same requirement makes the crate declare `SelectionRefusalCode`, a family of eight `selection_*` codes. FR-272 lists none of them, and no QSpec `spec/` artifact does: `git grep selection_unknown_trigger` at QSpec 240faeb finds them only under `proposals/` and in the tests. The round-1 edit made this sharper by naming value-complete.md as their separate authority two sentences earlier. Fix: limit the clause to what FR-272 governs. For example: 'the crate declares no `invalid_package` cause, and no diagnostic code, that FR-272 does not list; the selection codes are value-complete.md's.' This was in the round-0 text and missed in the review pass. | spec/functional/FR-125-definition-closure-refusal-vocabulary.md:20-25 |
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | round 1 head d5a01ca5e: d5a01ca5e: the rationale now reads 'A new cause is a change to this requirement, and it is a cause FR-272's `invalid_package` row already lists or one FR-272 adds first.' |
+| FND-002 | fixed | round 1 head d5a01ca5e: d5a01ca5e: the Use case names both closures, the integer-division closure and `admit_ieee_profile`, as the raise sites, and Behavior 7 now says 'the three causes that the two closures raise'. |
