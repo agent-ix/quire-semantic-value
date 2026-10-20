@@ -33,6 +33,11 @@ pub const DEFAULT_CHECKING_INPUT_BYTES: u64 = 16_777_216;
 /// bytes.
 pub const DEFAULT_CHECKING_WORK_BUDGET: u64 = DEFAULT_CHECKING_INPUT_BYTES;
 
+/// QSL NFR-011's default rational bit ceiling (`s3.rational_bits`): the
+/// largest bit length of any numerator or denominator the checker's exact
+/// rational arithmetic admits.
+pub const DEFAULT_CHECKING_RATIONAL_BITS: u64 = 65_536;
+
 /// The node admission limits this checker declares before accepting a
 /// package (QSL NFR-011). Every ceiling is used as given, above or below its
 /// default: an implementation ceiling is not a domain bound (QSL NFR-001). A
@@ -56,6 +61,10 @@ pub struct CheckingLimits {
     /// Defaults to [`DEFAULT_CHECKING_WORK_BUDGET`]; [`Self::with_work_budget`]
     /// sets it.
     work_budget: u64,
+    /// The largest bit length of a rational numerator or denominator the
+    /// checker admits (`s3.rational_bits`). Defaults to
+    /// [`DEFAULT_CHECKING_RATIONAL_BITS`]; [`Self::with_rational_bits`] sets it.
+    rational_bits: u64,
 }
 
 impl CheckingLimits {
@@ -112,6 +121,20 @@ impl CheckingLimits {
         self.work_budget = work_budget;
         self
     }
+
+    /// The largest rational numerator or denominator bit length admitted.
+    pub fn rational_bits(self) -> u64 {
+        self.rational_bits
+    }
+
+    /// Bound the bit length of any rational numerator or denominator the
+    /// checker's exact arithmetic produces (`s3.rational_bits`); a larger
+    /// value refuses naming this bound.
+    #[must_use]
+    pub fn with_rational_bits(mut self, rational_bits: u64) -> Self {
+        self.rational_bits = rational_bits;
+        self
+    }
 }
 
 impl Default for CheckingLimits {
@@ -123,6 +146,7 @@ impl Default for CheckingLimits {
             nodes: DEFAULT_CHECKING_NODES,
             input_bytes: DEFAULT_CHECKING_INPUT_BYTES,
             work_budget: DEFAULT_CHECKING_WORK_BUDGET,
+            rational_bits: DEFAULT_CHECKING_RATIONAL_BITS,
         }
     }
 }
@@ -151,12 +175,21 @@ mod tests {
     fn builders_set_only_their_own_ceiling() {
         let base = CheckingLimits::new(3)
             .with_input_bytes(7)
-            .with_work_budget(9);
-        let read =
-            |limits: CheckingLimits| (limits.nodes(), limits.input_bytes(), limits.work_budget());
-        assert_eq!(read(base), (3, 7, 9));
-        assert_eq!(read(base.with_input_bytes(11)), (3, 11, 9));
-        assert_eq!(read(base.with_work_budget(13)), (3, 7, 13));
-        assert_eq!(read(base.with_nodes(5)), (5, 7, 9));
+            .with_work_budget(9)
+            .with_rational_bits(15);
+        let read = |limits: CheckingLimits| {
+            (
+                limits.nodes(),
+                limits.input_bytes(),
+                limits.work_budget(),
+                limits.rational_bits(),
+            )
+        };
+        assert_eq!(read(base), (3, 7, 9, 15));
+        assert_eq!(read(base.with_input_bytes(11)), (3, 11, 9, 15));
+        assert_eq!(read(base.with_work_budget(13)), (3, 7, 13, 15));
+        assert_eq!(read(base.with_nodes(5)), (5, 7, 9, 15));
+        assert_eq!(read(base.with_rational_bits(17)), (3, 7, 9, 17));
+        assert_eq!(CheckingLimits::default().rational_bits(), 65_536);
     }
 }
