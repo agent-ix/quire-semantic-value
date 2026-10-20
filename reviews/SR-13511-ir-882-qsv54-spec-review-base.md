@@ -76,3 +76,4 @@ FR-272 copy: QSpec `git show 240faeb:spec/objects/foundation/FR-272-typed-diagno
 | --- | --- | --- |
 | FND-001 | fixed | round 1 head d5a01ca5e: d5a01ca5e: the rationale now reads 'A new cause is a change to this requirement, and it is a cause FR-272's `invalid_package` row already lists or one FR-272 adds first.' |
 | FND-002 | fixed | round 1 head d5a01ca5e: d5a01ca5e: the Use case names both closures, the integer-division closure and `admit_ieee_profile`, as the raise sites, and Behavior 7 now says 'the three causes that the two closures raise'. |
+| FND-003 | fixed | round 2 head bde40e374: bde40e374: the clause now reads 'the crate declares no `invalid_package` cause and no diagnostic code that FR-272 does not list. The eight selection codes are not FR-272's; they come from `value-complete.md`.' This no longer contradicts `SelectionRefusalCode`, and it agrees with Behavior 6 and with Dependencies. |

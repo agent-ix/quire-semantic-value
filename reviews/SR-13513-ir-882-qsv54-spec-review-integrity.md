@@ -81,3 +81,4 @@ Probe (non_exhaustive added to PackageCause in a scratch copy): the in-crate uni
 | FND-002 | fixed | round 1 head d5a01ca5e: d5a01ca5e: AC-2 Verification is 'Test and Inspection (TC-924)', and its clause is now 'PackageRefusalCode has the one variant InvalidPackage'. |
 | FND-003 | fixed | round 1 head d5a01ca5e: d5a01ca5e: References is reduced to the bare 'Linear IR-882'. |
 | FND-004 | fixed | round 1 head d5a01ca5e: d5a01ca5e adds '## Status: Implemented in `src/definition.rs`; the TC-924 tests are pending.' |
+| FND-005 | fixed | round 2 head bde40e374: bde40e374: step 2 now checks 'that `PackageRefusalCode` has the single variant `InvalidPackage` (FR-125-AC-2)', and its expected result is '`PackageRefusalCode` has no other variant'. Both match AC-2's inspection clause. |
