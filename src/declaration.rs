@@ -19,7 +19,7 @@
 //!
 //! The equality layer lives here because it is parameterized over a
 //! `TypeEnvironment` and a checked `ValueType`. The occurrence-pair walk it
-//! schedules is [`quire_exact::planned_equality`]/[`quire_exact::plan_equality`],
+//! schedules is [`quire_exact::planned_equality_with_plan`]/[`quire_exact::plan_equality`],
 //! called directly by `CheckedEquality::run`: the kernel's own `plan_pairs` is
 //! `pub(crate)` there, and this layer never needs the lower-level pair count that
 //! an evaluator gets straight from `quire_exact::member_equal`.
@@ -5017,7 +5017,10 @@ impl CheckedEquality {
                 compare_quantity(operator, l, r, meter)
             }
             (EqualitySchedule::Plan, _, _) => {
-                let equal = outcome_into_stop(quire_exact::planned_equality(&left, &right, meter))?;
+                let equal = outcome_into_stop(quire_exact::planned_equality_with_plan(
+                    &left, &right, meter,
+                ))?
+                .equal();
                 return Ok(equal == (self.operator == EqualityOperator::Equal));
             }
             (
