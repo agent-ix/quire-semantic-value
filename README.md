@@ -12,7 +12,7 @@ values, including the result of an operation that produces no value.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.svg">
-  <img alt="A quantity is an exact magnitude plus a unit id, not a bare number. A unit table resolves the id to a dimension and a conversion path. An operation first type-checks the units; mismatched dimensions are ill-typed and consume nothing. Otherwise it is evaluated under a meter and ends as completed (a value plus any loss record), undefined, refused or incomplete." src="docs/images/hero-light.svg">
+  <img alt="A quantity is an exact magnitude plus a unit id. A unit table resolves the id to a dimension and a conversion path. An operation first type-checks the units; mismatched dimensions are ill-typed and consume nothing. Otherwise it is evaluated under a meter and ends as completed (a value plus any loss record), undefined, refused or incomplete." src="docs/images/hero-light.svg">
 </picture>
 
 > **Status: public prerelease.** The API is still changing and the crate is not
