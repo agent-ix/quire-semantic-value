@@ -125,8 +125,8 @@ pub enum HandoffRefusal {
 - [FR-122](FR-122-supplied-membership-owner-obligations.md) names the
   equality and quantity-conversion producers whose causes this handoff does not
   change; [FR-060](FR-060-the-crate-mints-no-identity.md) forbids minting.
-- QSpec FR-142 owns quantity conversion; RT FR-275-AC-23 and TC-187 U25 are the
-  consumer's criteria that this handoff serves.
+- QSpec FR-142 owns quantity conversion; RT FR-275-AC-23 is the consumer's criterion;
+  QSpec TC-187 U25 is the fixture.
 
 ## Status
 
