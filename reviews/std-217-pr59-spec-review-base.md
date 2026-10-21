@@ -39,3 +39,12 @@ Base checklist over the FR-123 wording change. `quire validate --scope . spec/fu
 ## Verdict
 
 Not mergeable as is: FND-001 is a one-line text fix in this PR. FND-002 must be settled together with QSpec PR #312's initial-query hypotheses (SR-13635 FND-002) so the two STD-217 PRs agree on the `Initial` record.
+
+## Dispositions
+
+Round 1, head 89764225.
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | Fixed in 89764225: A `StepRowRef` names one step row of the refinement by its zero-based position in the refinement's `steps` array, in the order QSpec FR-375 fixes for it, not the order the rows were written in the source. A refinement has exactly one row per concrete step class (QSL ADR-020 RM-5), so a refinement key and a row position name one row. The position is a name, not an index QSV dereferences. ## Use case QSL checks `CasRef |
+| FND-002 | fixed | Fixed in 89764225: QSL checks `CasRefinesCounter` and writes one `Initial` record and one `Step` record per step row, each listing as hypotheses the invariant clauses whose context is an object type of the concrete model. The `Initial` record carries the same hypotheses as every `Step` record, as QSpec FR-468 states for the initial query. CG reads the same values to route them to the SMT backend, and QSL uses their canonical encodings  |
