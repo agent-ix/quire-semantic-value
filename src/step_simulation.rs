@@ -70,8 +70,9 @@ impl Encode for StepObligation {
     }
 }
 
-/// One per-step simulation obligation of a refinement, with the invariants
-/// whose context is a concrete-model object type that it may assume.
+/// One per-step simulation obligation of a refinement, with the invariant
+/// clauses whose context is an object type of the concrete model that it may
+/// assume; the `Initial` obligation carries them as well as every `Step`.
 ///
 /// Equality, hashing and order are field-wise. `hypotheses` keeps the order
 /// supplied: QSV neither sorts nor deduplicates it.
@@ -81,8 +82,8 @@ pub struct StepSimulationRecord {
     pub refinement: NodeKey,
     /// Which obligation of the refinement it states.
     pub obligation: StepObligation,
-    /// The invariants whose context is a concrete-model object type, each its
-    /// own `operation-contract` record.
+    /// The invariant clauses whose context is an object type of the concrete
+    /// model, each its own `operation-contract` record.
     pub hypotheses: Vec<NodeKey>,
 }
 

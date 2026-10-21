@@ -30,9 +30,8 @@ writes, state what an obligation means, or settle one (QSL FR-146).
 The refinement and each hypothesis are `quire_exact::NodeKey` values that the
 caller minted; QSV neither mints nor decodes one (FR-060). A `StepRowRef` names
 one step row of the refinement by its zero-based position in the refinement's
-`steps` array, in the order QSpec FR-375 fixes for it (ascending by the
-node-key digest of each row's first named declaration, then by member name),
-not the order the rows were written in the source. A refinement has exactly one row per concrete
+`steps` array, in the order QSpec FR-375 fixes for it, not the order the rows
+were written in the source. A refinement has exactly one row per concrete
 step class (QSL ADR-020 RM-5), so a refinement key and a row position name one
 row. The position is a name, not an index QSV dereferences.
 
@@ -40,7 +39,9 @@ row. The position is a name, not an index QSV dereferences.
 
 QSL checks `CasRefinesCounter` and writes one `Initial` record and one `Step`
 record per step row, each listing as hypotheses the invariant clauses whose
-context is a concrete-model object type. CG reads the same values to route them to the SMT backend, and
+context is an object type of the concrete model. The `Initial` record carries
+the same hypotheses as every `Step` record, as QSpec FR-468 states for the
+initial query. CG reads the same values to route them to the SMT backend, and
 QSL uses their canonical encodings when it keys each `operation-contract`
 record by the refinement node and the obligation.
 
@@ -75,7 +76,7 @@ pub enum StepObligation {
 pub struct StepSimulationRecord {
     pub refinement: NodeKey,
     pub obligation: StepObligation,
-    pub hypotheses: Vec<NodeKey>,  // invariants whose context is a concrete-model object type
+    pub hypotheses: Vec<NodeKey>,  // invariant clauses whose context is an object type of the concrete model
 }
 impl StepSimulationRecord {
     pub const fn new(refinement: NodeKey, obligation: StepObligation,
