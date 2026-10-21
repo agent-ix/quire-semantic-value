@@ -13,7 +13,8 @@ use quire_canonical::{Encode, Error, Sink, Writer};
 use quire_exact::NodeKey;
 
 /// One step row of a refinement declaration, named by its zero-based position
-/// in the refinement's step rows in declaration order (QSL FR-135 `steps`).
+/// in the refinement's `steps` array, in the order QSpec FR-375 fixes for it,
+/// not the source order of the rows (QSL FR-135 `steps`).
 ///
 /// A refinement has exactly one row per concrete step class (QSL ADR-020
 /// RM-5), so a refinement key and a row position name one row.
@@ -69,8 +70,9 @@ impl Encode for StepObligation {
     }
 }
 
-/// One per-step simulation obligation of a refinement, with the concrete
-/// package's invariant clauses it may assume.
+/// One per-step simulation obligation of a refinement, with the invariant
+/// clauses whose context is an object type of the concrete model that it may
+/// assume; the `Initial` obligation carries them as well as every `Step`.
 ///
 /// Equality, hashing and order are field-wise. `hypotheses` keeps the order
 /// supplied: QSV neither sorts nor deduplicates it.
@@ -80,8 +82,8 @@ pub struct StepSimulationRecord {
     pub refinement: NodeKey,
     /// Which obligation of the refinement it states.
     pub obligation: StepObligation,
-    /// The concrete package's invariant clauses, each its own
-    /// `operation-contract` record.
+    /// The invariant clauses whose context is an object type of the concrete
+    /// model, each its own `operation-contract` record.
     pub hypotheses: Vec<NodeKey>,
 }
 
