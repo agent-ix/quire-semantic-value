@@ -133,6 +133,7 @@ impl WrongSnapshotCause {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ix_trace_rs::trace;
 
     /// Each refusal names its catalog code and its closed cause tag.
     #[test]
@@ -184,6 +185,7 @@ mod tests {
     }
 
     /// Each snapshot cause names its closed tag.
+    #[trace("FR-401-AC-3")]
     #[test]
     fn each_wrong_snapshot_cause_names_its_tag() {
         assert_eq!(WrongSnapshotCause::WrongAnchor.as_str(), "wrong-anchor");
