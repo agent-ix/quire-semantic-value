@@ -13,6 +13,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod call;
+pub mod catalog;
 pub mod checking;
 pub mod containment;
 pub mod declaration;
@@ -29,4 +30,5 @@ pub mod semantic_node;
 pub mod step_simulation;
 pub mod stop;
 pub mod supplied_membership;
+pub mod supplied_stop;
 pub mod unit;
