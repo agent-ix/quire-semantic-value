@@ -18,8 +18,7 @@ on a compiler crate. QSL FR-401's placement table assigns them here.
 ## Outputs
 
 - `catalog`: `Category`, `CatalogCode`, `CatalogCoded`, `UndefinedCoded`,
-  `UndefinedRecord`, `UndefinedReason`, `InternalFault`, and the codes
-  `ALLOCATION_FAILED` and `RESERVATION_SIZE_OVERFLOW`.
+  `UndefinedRecord`, `UndefinedReason` and `InternalFault`.
 - `supplied_stop`: `SuppliedFailure`, `SuppliedStop`, `SuppliedContext`,
   `SuppliedCause`, `SuppliedPhase`, `SuppliedEvent`, `SuppliedLocus`,
   `SuppliedLimit`, `SuppliedLimitKind`, `AttemptedCount`,
@@ -29,17 +28,20 @@ on a compiler crate. QSL FR-401's placement table assigns them here.
 
 ## Behavior
 
-- `Category` SHALL have the eight ADR-013 O-16 values; `exit_code` SHALL map
-  them to 0, 10, 10, 20, 21, 22, 22 and 30 in declared order.
-- `CatalogCode` equality and hashing SHALL be lexical on the code and cause;
-  a rendering prefix SHALL NOT change either.
+- `Category` SHALL have the eight ADR-013 O-16 values.
+- `Category::exit_code` SHALL map them to 0, 10, 10, 20, 21, 22, 22 and 30 in
+  declared order.
+- `CatalogCode` equality and hashing SHALL be lexical on the code and cause.
+- A `CatalogCode` rendering prefix SHALL NOT change its equality or hash.
 - `InternalFault::catalog_code` SHALL be
   `runtime_invariant`/`established-invariant-broken` and its category
   `InternalFailure`.
 - `UndefinedCoded::catalog_code` SHALL render the optional prefix, then the
   reason's catalog spelling.
 - `SuppliedLimitKind::field` and `SuppliedPhase::field` SHALL return the
-  caller field that raises the bound.
+  caller field that raises the bound: `supplied.admission_work_units`,
+  `supplied.conversion_work_units` and `supplied.numeric_magnitude_bits` for
+  the three supplied counters.
 - `SuppliedFailure` SHALL convert from a `SuppliedStop` as `Stop`.
 - Building a refusal record at a source locus is not part of this crate.
 
@@ -51,7 +53,7 @@ on a compiler crate. QSL FR-401's placement table assigns them here.
 | FR-126-AC-2 | Two `CatalogCode`s with equal code and cause are equal and hash equal whatever their prefix; `Display` renders `prefix/code/cause` with a prefix and `code/cause` without. | Test |
 | FR-126-AC-3 | `InternalFault::new(stage, invariant)` reports the runtime-invariant code, category `InternalFailure`, its stage and invariant, and the named values it was given. | Test |
 | FR-126-AC-4 | An `UndefinedCoded` implementation without a prefix renders the reason spelling; with a prefix it renders `prefix/reason`. | Test |
-| FR-126-AC-5 | `SuppliedLimitKind::field` and `SuppliedPhase::field` return the field names above (`work_units`, `value_occurrences`, `scale_expansion` for the three kernel counters); a `SuppliedStop` converts to `SuppliedFailure::Stop`, and `SuppliedStop::limit` is `Some` exactly for a `Limit` cause. | Test |
+| FR-126-AC-5 | `SuppliedLimitKind::field` and `SuppliedPhase::field` return the field names above and `work_units`, `value_occurrences` and `scale_expansion` for the three kernel counters; a `SuppliedStop` converts to `SuppliedFailure::Stop`, and `SuppliedStop::limit` is `Some` exactly for a `Limit` cause. | Test |
 
 ## Dependencies
 

@@ -284,8 +284,6 @@ pub struct SuppliedStorage {
     pub unit: SuppliedStorageUnit,
 }
 
-impl SuppliedStorage {}
-
 /// The five closed causes of a supplied-phase stop (QSpec FR-323).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SuppliedCause {

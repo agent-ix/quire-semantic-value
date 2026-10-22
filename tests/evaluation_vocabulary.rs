@@ -89,13 +89,24 @@ fn supplied_stop_names_its_field_and_wraps_as_a_stop() {
         "value_occurrences"
     );
     assert_eq!(SuppliedLimitKind::ScaleExpansion.field(), "scale_expansion");
+    for (kind, phase, field) in [
+        (
+            SuppliedLimitKind::AdmissionWorkUnits,
+            SuppliedPhase::Admission,
+            "supplied.admission_work_units",
+        ),
+        (
+            SuppliedLimitKind::ConversionWorkUnits,
+            SuppliedPhase::Conversion,
+            "supplied.conversion_work_units",
+        ),
+    ] {
+        assert_eq!(kind.field(), field);
+        assert_eq!(phase.field(), field);
+    }
     assert_eq!(
-        SuppliedLimitKind::AdmissionWorkUnits.field(),
-        SuppliedPhase::Admission.field()
-    );
-    assert_eq!(
-        SuppliedLimitKind::ConversionWorkUnits.field(),
-        SuppliedPhase::Conversion.field()
+        SuppliedLimitKind::NumericMagnitudeBits.field(),
+        "supplied.numeric_magnitude_bits"
     );
     let context = SuppliedContext {
         phase: SuppliedPhase::Admission,
