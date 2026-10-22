@@ -85,9 +85,55 @@ impl InputRefusal {
     }
 }
 
+/// FR-272's closed `wrong_snapshot` cause list for `pre(...)`
+/// (`wrong-anchor` or `forbidden-pre-read`). Only the two causes `pre(...)`
+/// itself can name are represented; `wrong-observation` and
+/// `wrong-invocation` belong to a runtime's own snapshot selection.
+///
+/// The two causes split by layer, not by clause. Every checking-time refusal
+/// over `pre(...)`'s own syntax (wrong clause, ineligible operand, or a
+/// captured `let` alias) is [`Self::ForbiddenPreRead`]. [`Self::WrongAnchor`]
+/// is reserved for the one case a checker cannot see: an admitted
+/// postcondition evaluated at runtime over a population value with no
+/// attached pre binding. The checker's own unanchored-`result` refusal shares
+/// the `wrong-anchor` catalog cause but is not a third variant here.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum WrongSnapshotCause {
+    /// A postcondition's `pre(...)` evaluated over a population value with
+    /// no attached pre anchor: the caller supplied a population admitted
+    /// directly rather than through an invocation admission, the only
+    /// constructor that attaches one. A runtime-only cause.
+    WrongAnchor,
+    /// `pre(...)` written where the checked declaration does not admit it
+    /// (anywhere but an operation's postcondition), or admitted but refused
+    /// over its own operand: a bare name, a literal, or a value already
+    /// captured or computed outside this `pre(...)`'s own operand.
+    /// Re-anchoring any of these would silently do nothing rather than
+    /// replay a real read under the pre observation.
+    ForbiddenPreRead,
+    /// Exists only so a consumer's `--cfg seam_probe` build makes every
+    /// match over this type non-exhaustive. Never constructed outside the
+    /// probe build.
+    #[cfg(seam_probe)]
+    __SeamProbe,
+}
+
+impl WrongSnapshotCause {
+    /// The closed cause tag.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WrongAnchor => "wrong-anchor",
+            Self::ForbiddenPreRead => "forbidden-pre-read",
+            #[cfg(seam_probe)]
+            Self::__SeamProbe => "__seam_probe__",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ix_trace_rs::trace;
 
     /// Each refusal names its catalog code and its closed cause tag.
     #[test]
@@ -136,5 +182,16 @@ mod tests {
             assert_eq!(refusal.code(), code, "{refusal:?}");
             assert_eq!(refusal.cause(), cause, "{refusal:?}");
         }
+    }
+
+    /// Each snapshot cause names its closed tag.
+    #[trace("FR-401-AC-3")]
+    #[test]
+    fn each_wrong_snapshot_cause_names_its_tag() {
+        assert_eq!(WrongSnapshotCause::WrongAnchor.as_str(), "wrong-anchor");
+        assert_eq!(
+            WrongSnapshotCause::ForbiddenPreRead.as_str(),
+            "forbidden-pre-read"
+        );
     }
 }

@@ -32,6 +32,9 @@ codegen-units = 1
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+# `seam_probe` is a consumer-set `--cfg` (QSL FR-063); `WrongSnapshotCause`
+# carries its probe variant.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(seam_probe)"] }
 
 [lints.clippy]
 all = "deny"
