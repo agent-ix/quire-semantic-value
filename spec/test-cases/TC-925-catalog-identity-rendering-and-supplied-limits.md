@@ -14,7 +14,7 @@ Verify FR-126-AC-6 to AC-8 through the public `catalog` and `supplied_stop`
 API, and FR-126-AC-9 through the crate-internal step of `SuppliedRun` that
 `admit` applies to each bounded-admission error (a unit test inside the crate,
 because a public call cannot make the allocator deny or the size overflow on
-demand). FR-126-AC-1 to AC-5 are outside this test case.
+demand). TC-926 verifies FR-126-AC-1 to AC-5.
 
 ## Test Procedure
 
