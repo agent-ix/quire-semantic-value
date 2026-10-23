@@ -1,19 +1,24 @@
 ---
 id: FR-126
-title: "Own the catalog vocabulary and supplied-value stop records an evaluation result carries"
+title: "Own the catalog vocabulary, supplied-value stop records and supplied-value run an evaluation result carries"
 type: FR
 relationships:
   - target: ix://agent-ix/quire-spec-language/FR-401
     type: implements
+  - target: ix://agent-ix/quire-spec-language/FR-403
+    type: implements
 ---
-# FR-126: Own the catalog vocabulary and supplied-value stop records an evaluation result carries
+# FR-126: Own the catalog vocabulary, supplied-value stop records and supplied-value run an evaluation result carries
 
 ## Description
 
-`quire-semantic-value` SHALL own the native-diagnostics vocabulary and the
-supplied-value stop records that an evaluation result names, so the shared
+`quire-semantic-value` SHALL own the native-diagnostics vocabulary, the
+supplied-value stop records that an evaluation result names, and the
+supplied-value run (`SuppliedRun`) that produces them, so the shared
 evaluation interface (`quire-eval`, QSL FR-401) carries them without depending
-on a compiler crate. QSL FR-401's placement table assigns them here.
+on a compiler crate. QSL FR-401's placement table assigns the vocabulary and
+records here, and QSL FR-403's disposition table assigns the run and
+`render_identity` here.
 
 ## Outputs
 
