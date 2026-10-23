@@ -13,7 +13,34 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::fmt::Write as _;
 use core::hash::Hash;
+
+/// The catalog code prefix of the `StateModel` family (ADR-012 §5.1 S1): the
+/// string `FamilyKind::StateModel.catalog_code_prefix()` returns, and the
+/// prefix every `StateModel` evaluation-time cause carries.
+pub const STATE_MODEL_CATALOG_PREFIX: &str = "state-model";
+
+/// The payload rendering of a member identity. A population member's
+/// identity is a JSON string, so a well-formed identity is valid UTF-8 and
+/// renders as itself. Bytes that are not UTF-8 render as
+/// `identity bytes 0x<lowercase hex> (not UTF-8)`: two distinct malformed
+/// identities never render alike, and a malformed identity never renders as
+/// a lossy decoding that could equal a real member's.
+pub fn render_identity(identity: &[u8]) -> String {
+    match core::str::from_utf8(identity) {
+        Ok(identity) => identity.to_string(),
+        Err(_) => {
+            let mut rendered = String::from("identity bytes 0x");
+            for byte in identity {
+                // Writing to a `String` cannot fail.
+                let _ = write!(rendered, "{byte:02x}");
+            }
+            rendered.push_str(" (not UTF-8)");
+            rendered
+        }
+    }
+}
 
 /// ADR-013 O-16: the outcome category every evaluation, negotiation and proof
 /// result maps into. Exactly the eight values ADR-013 §3 O-16's category
@@ -387,4 +414,52 @@ pub struct UndefinedRecord {
     /// The catalog's structured payload for `reason`, keyed by the
     /// catalog's own field names.
     pub fields: BTreeMap<&'static str, String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        render_identity, UndefinedCoded, UndefinedReason, UndefinedRecord,
+        STATE_MODEL_CATALOG_PREFIX,
+    };
+    use alloc::collections::BTreeMap;
+    use ix_trace_rs::trace;
+
+    /// FR-126-AC-6: a malformed identity renders as its hex bytes, so two
+    /// distinct malformed identities never render alike, and a well-formed
+    /// one renders as itself.
+    #[trace("TC-925", "FR-126-AC-6")]
+    #[test]
+    fn render_identity_renders_non_utf8_bytes_as_hex() {
+        assert_eq!(render_identity(b"c9"), "c9");
+        assert_eq!(
+            render_identity(&[0xFF, 0xFE]),
+            "identity bytes 0xfffe (not UTF-8)"
+        );
+        assert_ne!(render_identity(&[0xFF]), render_identity(&[0xFE]));
+    }
+
+    #[derive(Debug)]
+    struct Prefixed;
+
+    impl UndefinedCoded for Prefixed {
+        fn undefined_record(&self) -> UndefinedRecord {
+            UndefinedRecord {
+                reason: UndefinedReason::AbsentKey,
+                fields: BTreeMap::new(),
+            }
+        }
+
+        fn catalog_prefix(&self) -> Option<&'static str> {
+            Some(STATE_MODEL_CATALOG_PREFIX)
+        }
+    }
+
+    /// FR-126-AC-7: a cause prefixed with the `StateModel` constant renders
+    /// under `state-model/`.
+    #[trace("TC-925", "FR-126-AC-7")]
+    #[test]
+    fn state_model_prefix_leads_the_rendered_catalog_code() {
+        assert_eq!(Prefixed.catalog_code(), "state-model/absent-key");
+    }
 }

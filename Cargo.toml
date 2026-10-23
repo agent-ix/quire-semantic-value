@@ -21,6 +21,11 @@ quire-canonical = { git = "https://github.com/agent-ix/quire-canonical", branch 
 serde = { version = "1.0.228", default-features = false, features = ["derive", "alloc"] }
 thiserror = { version = "2.0.20", default-features = false }
 
+[features]
+# The test-only reservation permit of `SuppliedRun`. Only a `[dev-dependencies]`
+# entry enables it.
+test-support = []
+
 [dev-dependencies]
 allocation-counter = "0.8"
 ix-trace-rs = { git = "https://github.com/agent-ix/ix-trace-rs", branch = "main" }
