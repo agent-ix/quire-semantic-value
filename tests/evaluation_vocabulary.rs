@@ -21,8 +21,21 @@ fn hash_of(code: &CatalogCode) -> u64 {
 }
 
 #[test]
-#[trace("FR-126-AC-1")]
+#[trace("TC-926", "FR-126-AC-1")]
 fn category_exit_codes_follow_the_declared_order() {
+    assert_eq!(
+        Category::ALL,
+        [
+            Category::Success,
+            Category::Violation,
+            Category::Undefined,
+            Category::Refusal,
+            Category::Unsupported,
+            Category::Incomplete,
+            Category::Inconclusive,
+            Category::InternalFailure,
+        ]
+    );
     let exits: Vec<u8> = Category::ALL.iter().map(|c| c.exit_code()).collect();
     assert_eq!(exits, [0, 10, 10, 20, 21, 22, 22, 30]);
     assert_eq!(Category::Inconclusive.trace_exit_code(), 0);
@@ -32,7 +45,7 @@ fn category_exit_codes_follow_the_declared_order() {
 }
 
 #[test]
-#[trace("FR-126-AC-2")]
+#[trace("TC-926", "FR-126-AC-2")]
 fn catalog_code_identity_ignores_the_rendering_prefix() {
     let plain = CatalogCode::new("ill_typed", "x");
     let prefixed = plain.with_prefix("value");
@@ -45,7 +58,7 @@ fn catalog_code_identity_ignores_the_rendering_prefix() {
 }
 
 #[test]
-#[trace("FR-126-AC-3")]
+#[trace("TC-926", "FR-126-AC-3")]
 fn internal_fault_is_one_code_and_one_category() {
     let fault = InternalFault::new("S6a", "broken").with_named(vec![("node", "n1".to_string())]);
     assert_eq!(
@@ -74,14 +87,14 @@ impl UndefinedCoded for Absent {
 }
 
 #[test]
-#[trace("FR-126-AC-4")]
+#[trace("TC-926", "FR-126-AC-4")]
 fn undefined_cause_renders_its_prefix_then_the_reason() {
     assert_eq!(Absent(None).catalog_code(), "absent-key");
     assert_eq!(Absent(Some("value")).catalog_code(), "value/absent-key");
 }
 
 #[test]
-#[trace("FR-126-AC-5")]
+#[trace("TC-926", "FR-126-AC-5")]
 fn supplied_stop_names_its_field_and_wraps_as_a_stop() {
     assert_eq!(SuppliedLimitKind::WorkUnits.field(), "work_units");
     assert_eq!(
