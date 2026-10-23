@@ -72,11 +72,11 @@ records here, and QSL FR-403's disposition table assigns the run and
 
 | ID | Criteria | Verification |
 | --- | --- | --- |
-| FR-126-AC-1 | `Category::ALL` lists the eight values in order and `exit_code` returns 0, 10, 10, 20, 21, 22, 22, 30 for them; `trace_exit_code` returns 0 for `Inconclusive`; `most_severe` of no codes is `None`. | Test |
-| FR-126-AC-2 | Two `CatalogCode`s with equal code and cause are equal and hash equal whatever their prefix; `Display` renders `prefix/code/cause` with a prefix and `code/cause` without. | Test |
-| FR-126-AC-3 | `InternalFault::new(stage, invariant)` reports the runtime-invariant code, category `InternalFailure`, its stage and invariant, and the named values it was given. | Test |
-| FR-126-AC-4 | An `UndefinedCoded` implementation without a prefix renders the reason spelling; with a prefix it renders `prefix/reason`. | Test |
-| FR-126-AC-5 | `SuppliedLimitKind::field` and `SuppliedPhase::field` return the field names above and `work_units`, `value_occurrences` and `scale_expansion` for the three kernel counters; a `SuppliedStop` converts to `SuppliedFailure::Stop`, and `SuppliedStop::limit` is `Some` exactly for a `Limit` cause. | Test |
+| FR-126-AC-1 | `Category::ALL` is exactly `[Success, Violation, Undefined, Refusal, Unsupported, Incomplete, Inconclusive, InternalFailure]`, in that order, and `exit_code` returns 0, 10, 10, 20, 21, 22, 22, 30 for them; `trace_exit_code` returns 0 for `Inconclusive`; `most_severe` of no codes is `None`. | Test (TC-926) |
+| FR-126-AC-2 | Two `CatalogCode`s with equal code and cause are equal and hash equal whatever their prefix; `Display` renders `prefix/code/cause` with a prefix and `code/cause` without. | Test (TC-926) |
+| FR-126-AC-3 | `InternalFault::new(stage, invariant)` reports the runtime-invariant code, category `InternalFailure`, its stage and invariant, and the named values it was given. | Test (TC-926) |
+| FR-126-AC-4 | An `UndefinedCoded` implementation without a prefix renders the reason spelling; with a prefix it renders `prefix/reason`. | Test (TC-926) |
+| FR-126-AC-5 | `SuppliedLimitKind::field` and `SuppliedPhase::field` return the field names above and `work_units`, `value_occurrences` and `scale_expansion` for the three kernel counters; a `SuppliedStop` converts to `SuppliedFailure::Stop`, and `SuppliedStop::limit` is `Some` exactly for a `Limit` cause. | Test (TC-926) |
 | FR-126-AC-6 | `render_identity(b"c9")` is `c9`; `render_identity(&[0xFF, 0xFE])` is `identity bytes 0xfffe (not UTF-8)`; `render_identity(&[0xFF])` and `render_identity(&[0xFE])` differ. | Test (TC-925) |
 | FR-126-AC-7 | An `UndefinedCoded` implementation whose prefix is `STATE_MODEL_CATALOG_PREFIX` renders a `catalog_code` that begins with `state-model/`. | Test (TC-925) |
 | FR-126-AC-8 | `SuppliedLimits::default()` reports 16777216, 16777216 and 4096 for A, H and B; each of `with_admission_work_units`, `with_conversion_work_units` and `with_numeric_magnitude_bits` changes exactly its own field and leaves the other two unchanged. | Test (TC-925) |
