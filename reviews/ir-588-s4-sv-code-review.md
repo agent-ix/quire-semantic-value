@@ -57,3 +57,14 @@ FND-004 are low.
 | FND-002 | low | `state_model_prefix_is_the_catalog_spelling` asserts that `STATE_MODEL_CATALOG_PREFIX == "state-model"`, which only repeats the constant's own literal. It cannot fail unless someone edits the literal, and then they edit both copies. FR-403-AC-11's real check is that `FamilyKind::StateModel.catalog_code_prefix()` returns this constant, and that check belongs in QSL. Fix: delete the test, or keep one assertion as the spelling contract under a QSV AC. | src/catalog.rs:437-441 |
 | FND-003 | low | Both `catalog` tests are tagged `#[trace("TC-1121", "FR-403-AC-11")]`, and the first one's doc also cites AC-2. These are QSL ids that no matrix resolves from this repo. AC-11 is about the StateModel undefined result of a `lookup` raised by each evaluator, and AC-2 is about old paths failing to compile; neither test checks that behaviour. Fix: tag them to a QSV AC for `render_identity` (SR-13642 FND-001). | src/catalog.rs:422-425 |
 | FND-004 | low | `render_identity` allocates one temporary `String` per byte through `format!("{byte:02x}")`. Fix: `use core::fmt::Write` and `write!(rendered, "{byte:02x}")`, which pushes into the one buffer. | src/catalog.rs:34-36 |
+
+## Dispositions
+
+Round 1, reviewed at 22f00bc6fcb9aeb4e6aab3437a5aa1ec86f7eac8. Checks: thumbv7em `clippy --lib -D warnings` with and without `test-support`, host `clippy --all-targets -D warnings`, `fmt --check`, and `catalog::`/`supplied_stop::` tests (4 pass). `quire matrix` lists FR-126-AC-6 to AC-9 as tagged.
+
+| FND | Outcome | sha/reason |
+| --- | --- | --- |
+| FND-001 | fixed | 22f00bc: retagged `#[trace("TC-925", "FR-126-AC-9")]` (src/supplied_stop.rs:1078) |
+| FND-002 | fixed | 22f00bc: the test now asserts `Prefixed.catalog_code() == "state-model/absent-key"` through `UndefinedCoded` (src/catalog.rs:460-464) |
+| FND-003 | fixed | 22f00bc: retagged to `TC-925` / `FR-126-AC-6` and `FR-126-AC-7` (src/catalog.rs:431, 460) |
+| FND-004 | fixed | 22f00bc: `let _ = write!(rendered, "{byte:02x}");` via `core::fmt::Write` (src/catalog.rs:37) |

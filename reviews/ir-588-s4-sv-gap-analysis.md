@@ -40,3 +40,11 @@ owning QSV requirement.
 | ID | Severity | Summary | Refs |
 | --- | --- | --- | --- |
 | FND-001 | medium | FR-126 is this repo's owning requirement for what QSL places in SV. Its Outputs list the `catalog` vocabulary and the `supplied_stop` records only, and PR #61 (IR-583) added it. This PR adds public `catalog::{render_identity, STATE_MODEL_CATALOG_PREFIX}`, `supplied_stop::{SuppliedRun, SuppliedLimits, DEFAULT_SUPPLIED_WORK_UNITS, DEFAULT_NUMERIC_MAGNITUDE_BITS}` and the `test-support` feature. It does not update FR-126 and adds no AC, so the code has no owning QSV requirement and the tests tag QSL ids instead (SR-13641 FND-001, FND-003). Fix: add these items to FR-126 Outputs, under FR-403 as well as FR-401. Add one AC for `render_identity`: UTF-8 bytes render as themselves, and non-UTF-8 bytes render as `identity bytes 0x<hex> (not UTF-8)`, with distinct bytes rendering differently. Add one AC for the `SuppliedLimits` defaults and builders. Retag the tests to those ACs. | spec/functional/FR-126-own-the-evaluation-result-vocabulary.md:19-27; src/catalog.rs:18-41; src/supplied_stop.rs:392-575 |
+
+## Dispositions
+
+Round 1, reviewed at 22f00bc6fcb9aeb4e6aab3437a5aa1ec86f7eac8.
+
+| FND | Outcome | sha/reason |
+| --- | --- | --- |
+| FND-001 | fixed | 22f00bc: FR-126 Outputs and Behavior name the moved items, FR-126-AC-6 to AC-9 and TC-925 were added, and `quire matrix` lists AC-6 to AC-9 as tagged |
