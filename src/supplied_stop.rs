@@ -1071,11 +1071,11 @@ mod tests {
         }
     }
 
-    /// FR-277-AC-5 (TC-906): every storage-bearing arm of QSV's bounded
+    /// FR-126-AC-9: every storage-bearing arm of QSV's bounded
     /// admission error maps to its own typed cause: an allocator denial is
     /// `Storage`, a size that cannot be represented is `Capacity`, and neither
     /// is a type refusal or a limit.
-    #[trace("TC-906", "FR-277-AC-5")]
+    #[trace("TC-925", "FR-126-AC-9")]
     #[test]
     fn storage_and_capacity_arms_map_to_their_own_typed_causes() {
         let request = StorageRequest::new(usize::MAX, StorageUnit::AdditionalElements);
@@ -1132,5 +1132,35 @@ mod tests {
             assert!(stop.limit().is_none());
             assert_eq!(stop.context.consumed, 0);
         }
+    }
+
+    /// FR-126-AC-8: the defaults are A = H = 16777216 and B = 4096, and each
+    /// builder changes only its own field.
+    #[trace("TC-925", "FR-126-AC-8")]
+    #[test]
+    fn limits_default_and_builders_set_only_their_own_field() {
+        let base = SuppliedLimits::default();
+        let triple = |l: SuppliedLimits| {
+            (
+                l.admission_work_units(),
+                l.conversion_work_units(),
+                l.numeric_magnitude_bits(),
+            )
+        };
+        assert_eq!(triple(base), (16_777_216, 16_777_216, 4096));
+        assert_eq!(DEFAULT_SUPPLIED_WORK_UNITS, 16_777_216);
+        assert_eq!(DEFAULT_NUMERIC_MAGNITUDE_BITS, 4096);
+        assert_eq!(
+            triple(base.with_admission_work_units(1)),
+            (1, 16_777_216, 4096)
+        );
+        assert_eq!(
+            triple(base.with_conversion_work_units(2)),
+            (16_777_216, 2, 4096)
+        );
+        assert_eq!(
+            triple(base.with_numeric_magnitude_bits(3)),
+            (16_777_216, 16_777_216, 3)
+        );
     }
 }

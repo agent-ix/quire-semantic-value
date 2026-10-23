@@ -13,6 +13,7 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::fmt::Write as _;
 use core::hash::Hash;
 
 /// The catalog code prefix of the `StateModel` family (ADR-012 §5.1 S1): the
@@ -32,7 +33,8 @@ pub fn render_identity(identity: &[u8]) -> String {
         Err(_) => {
             let mut rendered = String::from("identity bytes 0x");
             for byte in identity {
-                rendered.push_str(&format!("{byte:02x}"));
+                // Writing to a `String` cannot fail.
+                let _ = write!(rendered, "{byte:02x}");
             }
             rendered.push_str(" (not UTF-8)");
             rendered
@@ -416,13 +418,17 @@ pub struct UndefinedRecord {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_identity, STATE_MODEL_CATALOG_PREFIX};
+    use super::{
+        render_identity, UndefinedCoded, UndefinedReason, UndefinedRecord,
+        STATE_MODEL_CATALOG_PREFIX,
+    };
+    use alloc::collections::BTreeMap;
     use ix_trace_rs::trace;
 
-    /// FR-403-AC-2 / AC-11: a malformed identity renders as its hex bytes, so
-    /// two distinct malformed identities never render alike, and a
-    /// well-formed one renders as itself.
-    #[trace("TC-1121", "FR-403-AC-11")]
+    /// FR-126-AC-6: a malformed identity renders as its hex bytes, so two
+    /// distinct malformed identities never render alike, and a well-formed
+    /// one renders as itself.
+    #[trace("TC-925", "FR-126-AC-6")]
     #[test]
     fn render_identity_renders_non_utf8_bytes_as_hex() {
         assert_eq!(render_identity(b"c9"), "c9");
@@ -433,10 +439,27 @@ mod tests {
         assert_ne!(render_identity(&[0xFF]), render_identity(&[0xFE]));
     }
 
-    /// FR-403-AC-11: the `StateModel` catalog prefix is `state-model`.
-    #[trace("TC-1121", "FR-403-AC-11")]
+    #[derive(Debug)]
+    struct Prefixed;
+
+    impl UndefinedCoded for Prefixed {
+        fn undefined_record(&self) -> UndefinedRecord {
+            UndefinedRecord {
+                reason: UndefinedReason::AbsentKey,
+                fields: BTreeMap::new(),
+            }
+        }
+
+        fn catalog_prefix(&self) -> Option<&'static str> {
+            Some(STATE_MODEL_CATALOG_PREFIX)
+        }
+    }
+
+    /// FR-126-AC-7: a cause prefixed with the `StateModel` constant renders
+    /// under `state-model/`.
+    #[trace("TC-925", "FR-126-AC-7")]
     #[test]
-    fn state_model_prefix_is_the_catalog_spelling() {
-        assert_eq!(STATE_MODEL_CATALOG_PREFIX, "state-model");
+    fn state_model_prefix_leads_the_rendered_catalog_code() {
+        assert_eq!(Prefixed.catalog_code(), "state-model/absent-key");
     }
 }
