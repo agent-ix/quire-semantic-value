@@ -55,7 +55,3 @@ gate. The implementing diff supplies five traced tests and the AC-6 inspection.
   existing exports and dependency set, no production ID minting, and green
   no-std, lint and locked build gates.
 
-## Status
-
-IMPLEMENTED (IR-872). The five traced tests pass, and the AC-6 diff inspection,
-`make build-no-std`, `make lint` and `cargo build --locked` gates pass.
