@@ -42,7 +42,7 @@ The QSV producer paths SHALL use the precise shared causes. The supplied caller 
 ## Dependencies
 
 - [quire-exact FR-369](ix://agent-ix/quire-exact/FR-369), [FR-372](ix://agent-ix/quire-exact/FR-372) and [FR-380](ix://agent-ix/quire-exact/FR-380) define the originating obligations.
-- [QSL FR-394](ix://agent-ix/quire-spec-language/FR-394) owns evaluator and caller-bound effects.
+- [QSL FR-486](ix://agent-ix/quire-spec-language/FR-486) owns evaluator and caller-bound effects.
 
 ## Status
 

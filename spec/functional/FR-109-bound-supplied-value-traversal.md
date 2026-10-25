@@ -132,9 +132,9 @@ caller/admission input bound and the helper operation it constrains.
 - [QSL FR-098](ix://agent-ix/quire-spec-language/FR-098) retains ownership of
   per-argument converted-node and occurrence bounds, without evaluator debit.
   This requirement does not reinterpret converted nodes as membership events.
-- [QSL FR-394](ix://agent-ix/quire-spec-language/FR-394) owns the evaluator
+- [QSL FR-486](ix://agent-ix/quire-spec-language/FR-486) owns the evaluator
   meter and charge-sequence control, conversion phase allocation, and
-  `FunctionCall` projection formerly combined in FR-109-AC-6. Its FR-394-AC-3 also carries the evaluator-charge clause removed from FR-109-AC-8; QSV retains the supplied-budget and typed-projection portions.
+  `FunctionCall` projection formerly combined in FR-109-AC-6. Its FR-486-AC-5 also carries the evaluator-charge clause removed from FR-109-AC-8; QSV retains the supplied-budget and typed-projection portions.
 - QSL owns `supplied.admission_work_units`,
   `supplied.conversion_work_units`, defaults and public typed phase projection.
   The authoritative runtime request/result envelope is owned by
