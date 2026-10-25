@@ -2849,9 +2849,11 @@ impl TypeEnvironment {
     }
 
     /// Check a type named outside a declaration (a parameter or result type):
-    /// every named declaration exists, every `Reference<T>` names a model
-    /// object type, and no set, bag or ordered set has an IEEE-bearing element
-    /// type.
+    /// every `Composite` key names an admitted composite declaration,
+    /// every `Reference<T>` names an admitted model object type, and no set,
+    /// bag or ordered set has an IEEE-bearing element type. Enum declarations
+    /// are checked against the quire-spec-language checker's admitted scope;
+    /// this environment does not hold or check them.
     pub fn check_type(&self, value_type: &ValueType) -> Result<(), IllTyped> {
         match self.type_refusal(value_type) {
             None => Ok(()),
