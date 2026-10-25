@@ -42,7 +42,7 @@ do not obtain the expected count by reading the counter being tested.
    membership logic. Compare the reported allocation amount/unit with the
    real reservation request. Separately trigger checked representation/size
    overflow. Retry without denial and compare membership with the fresh run.
-6. Exercise a membership-triggered shared helper through `src/supplied_membership.rs` with one cumulative supplied-admission budget. Assert each logical event is charged once to that budget, with the original cancellation handle and typed locus retained on a denied event. QSL FR-394 owns conversion and evaluator observations.
+6. Exercise a membership-triggered shared helper through `src/supplied_membership.rs` with one cumulative supplied-admission budget. Assert each logical event is charged once to that budget, with the original cancellation handle and typed locus retained on a denied event. QSL FR-486 owns conversion and evaluator observations.
 7. Inspect every claimed helper against its authoritative implementation and
    actual input bounds. Establish comparisons/arithmetic, peak temporary storage,
    cancellation response boundary and reservation route. For Decimal, check the
