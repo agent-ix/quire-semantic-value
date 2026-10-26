@@ -58,6 +58,19 @@ assert!(env.admits(&ValueType::Composite(key(1)), &value).unwrap());
 `shape()`, `key` and `variant` are small helpers defined in that file. A
 payload with the wrong number or type of positions is refused.
 
+## Reservation-control test seam
+
+External tests can use `TypeEnvironment::new_with_reservation` or
+`bounded_with_reservation` to observe the exact `StorageRequest` made by a real
+admission reservation. The callback can permit the allocator, classify that
+request as `AllocationDenied`, or classify it as `CapacityExceeded` and check
+the resulting `EnvironmentFailure`. `TypeEnvironment::admits_with_reservation`
+provides the same control at membership worklist and retained-path growth
+boundaries. The callback is called only when the corresponding structure needs
+more storage; it cannot provide a declaration result or inject an
+`EnvironmentFailure` directly. Ordinary callers use `new`, `bounded`, and
+`admits`, which retain their normal allocator behavior.
+
 ## Modules
 
 | Module | Holds |
