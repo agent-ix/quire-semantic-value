@@ -13,6 +13,20 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use quire_exact::{Cancel, CancelCause, NumericMembershipOperand, NumericTypeEndpoint};
 
+/// A bound of a retained `BoundedQuantity` type link checked against the
+/// caller's admitted magnitude ceiling, in the stable measuring order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QuantityBoundEndpoint {
+    /// The expected type's minimum.
+    ExpectedMinimum,
+    /// The expected type's maximum.
+    ExpectedMaximum,
+    /// The actual retained type's minimum.
+    ActualMinimum,
+    /// The actual retained type's maximum.
+    ActualMaximum,
+}
+
 /// Decimal operand checked against the caller's admitted magnitude ceiling.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DecimalMembershipOperand {
@@ -539,6 +553,19 @@ pub enum BoundedSuppliedAdmissionError<Cause = InvalidMembershipCause> {
         /// The caller's authenticated ceiling.
         limit_bits: u64,
         /// The rooted type link containing this endpoint.
+        locus: MembershipLocus,
+    },
+    /// A retained `BoundedQuantity` bound exceeds the caller's magnitude
+    /// ceiling. It is neither a mismatch nor a work-budget stop.
+    QuantityBoundSize {
+        /// The first oversized bound in expected minimum, expected maximum,
+        /// actual minimum, actual maximum order.
+        endpoint: QuantityBoundEndpoint,
+        /// The larger of its numerator and denominator magnitude bits.
+        measured_bits: u64,
+        /// The caller's authenticated ceiling.
+        limit_bits: u64,
+        /// The rooted type link containing this bound.
         locus: MembershipLocus,
     },
     /// A Decimal operand exceeds the caller-authenticated magnitude ceiling.

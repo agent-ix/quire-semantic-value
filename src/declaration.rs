@@ -62,7 +62,7 @@ use alloc::vec::Vec;
 use quire_exact::{
     compare_shifted, power_of_ten_bits, sbits, sdigits, Charge, ChargePoint, CheckedInvariantCause,
     ComparisonOperator, Decimal, DecimalOperation, DecimalType, IllTyped, IllTypedCause, Integer,
-    LimitKind, Meter, Outcome, Presence, Quantity, Rational, Refusal,
+    LimitKind, Meter, Outcome, Presence, Quantity, Rational, Refusal, UnitId,
 };
 use quire_exact::{from_admitted_slots, retain_composite, Deferred, FieldValue, Value, ValueType};
 
@@ -2349,6 +2349,7 @@ impl TypeEnvironment {
                             match link {
                                 ValueType::Option(child) => link = child,
                                 ValueType::Collection(child) => link = child.element(),
+                                ValueType::Map(child) => link = child.values(),
                                 ValueType::Boolean
                                 | ValueType::Integer
                                 | ValueType::Int(_)
@@ -2356,6 +2357,7 @@ impl TypeEnvironment {
                                 | ValueType::Decimal(_)
                                 | ValueType::Float(_)
                                 | ValueType::Quantity(_)
+                                | ValueType::BoundedQuantity(_)
                                 | ValueType::Text(_)
                                 | ValueType::Uuid
                                 | ValueType::Timestamp
@@ -2653,8 +2655,8 @@ impl TypeEnvironment {
     }
 
     /// Compare resolved types using the explicit sealed union handle/key join.
-    /// Option and collection nesting is iterative; Record/Tuple identity is
-    /// unchanged.
+    /// Option, collection and map nesting is iterative; Record/Tuple identity
+    /// is unchanged.
     pub fn same_type(&self, left: &ValueType, right: &ValueType) -> bool {
         let (mut left, mut right) = (left, right);
         loop {
@@ -2670,9 +2672,20 @@ impl TypeEnvironment {
                     left = a.element();
                     right = b.element();
                 }
+                (ValueType::Map(a), ValueType::Map(b)) => {
+                    if a.bound() != b.bound() {
+                        return false;
+                    }
+                    left = a.values();
+                    right = b.values();
+                }
                 (ValueType::Composite(a), ValueType::Composite(b)) => {
                     return self.union_handles.get(a).unwrap_or(a)
                         == self.union_handles.get(b).unwrap_or(b);
+                }
+                // QExact FR-387 identity: unit and both bounds.
+                (ValueType::BoundedQuantity(a), ValueType::BoundedQuantity(b)) => {
+                    return a == b;
                 }
                 _ => return left == right,
             }
@@ -2680,8 +2693,8 @@ impl TypeEnvironment {
     }
 
     /// Resolve union handles in a runtime type through verified final-key joins,
-    /// rebuilding each Option and collection wrapper iteratively and preserving
-    /// its kind and bounds. An unsealed union leaf is `None`; other declaration
+    /// rebuilding each Option, collection and map wrapper iteratively and
+    /// preserving its kind and bounds. An unsealed union leaf is `None`; other declaration
     /// keys stay unchanged.
     pub fn runtime_type(&self, value_type: &ValueType) -> Option<ValueType> {
         let mut link = value_type;
@@ -2696,7 +2709,26 @@ impl TypeEnvironment {
                     wrappers.push(link);
                     link = collection.element();
                 }
-                _ => break,
+                ValueType::Map(map) => {
+                    wrappers.push(link);
+                    link = map.values();
+                }
+                ValueType::Boolean
+                | ValueType::Integer
+                | ValueType::Int(_)
+                | ValueType::Rational(_)
+                | ValueType::Decimal(_)
+                | ValueType::Float(_)
+                | ValueType::Quantity(_)
+                | ValueType::BoundedQuantity(_)
+                | ValueType::Text(_)
+                | ValueType::String
+                | ValueType::Uuid
+                | ValueType::Timestamp
+                | ValueType::Enum(_)
+                | ValueType::Composite(_)
+                | ValueType::Reference(_)
+                | ValueType::Population(_) => break,
             }
         }
         let mut resolved = match link {
@@ -2723,7 +2755,25 @@ impl TypeEnvironment {
                         collection.bound(),
                     ))
                 }
-                _ => return None,
+                ValueType::Map(map) => {
+                    ValueType::map(quire_exact::MapType::new(resolved, map.bound()))
+                }
+                ValueType::Boolean
+                | ValueType::Integer
+                | ValueType::Int(_)
+                | ValueType::Rational(_)
+                | ValueType::Decimal(_)
+                | ValueType::Float(_)
+                | ValueType::Quantity(_)
+                | ValueType::BoundedQuantity(_)
+                | ValueType::Text(_)
+                | ValueType::String
+                | ValueType::Uuid
+                | ValueType::Timestamp
+                | ValueType::Enum(_)
+                | ValueType::Composite(_)
+                | ValueType::Reference(_)
+                | ValueType::Population(_) => return None,
             };
         }
         Some(resolved)
@@ -2964,6 +3014,53 @@ impl TypeEnvironment {
         }
     }
 
+    /// Whether `value_type` contains a `Map` link at any depth, through
+    /// record, tuple and union declarations included.
+    fn contains_map(&self, value_type: &ValueType) -> bool {
+        let mut visited = BTreeSet::new();
+        let mut pending = vec![value_type];
+        while let Some(value_type) = pending.pop() {
+            match value_type {
+                ValueType::Map(_) => return true,
+                ValueType::Option(payload) => pending.push(payload),
+                ValueType::Collection(collection) => pending.push(collection.element()),
+                ValueType::Composite(key) => {
+                    if !visited.insert(*key) {
+                        continue;
+                    }
+                    match self.composite(*key).map(|declaration| &declaration.shape) {
+                        Some(CompositeShape::Record(fields)) => {
+                            pending.extend(fields.iter().map(FieldDeclaration::value_type));
+                        }
+                        Some(CompositeShape::Tuple(positions)) => pending.extend(positions),
+                        Some(CompositeShape::Union(members)) => {
+                            for member in members {
+                                pending.extend(&member.positions);
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                ValueType::Boolean
+                | ValueType::Integer
+                | ValueType::Int(_)
+                | ValueType::Rational(_)
+                | ValueType::Decimal(_)
+                | ValueType::Float(_)
+                | ValueType::Quantity(_)
+                | ValueType::BoundedQuantity(_)
+                | ValueType::Text(_)
+                | ValueType::String
+                | ValueType::Uuid
+                | ValueType::Timestamp
+                | ValueType::Enum(_)
+                | ValueType::Reference(_)
+                | ValueType::Population(_) => {}
+            }
+        }
+        false
+    }
+
     /// Whether `value_type` contains `Float32` or `Float64` at any depth,
     /// through record and tuple declarations included.
     pub fn contains_ieee(&self, value_type: &ValueType) -> bool {
@@ -2974,6 +3071,7 @@ impl TypeEnvironment {
                 ValueType::Float(_) => return true,
                 ValueType::Option(payload) => pending.push(payload),
                 ValueType::Collection(collection) => pending.push(collection.element()),
+                ValueType::Map(map) => pending.push(map.values()),
                 ValueType::Composite(key) => {
                     if !visited.insert(*key) {
                         continue;
@@ -2999,6 +3097,7 @@ impl TypeEnvironment {
                 | ValueType::Rational(_)
                 | ValueType::Decimal(_)
                 | ValueType::Quantity(_)
+                | ValueType::BoundedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3050,6 +3149,9 @@ impl TypeEnvironment {
                     }
                     pending.push(collection.element());
                 }
+                // A map's values are neither deduplicated, ordered nor keyed,
+                // so IEEE content is not refused here, as under a `Sequence`.
+                ValueType::Map(map) => pending.push(map.values()),
                 ValueType::Boolean
                 | ValueType::Integer
                 | ValueType::Int(_)
@@ -3057,6 +3159,7 @@ impl TypeEnvironment {
                 | ValueType::Decimal(_)
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
+                | ValueType::BoundedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3091,6 +3194,7 @@ impl TypeEnvironment {
                 ValueType::Collection(collection) => {
                     try_push(&mut pending, collection.element(), reserve)?;
                 }
+                ValueType::Map(map) => try_push(&mut pending, map.values(), reserve)?,
                 ValueType::Composite(key) => {
                     if visited.contains_key(key) {
                         continue;
@@ -3129,6 +3233,7 @@ impl TypeEnvironment {
                 | ValueType::Rational(_)
                 | ValueType::Decimal(_)
                 | ValueType::Quantity(_)
+                | ValueType::BoundedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3179,6 +3284,7 @@ impl TypeEnvironment {
                     }
                     try_push(&mut pending, collection.element(), reserve)?;
                 }
+                ValueType::Map(map) => try_push(&mut pending, map.values(), reserve)?,
                 ValueType::Boolean
                 | ValueType::Integer
                 | ValueType::Int(_)
@@ -3186,6 +3292,7 @@ impl TypeEnvironment {
                 | ValueType::Decimal(_)
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
+                | ValueType::BoundedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3342,6 +3449,14 @@ impl TypeEnvironment {
                         ),
                         reserve,
                     )?,
+                    ValueType::Map(map) => try_push(
+                        &mut pending,
+                        (
+                            map.values(),
+                            escapes || map.bound().is_none_or(|bound| bound.minimum() == 0),
+                        ),
+                        reserve,
+                    )?,
                     ValueType::Boolean
                     | ValueType::Integer
                     | ValueType::Int(_)
@@ -3349,6 +3464,7 @@ impl TypeEnvironment {
                     | ValueType::Decimal(_)
                     | ValueType::Float(_)
                     | ValueType::Quantity(_)
+                    | ValueType::BoundedQuantity(_)
                     | ValueType::Text(_)
                     | ValueType::String
                     | ValueType::Uuid
@@ -4957,6 +5073,15 @@ impl TypeEnvironment {
                 }
             }
         }
+        // QSpec FR-149 states no map equality relation and the kernel has no
+        // map value, so a map is never comparable, an equal map pair included.
+        for operand in [&left, &right] {
+            for value_type in core::iter::once(&operand.source).chain(operand.target.iter()) {
+                if self.contains_map(value_type) {
+                    return ill_typed(IllTypedCause::OperatorIneligible);
+                }
+            }
+        }
         let resolve = |operand: EqualityOperand| -> Option<EqualityOperand> {
             Some(EqualityOperand {
                 source: self.runtime_type(&operand.source)?,
@@ -4985,17 +5110,22 @@ impl TypeEnvironment {
             .chain(left.target.iter())
             .chain(right.target.iter())
         {
-            if let ValueType::Quantity(id) = value_type {
-                let Some(unit) = units.get(*id) else {
+            if let Some(id) = top_level_unit(value_type) {
+                let Some(unit) = units.get(id) else {
                     return ill_typed(IllTypedCause::TypeMismatch);
                 };
-                resolved.insert_held(*id, unit.clone());
+                resolved.insert_held(id, unit.clone());
             }
         }
         let (left_type, right_type) = (left.comparison_type(), right.comparison_type());
         if self.contains_ieee(left_type) || self.contains_ieee(right_type) {
             return ill_typed(IllTypedCause::OperatorIneligible);
         }
+        // QSpec FR-154: a top-level bounded quantity is read as `Quantity<u>`
+        // by comparison and equality; the bounds play no part.
+        let (left_read, right_read) = (bounded_read(left_type), bounded_read(right_type));
+        let left_type = left_read.as_ref().unwrap_or(left_type);
+        let right_type = right_read.as_ref().unwrap_or(right_type);
         let schedule = match (left_type, right_type) {
             (ValueType::Text(l), ValueType::Text(r)) if l.profile() != r.profile() => {
                 return ill_typed(IllTypedCause::DistinctTextProfiles)
@@ -5141,6 +5271,58 @@ fn invariant(cause: CheckedInvariantCause) -> Stop {
     Stop::Refused(Refusal::CheckedInvariant { cause })
 }
 
+/// The unit a top-level quantity type names, bounded or not.
+fn top_level_unit(value_type: &ValueType) -> Option<UnitId> {
+    match value_type {
+        ValueType::Quantity(id) => Some(*id),
+        ValueType::BoundedQuantity(bounded) => Some(bounded.unit()),
+        ValueType::Boolean
+        | ValueType::Integer
+        | ValueType::Int(_)
+        | ValueType::Rational(_)
+        | ValueType::Decimal(_)
+        | ValueType::Float(_)
+        | ValueType::Text(_)
+        | ValueType::String
+        | ValueType::Uuid
+        | ValueType::Timestamp
+        | ValueType::Enum(_)
+        | ValueType::Option(_)
+        | ValueType::Composite(_)
+        | ValueType::Collection(_)
+        | ValueType::Map(_)
+        | ValueType::Reference(_)
+        | ValueType::Population(_) => None,
+    }
+}
+
+/// QSpec FR-154: the plain `Quantity<u>` a top-level `BoundedQuantity` over
+/// `u` is read as by conversion, comparison and equality, the bounds being a
+/// run-time invariant. `None` for every other type, which is read as itself.
+fn bounded_read(value_type: &ValueType) -> Option<ValueType> {
+    match value_type {
+        ValueType::BoundedQuantity(bounded) => Some(ValueType::Quantity(bounded.unit())),
+        ValueType::Boolean
+        | ValueType::Integer
+        | ValueType::Int(_)
+        | ValueType::Rational(_)
+        | ValueType::Decimal(_)
+        | ValueType::Float(_)
+        | ValueType::Quantity(_)
+        | ValueType::Text(_)
+        | ValueType::String
+        | ValueType::Uuid
+        | ValueType::Timestamp
+        | ValueType::Enum(_)
+        | ValueType::Option(_)
+        | ValueType::Composite(_)
+        | ValueType::Collection(_)
+        | ValueType::Map(_)
+        | ValueType::Reference(_)
+        | ValueType::Population(_) => None,
+    }
+}
+
 /// Whether (`source`, `target`) is a row of the closed QSpec FR-149
 /// equality-conversion table, decided from declared bounds alone and, for a
 /// quantity pair, from the units `units` resolves; an unresolved unit admits
@@ -5152,6 +5334,14 @@ pub fn admits_equality_conversion(
 ) -> bool {
     match (source, target) {
         (source, target) if source == target => true,
+        // QSpec FR-154: a bounded quantity is read as `Quantity<u>`; its
+        // bounds are a run-time invariant, not a conversion precondition.
+        (ValueType::BoundedQuantity(from), target) => {
+            admits_equality_conversion(&ValueType::Quantity(from.unit()), target, units)
+        }
+        // No row converts into a bounded type or a map, or out of a map,
+        // except identity above.
+        (ValueType::Map(_), _) | (_, ValueType::Map(_) | ValueType::BoundedQuantity(_)) => false,
         (ValueType::Int(interval), target) => {
             integer_source_admits(interval.lower(), interval.upper(), target)
         }
@@ -5222,6 +5412,7 @@ fn integer_source_admits(lower: &Integer, upper: &Integer, target: &ValueType) -
         ValueType::Boolean
         | ValueType::Float(_)
         | ValueType::Quantity(_)
+        | ValueType::BoundedQuantity(_)
         | ValueType::Text(_)
         | ValueType::String
         | ValueType::Uuid
@@ -5230,6 +5421,7 @@ fn integer_source_admits(lower: &Integer, upper: &Integer, target: &ValueType) -
         | ValueType::Option(_)
         | ValueType::Composite(_)
         | ValueType::Collection(_)
+        | ValueType::Map(_)
         | ValueType::Reference(_)
         | ValueType::Population(_) => false,
     }
@@ -5712,7 +5904,14 @@ pub fn operand_value(
     // The checker already proved the static types related.
     // The checker guarantees the value's type conforms to `T`; the plan then
     // compares only the identity triple, so the kind check is sufficient.
-    let admitted = match (&operand.source, value) {
+    // QSpec FR-154: a top-level bounded quantity is read as `Quantity<u>`.
+    let source_read = bounded_read(&operand.source);
+    let source = source_read.as_ref().unwrap_or(&operand.source);
+    let target_read = operand
+        .target
+        .as_ref()
+        .map(|target| bounded_read(target).unwrap_or_else(|| target.clone()));
+    let admitted = match (source, value) {
         (ValueType::Reference(_), value) => matches!(value, Value::Reference(_)),
         (source, value) => types.admits_or_abort(source, value),
     };
@@ -5721,10 +5920,10 @@ pub fn operand_value(
             CheckedInvariantCause::EqualityOperandSourceNotAdmitted,
         ));
     }
-    let Some(target) = &operand.target else {
+    let Some(target) = &target_read else {
         return Ok(value.clone());
     };
-    let converted = match (&operand.source, target, value) {
+    let converted = match (source, target, value) {
         (source, target, value) if source == target => value.clone(),
         (_, ValueType::Integer | ValueType::Int(_), Value::Integer(_)) => value.clone(),
         (_, ValueType::Rational(_), Value::Integer(integer)) => {
