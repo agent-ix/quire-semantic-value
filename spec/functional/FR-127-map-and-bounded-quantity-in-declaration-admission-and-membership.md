@@ -161,10 +161,15 @@ identity and no value; both belong to QExact.
     narrower, disjoint or inverted) and against a plain `Quantity(U)`; the
     bounds play no part in the selection or in the comparison, which is exact
     value equality in the identical unit. A `BoundedQuantity` link nested
-    inside a type compared by the plan schedule SHALL be read as `Quantity(U)`
-    of its unit in the same-type test, so `Option<BoundedQuantity(U, bounds)>`
-    and `Option<Quantity(U)>` are the same compared type, and a different unit
-    is still a mismatch.
+    inside any other type (`Option`, `Collection`, `Map`, record, tuple or
+    union positions) is not read as `Quantity(U)`: QSpec FR-149 admits only
+    explicit conversion and no `Option` or composite equality conversion, and
+    QExact FR-387 gives `BoundedQuantity` its own type identity, so
+    `Option<BoundedQuantity(U, bounds)>` against `Option<Quantity(U)>`, and
+    against `Option<BoundedQuantity(U, other bounds)>` or another unit, are
+    different compared types and `check_equality_in` refuses them as it
+    refuses any other pair of different types, with `TypeMismatch`. Only the
+    top-level operand read above applies the refinement read.
 11. **Runtime-type resolution and same-type.** `runtime_type` SHALL descend a
     `Map` link as it descends a `Collection` link, resolving union handles in
     the value type through verified final-key joins and rebuilding the `Map`
@@ -174,7 +179,9 @@ identity and no value; both belong to QExact.
     does under `Option` and `Collection`, and SHALL NOT fall to unbounded
     `ValueType` equality, which cannot see that two handles name one sealed
     union. A `BoundedQuantity` link is a leaf of both walks, compared by QExact
-    FR-387 type identity.
+    FR-387 type identity (unit and both bounds), so `same_type` is false for a
+    bounded link against `Quantity(U)` or against a bounded link of other
+    bounds. The supplied-membership form of that comparison is Behavior 12.
 12. **Retained bounded-quantity type-link comparison.** For a compared pair
     of retained links of which either is a `BoundedQuantity`,
     `quire-semantic-value` SHALL, under the caller's authenticated finite
@@ -229,8 +236,8 @@ identity and no value; both belong to QExact.
 | FR-127-AC-12 | Inspection verifies that these `ValueType` matches name `Map` and `BoundedQuantity` explicitly or are pinned by AC-8 and AC-9 where the generic arm already gives the behaviour: in `src/declaration.rs` the union-link descent, plain and metered `contains_ieee`, plain and metered type-refusal walks, cycle-edge walk, `integer_source_admits`, `admits_equality_conversion`, `check_equality_in`'s schedule selection, `TypeEnvironment::same_type` and `TypeEnvironment::runtime_type`; and in `src/declaration/membership.rs` `leaf_cause`, `same_type_walk` and `admit_occurrence`. | Inspection |
 | FR-127-AC-13 | `admits_equality_conversion` admits `BoundedQuantity(U, [0, 10])`, `BoundedQuantity(U, [None, None])` and inverted `BoundedQuantity(U, [5, 3])` to `Quantity(U)`; admits `BoundedQuantity(U, bounds)` to `Quantity(V)` exactly when `Quantity(U)` to `Quantity(V)` is admitted and refuses it when it is not or when either unit is unresolved; admits a bounded type to an equal bounded type (identity) and refuses it to a bounded type over the same unit with different bounds; refuses `Quantity(U)` to `BoundedQuantity(U, bounds)`; and the conversion never consults the bounds, so it admits the same rows for bounds that no value satisfies. | Test (TC-927) |
 | FR-127-AC-14 | `check_equality_in` refuses `OperatorIneligible` an equality whose operand is `Map<Text, Integer>` against an equal `Map<Text, Integer>`, `Option<Map<Text, Boolean>>`, `Sequence<Map<Text, Boolean>>`, and a record whose field is a map, and one whose conversion target contains a map; with no schedule selected and no unit resolved. | Test (TC-927) |
-| FR-127-AC-15 | `check_equality_in` over `BoundedQuantity(U, [0, 10])` against `BoundedQuantity(U, [0, 10])`, against `BoundedQuantity(U, [5, 20])`, against `BoundedQuantity(U, [11, 5])` and against `Quantity(U)` selects `EqualitySchedule::Quantity`; against a quantity of another unit of the same dimension it refuses `DistinctUnits`, of another dimension `IncompatibleDimensions`, and over an unresolved unit `TypeMismatch`; evaluating it on `50 U` against `3 U` compares exact values and ignores the bounds; `Option<BoundedQuantity(U, [0, 10])>` against `Option<Quantity(U)>` is accepted by the plan schedule and `Option<BoundedQuantity(V, ..)>` against `Option<Quantity(U)>` is a type mismatch. | Test (TC-927) |
-| FR-127-AC-16 | `runtime_type` of `Map<Text, Union>` resolves the union handle to its sealed key and keeps the map's bound, of `Option<Map<Text, Union>[1, 3]>` rebuilds both wrappers, and is `None` for an unsealed union under a map; `same_type` holds for two maps whose union handles name one sealed union and fails for two maps differing only in bound, in bound presence or in value type. | Test (TC-927) |
+| FR-127-AC-15 | `check_equality_in` over `BoundedQuantity(U, [0, 10])` against `BoundedQuantity(U, [0, 10])`, against `BoundedQuantity(U, [5, 20])`, against `BoundedQuantity(U, [11, 5])` and against `Quantity(U)` selects `EqualitySchedule::Quantity`; against a quantity of another unit of the same dimension it refuses `DistinctUnits`, of another dimension `IncompatibleDimensions`, and over an unresolved unit `TypeMismatch`; evaluating it on `50 U` against `3 U` compares exact values and ignores the bounds; `Option<BoundedQuantity(U, [0, 10])>` against `Option<BoundedQuantity(U, [0, 10])>` is accepted by the plan schedule, while it against `Option<Quantity(U)>`, against `Option<BoundedQuantity(U, [0, 20])>` and against `Option<BoundedQuantity(V, [0, 10])>` refuses `TypeMismatch`, as do the same pairs in a `Sequence` element and a record field. | Test (TC-927) |
+| FR-127-AC-16 | `runtime_type` of `Map<Text, Union>` resolves the union handle to its sealed key and keeps the map's bound, of `Option<Map<Text, Union>[1, 3]>` rebuilds both wrappers, and is `None` for an unsealed union under a map; `same_type` holds for two maps whose union handles name one sealed union and fails for two maps differing only in bound, in bound presence or in value type; `same_type` is true for `Option<BoundedQuantity(U, [0, 10])>` against itself and false against `Option<Quantity(U)>` and against `Option<BoundedQuantity(U, [0, 20])>`. | Test (TC-927) |
 | FR-127-AC-17 | In supplied membership with an authenticated `B`, a retained `BoundedQuantity` pair with equal units, both bounds present and equal completes `true`; bounds differing at the minimum, at the maximum, or in presence, or units differing, complete a mismatch (invalid type) and, for units or presence, measure no magnitude even when a bound exceeds `B`; with a bound of exactly `B` bits on each side the comparison completes, and one bit over `B` on the expected minimum, expected maximum, actual minimum and actual maximum each return typed unsupported size naming that side and bound, the bits, `B` and the locus, in that stable order when several exceed; pre-cancellation beats an oversized bound and returns the original cause before any measure; without a configured `B` the pair returns `UnsupportedHelper::NumericDomain` after one event and before any measurement; a denied event at N-1 prevents any measurement and the cumulative spend is the independently enumerated events plus the one initiating event, with no evaluator debit. | Test (TC-927) |
 
 ## Dependencies

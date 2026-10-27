@@ -75,12 +75,16 @@ new variant as it handled the old ones.
 15. Call `check_equality_in` for bounded against bounded (equal, wider,
     disjoint, inverted) and against `Quantity(U)`, a same-dimension other unit,
     another dimension and an unresolved unit; evaluate `50 U` against `3 U`;
-    check `Option<BoundedQuantity(U, ..)>` against `Option<Quantity(U)>` and
-    against `Option<BoundedQuantity(V, ..)>` (AC-15).
+    check `Option<BoundedQuantity(U, [0, 10])>` against itself (equal), and
+    against `Option<Quantity(U)>`, `Option<BoundedQuantity(U, [0, 20])>` and
+    `Option<BoundedQuantity(V, [0, 10])>`, and the same pairs as `Sequence`
+    elements and record fields (AC-15).
 16. Seal a union and call `runtime_type` on `Map<Text, Union>` and
     `Option<Map<Text, Union>[1, 3]>`, and on an unsealed one; call `same_type`
-    on maps with different union handles of one sealed union and on maps
-    differing in bound, bound presence and value type (AC-16).
+    on maps with different union handles of one sealed union, on maps
+    differing in bound, bound presence and value type, and on
+    `Option<BoundedQuantity(U, [0, 10])>` against itself, `Option<Quantity(U)>`
+    and `Option<BoundedQuantity(U, [0, 20])>` (AC-16).
 17. Admit `Option` values whose retained payload type is a `BoundedQuantity`
     under a configured `B`: equal bounds; minimum, maximum, presence and unit
     differing (with an oversized bound beside a unit or presence difference);
@@ -128,8 +132,9 @@ new variant as it handled the old ones.
 - Step 14: `OperatorIneligible` for every shape, with no schedule selected.
 - Step 15: `EqualitySchedule::Quantity` for bounded/bounded and bounded/plain,
   `DistinctUnits`, `IncompatibleDimensions`, `TypeMismatch` as named; `50 U`
-  against `3 U` compares exact values; the `Option` forms are accepted for the
-  same unit and a mismatch for another.
+  against `3 U` compares exact values; the equal `Option<Bounded>` pair is accepted;
+  `Option<Bounded>` against `Option<plain>`, other bounds or another unit, and
+  the `Sequence` and record forms, refuse `TypeMismatch`.
 - Step 16: sealed key resolved with bound kept, `None` when unsealed; `same_type`
   true for the joined handles and false for each differing map.
 - Step 17: equal admitted; each differing pair a mismatch with no measurement
