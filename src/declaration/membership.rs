@@ -26,7 +26,8 @@ use super::{
 use crate::supplied_membership::{
     BoundedSuppliedAdmissionError, DecimalMembershipOperand, InvalidMembershipCause,
     MembershipEvent, MembershipLocus, MembershipPart, MembershipPathArena, PathAppendError,
-    PathStep, PathToken, SuppliedAdmissionError, SuppliedMembershipBudget, UnsupportedHelperFamily,
+    PathStep, PathToken, QuantityBoundEndpoint, SuppliedAdmissionError, SuppliedMembershipBudget,
+    UnsupportedHelperFamily,
 };
 
 /// A logical event request or a response boundary after its indivisible
@@ -141,7 +142,39 @@ fn leaf_cause(expected: &ValueType, value: &Value) -> InvalidMembershipCause {
         | (ValueType::Quantity(_), Value::Quantity(_))
         | (ValueType::Text(_), Value::Text(_)) => InvalidMembershipCause::Type,
         (ValueType::Enum(_), Value::Enum(_)) => InvalidMembershipCause::Member,
-        _ => InvalidMembershipCause::Kind,
+        // A quantity in the bounded type's unit is out of its bounds; one in
+        // another unit is a different type.
+        (ValueType::BoundedQuantity(bounded), Value::Quantity(quantity)) => {
+            if quantity.unit() == bounded.unit() {
+                InvalidMembershipCause::Payload
+            } else {
+                InvalidMembershipCause::Type
+            }
+        }
+        // The kernel has no map value, so every value at a map type is of
+        // another kind.
+        (ValueType::Map(_), _) => InvalidMembershipCause::Kind,
+        (
+            ValueType::Boolean
+            | ValueType::Integer
+            | ValueType::Int(_)
+            | ValueType::Rational(_)
+            | ValueType::Decimal(_)
+            | ValueType::Float(_)
+            | ValueType::Quantity(_)
+            | ValueType::BoundedQuantity(_)
+            | ValueType::Text(_)
+            | ValueType::String
+            | ValueType::Uuid
+            | ValueType::Timestamp
+            | ValueType::Enum(_)
+            | ValueType::Option(_)
+            | ValueType::Composite(_)
+            | ValueType::Collection(_)
+            | ValueType::Reference(_)
+            | ValueType::Population(_),
+            _,
+        ) => InvalidMembershipCause::Kind,
     }
 }
 
@@ -187,6 +220,20 @@ fn decimal_value_result<Cause>(
         }
         .into(),
     })
+}
+
+/// Whether a pair of retained bounded quantity links has equal units, equal
+/// bound presence on both sides and at least one present bound, so that only
+/// a measured magnitude comparison can decide it (FR-127 Behavior 12 (d)).
+fn quantity_bounds_remain(left: &ValueType, right: &ValueType) -> bool {
+    let (ValueType::BoundedQuantity(left), ValueType::BoundedQuantity(right)) = (left, right)
+    else {
+        return false;
+    };
+    left.unit() == right.unit()
+        && left.min().is_some() == right.min().is_some()
+        && left.max().is_some() == right.max().is_some()
+        && (left.min().is_some() || left.max().is_some())
 }
 
 /// Compare two type chains one link pair at a time, emitting one event per
@@ -245,6 +292,13 @@ fn same_type_walk<
                 at,
             ))?;
         }
+        if numeric_equal.is_none() && quantity_bounds_remain(left, right) {
+            on_boundary(MembershipBoundary::RequiresQualification(
+                UnsupportedHelperFamily::NumericDomain,
+                MembershipEvent::TypeLinkComparison,
+                at,
+            ))?;
+        }
         let step = match (left, right) {
             (ValueType::Option(a), ValueType::Option(b)) => TypeStep::Continue(a, b),
             (ValueType::Collection(a), ValueType::Collection(b)) => {
@@ -254,8 +308,24 @@ fn same_type_walk<
                     TypeStep::Continue(a.element(), b.element())
                 }
             }
+            (ValueType::Map(a), ValueType::Map(b)) => {
+                if a.bound() != b.bound() {
+                    TypeStep::Mismatch
+                } else {
+                    TypeStep::Continue(a.values(), b.values())
+                }
+            }
             _ if numeric_equal == Some(true) => TypeStep::Equal,
             _ if numeric_equal == Some(false) => TypeStep::Mismatch,
+            // Unit and bounds, by QExact FR-387 identity, when no bound
+            // pair remains to be measured or the unbounded walk compares.
+            (ValueType::BoundedQuantity(a), ValueType::BoundedQuantity(b)) => {
+                if a == b {
+                    TypeStep::Equal
+                } else {
+                    TypeStep::Mismatch
+                }
+            }
             (ValueType::Composite(_), ValueType::Composite(_))
                 if environment.same_type(left, right) =>
             {
@@ -452,6 +522,68 @@ impl TypeEnvironment {
                         }
                         (ValueType::Decimal(expected), ValueType::Decimal(actual)) => {
                             expected.try_eq_bounded(actual, magnitude_bits, cancel)
+                        }
+                        (ValueType::BoundedQuantity(_), ValueType::BoundedQuantity(_))
+                            if quantity_bounds_remain(expected, actual) =>
+                        {
+                            let (
+                                ValueType::BoundedQuantity(expected),
+                                ValueType::BoundedQuantity(actual),
+                            ) = (expected, actual)
+                            else {
+                                return Ok(None);
+                            };
+                            let poll = || -> Result<(), BoundedSuppliedAdmissionError<Cause>> {
+                                let _ = cancel.poll();
+                                match cancel.cause() {
+                                    Some(cause) => Err(SuppliedAdmissionError::Cancelled {
+                                        cause,
+                                        spent: spent.get(),
+                                        event: MembershipEvent::TypeLinkComparison,
+                                        locus,
+                                    }
+                                    .into()),
+                                    None => Ok(()),
+                                }
+                            };
+                            // Poll, then measure expected before actual, minimum
+                            // before maximum.
+                            poll()?;
+                            for (endpoint, bound) in [
+                                (QuantityBoundEndpoint::ExpectedMinimum, expected.min()),
+                                (QuantityBoundEndpoint::ExpectedMaximum, expected.max()),
+                                (QuantityBoundEndpoint::ActualMinimum, actual.min()),
+                                (QuantityBoundEndpoint::ActualMaximum, actual.max()),
+                            ] {
+                                let Some(bound) = bound else { continue };
+                                let measured_bits = bound.magnitude().max_part_bits();
+                                if measured_bits > magnitude_bits {
+                                    return Err(BoundedSuppliedAdmissionError::QuantityBoundSize {
+                                        endpoint,
+                                        measured_bits,
+                                        limit_bits: magnitude_bits,
+                                        locus,
+                                    });
+                                }
+                            }
+                            // Every present bound is within B, so each pair
+                            // compares as finite exact work.
+                            let mut equal = true;
+                            for (expected, actual) in [
+                                (expected.min(), actual.min()),
+                                (expected.max(), actual.max()),
+                            ] {
+                                let (Some(expected), Some(actual)) = (expected, actual) else {
+                                    continue;
+                                };
+                                poll()?;
+                                if expected.magnitude() != actual.magnitude() {
+                                    equal = false;
+                                    break;
+                                }
+                            }
+                            poll()?;
+                            return Ok(Some(equal));
                         }
                         _ => return Ok(None),
                     };

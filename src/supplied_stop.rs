@@ -25,8 +25,8 @@ use crate::declaration::{StorageRequest, StorageUnit, TypeEnvironment};
 use crate::supplied_membership::{
     BoundedSuppliedAdmissionError, DecimalMembershipOperand, InvalidMembershipCause,
     MembershipEvent, MembershipLocus, MembershipPart, MembershipPathArena, PathArenaCapacity,
-    PathArenaCapacityUnit, PathStep, SuppliedAdmissionError, SuppliedMembershipBudget,
-    UnsupportedHelperFamily,
+    PathArenaCapacityUnit, PathStep, QuantityBoundEndpoint, SuppliedAdmissionError,
+    SuppliedMembershipBudget, UnsupportedHelperFamily,
 };
 
 /// The setting name of A, FR-277's caller-owned admission ceiling.
@@ -202,6 +202,8 @@ pub enum SuppliedNumericOperand {
     TypeLink(NumericTypeEndpoint),
     /// An operand of one Decimal value-in-domain comparison.
     Decimal(DecimalMembershipOperand),
+    /// A bound of one retained `BoundedQuantity` type-link comparison.
+    QuantityBound(QuantityBoundEndpoint),
 }
 
 impl SuppliedNumericOperand {
@@ -219,6 +221,12 @@ impl SuppliedNumericOperand {
                 NumericMembershipOperand::RationalNumeratorUpper => "numerator-upper",
                 NumericMembershipOperand::RationalDenominatorLower => "denominator-lower",
                 NumericMembershipOperand::RationalDenominatorUpper => "denominator-upper",
+            },
+            Self::QuantityBound(endpoint) => match endpoint {
+                QuantityBoundEndpoint::ExpectedMinimum => "type-link-expected-minimum",
+                QuantityBoundEndpoint::ExpectedMaximum => "type-link-expected-maximum",
+                QuantityBoundEndpoint::ActualMinimum => "type-link-actual-minimum",
+                QuantityBoundEndpoint::ActualMaximum => "type-link-actual-maximum",
             },
             Self::Decimal(operand) => match operand {
                 DecimalMembershipOperand::Coefficient => "coefficient",
@@ -800,6 +808,19 @@ impl SuppliedRun {
                     requested: u64::try_from(layout_bytes).unwrap_or(u64::MAX),
                     unit: SuppliedStorageUnit::Bytes,
                 }),
+            ),
+            BoundedSuppliedAdmissionError::QuantityBoundSize {
+                endpoint,
+                measured_bits,
+                locus,
+                ..
+            } => self.magnitude_stop(
+                phase,
+                parameter,
+                SuppliedEvent::TypeComparison,
+                SuppliedNumericOperand::QuantityBound(endpoint),
+                measured_bits,
+                locus,
             ),
             BoundedSuppliedAdmissionError::NumericTypeSize {
                 position,
