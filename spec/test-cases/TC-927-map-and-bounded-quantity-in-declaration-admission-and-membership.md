@@ -79,7 +79,7 @@ new variant as it handled the old ones.
     against `Option<Quantity(U)>`, `Option<BoundedQuantity(U, [0, 20])>` and
     `Option<BoundedQuantity(V, [0, 10])>`, and the same pairs as `Sequence`
     elements (AC-15). Check records carrying those field pairs as distinct
-    record types (refused `TypeMismatch` by nominal identity), and one record
+    record types (refused `TypeMismatch` by declaration-key identity), and one record
     type against itself (plan schedule; field types are never compared).
 16. Seal a union and call `runtime_type` on `Map<Text, Union>` and
     `Option<Map<Text, Union>[1, 3]>`, and on an unsealed one; call `same_type`

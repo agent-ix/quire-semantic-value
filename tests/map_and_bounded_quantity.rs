@@ -1316,7 +1316,7 @@ fn equality_reads_a_top_level_bounded_quantity_as_a_quantity() {
         )
         .map(|checked| checked.schedule())
     };
-    // Records are compared by nominal identity, never by field types: distinct
+    // Records are compared by declaration-key identity, never by field types: distinct
     // record types are refused whatever their bounded-quantity fields hold
     // (differing bounds, unit, or a plain quantity). Field bound compatibility
     // is enforced by the Option and Sequence pairs above, where `same_type`
