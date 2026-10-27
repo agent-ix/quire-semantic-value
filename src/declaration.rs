@@ -1717,6 +1717,22 @@ impl StorageRequest {
     }
 }
 
+/// Test control for an actual type-environment storage reservation.
+///
+/// `AllocationDenied` and `CapacityExceeded` classify the measured request at
+/// the reservation boundary; they do not construct an `EnvironmentFailure`
+/// directly. Production constructors use the allocator without this control.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReservationDecision {
+    /// Permit this measured reservation to reach the allocator.
+    Permit,
+    /// Report an allocator denial for this measured reservation.
+    AllocationDenied,
+    /// Report a capacity failure for this measured reservation.
+    CapacityExceeded,
+}
+
 /// Why type-environment admission produced no environment (QSL FR-082,
 /// FR-108). Storage failures carry no configured bound or declaration cause.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1754,6 +1770,24 @@ pub(crate) trait ReservationPolicy {
     }
 
     fn phase(&self, _phase: StoragePhase) {}
+}
+
+struct InjectedReservations<'a> {
+    decide: &'a dyn Fn(StorageRequest) -> ReservationDecision,
+}
+
+impl ReservationPolicy for InjectedReservations<'_> {
+    fn permit(&self, request: StorageRequest) -> bool {
+        (self.decide)(request) == ReservationDecision::Permit
+    }
+
+    fn check_request(&self, request: StorageRequest) -> Result<(), StorageFailure> {
+        match (self.decide)(request) {
+            ReservationDecision::Permit => Ok(()),
+            ReservationDecision::AllocationDenied => Err(StorageFailure::Allocation(request)),
+            ReservationDecision::CapacityExceeded => Err(StorageFailure::Capacity(request)),
+        }
+    }
 }
 
 impl<F: Fn(StorageRequest) -> bool> ReservationPolicy for F {
@@ -1855,9 +1889,9 @@ fn reserve_bytes<R: ReservationPolicy>(
     if required <= value.capacity() {
         return Ok(());
     }
-    if !policy.permit(request) {
-        return Err(EnvironmentFailure::Allocation(request));
-    }
+    policy
+        .check_request(request)
+        .map_err(EnvironmentFailure::from)?;
     value
         .try_reserve_exact(additional)
         .map_err(|_| EnvironmentFailure::Allocation(request))
@@ -2127,6 +2161,26 @@ impl TypeEnvironment {
         Self::bounded(composites, object_types, TypeEnvironmentLimits::default())
     }
 
+    /// [`Self::new`] with a control at each actual registry reservation.
+    ///
+    /// This public seam lets an external test observe a real
+    /// [`StorageRequest`] and choose whether the allocator is reached or the
+    /// request is classified as allocation or capacity failure. The callback
+    /// runs only when admission needs additional storage. Use [`Self::new`]
+    /// for ordinary admission.
+    pub fn new_with_reservation(
+        composites: impl IntoIterator<Item = CompositeDeclaration>,
+        object_types: impl IntoIterator<Item = ObjectTypeDeclaration>,
+        decide: &impl Fn(StorageRequest) -> ReservationDecision,
+    ) -> Admission<Self> {
+        Self::bounded_with_reservation(
+            composites,
+            object_types,
+            TypeEnvironmentLimits::default(),
+            decide,
+        )
+    }
+
     /// Admit `composites` and `object_types` as one closed environment.
     ///
     /// `limits.ancestor_steps` is the QSL FR-082 ceiling the model walks this
@@ -2146,6 +2200,24 @@ impl TypeEnvironment {
         limits: TypeEnvironmentLimits,
     ) -> Admission<Self> {
         Self::bounded_with_reservations(composites, object_types, limits, None, &GlobalReservations)
+    }
+
+    /// [`Self::bounded`] with a control at each actual registry reservation.
+    ///
+    /// The callback receives the native request only when a collection must
+    /// grow. Returning [`ReservationDecision::AllocationDenied`] or
+    /// [`ReservationDecision::CapacityExceeded`] reports the corresponding
+    /// typed `EnvironmentFailure` for that request. This is intended for
+    /// external tests of the public failure contract; ordinary callers use
+    /// [`Self::bounded`].
+    pub fn bounded_with_reservation(
+        composites: impl IntoIterator<Item = CompositeDeclaration>,
+        object_types: impl IntoIterator<Item = ObjectTypeDeclaration>,
+        limits: TypeEnvironmentLimits,
+        decide: &impl Fn(StorageRequest) -> ReservationDecision,
+    ) -> Admission<Self> {
+        let reservations = InjectedReservations { decide };
+        Self::bounded_with_reservations(composites, object_types, limits, None, &reservations)
     }
 
     /// [`Self::bounded`] with the caller's [`quire_exact::Cancel`] handle
@@ -2714,6 +2786,25 @@ impl TypeEnvironment {
         Ok(self.admits_checked(value_type, value)?)
     }
 
+    /// [`Self::admits`] with a control at each actual membership reservation.
+    ///
+    /// The callback sees the native request made by the membership walk when
+    /// its worklist or retained path needs to grow. It can permit the request,
+    /// or classify that request as `Allocation` or `Capacity` through the
+    /// ordinary `EnvironmentFailure` result. The typed value is still walked
+    /// and checked; this method does not accept a caller-constructed failure.
+    /// Production callers use [`Self::admits`].
+    pub fn admits_with_reservation(
+        &self,
+        value_type: &ValueType,
+        value: &Value,
+        decide: &impl Fn(StorageRequest) -> ReservationDecision,
+    ) -> Result<bool, EnvironmentFailure> {
+        let reservations = InjectedReservations { decide };
+        self.admits_checked_with(value_type, value, &reservations)
+            .map_err(EnvironmentFailure::from)
+    }
+
     /// Check one supplied value with the caller's cumulative admission budget
     /// and original cancellation handle. Reuse `budget` and `arena` for later
     /// arguments in the same invocation, rooting each at its argument index.
@@ -2812,6 +2903,15 @@ impl TypeEnvironment {
         value_type: &ValueType,
         value: &Value,
     ) -> Result<bool, StorageFailure> {
+        self.admits_checked_with(value_type, value, &GlobalReservations)
+    }
+
+    fn admits_checked_with(
+        &self,
+        value_type: &ValueType,
+        value: &Value,
+        reservation: &impl ReservationPolicy,
+    ) -> Result<bool, StorageFailure> {
         let mut arena = MembershipPathArena::scoped();
         let at = MembershipLocus {
             path: arena.root(0),
@@ -2823,7 +2923,7 @@ impl TypeEnvironment {
             &mut arena,
             at,
             &mut |_, _| Ok(()),
-            &GlobalReservations,
+            reservation,
         ) {
             Ok(()) => Ok(true),
             Err(SuppliedAdmissionError::Invalid { .. }) => Ok(false),

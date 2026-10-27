@@ -24,7 +24,7 @@ pub enum DecimalMembershipOperand {
     Upper,
 }
 
-use crate::declaration::{StorageRequest, StorageUnit};
+use crate::declaration::{ReservationPolicy, StorageFailure, StorageRequest, StorageUnit};
 
 /// The phase that owns every result from supplied-value membership.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -236,6 +236,7 @@ impl MembershipPathArena {
     /// `permit` sees the measured native reservation only when the vector
     /// must grow. A false response represents a real reservation denial,
     /// separately from checked capacity failure and allocator refusal.
+    #[cfg(test)]
     pub(crate) fn append_child<Cause>(
         &mut self,
         parent: PathToken,
@@ -249,8 +250,35 @@ impl MembershipPathArena {
         if self.resolve(locus).is_none() {
             return Err(PathAppendError::ForeignParent);
         }
-        self.append_child_owned(parent, step, locus, permit)
-            .map_err(PathAppendError::Admission)
+        self.append_child_owned(parent, step, locus, &mut |request| {
+            if permit(request) {
+                Ok(())
+            } else {
+                Err(StorageFailure::Allocation(request))
+            }
+        })
+        .map_err(PathAppendError::Admission)
+    }
+
+    /// Retain a child while preserving both allocation and capacity
+    /// classifications from the shared reservation policy.
+    pub(crate) fn append_child_with_reservations<Cause>(
+        &mut self,
+        parent: PathToken,
+        step: PathStep,
+        reservation: &impl ReservationPolicy,
+    ) -> Result<PathToken, PathAppendError<Cause>> {
+        let locus = MembershipLocus {
+            path: parent,
+            part: MembershipPart::Child(step),
+        };
+        if self.resolve(locus).is_none() {
+            return Err(PathAppendError::ForeignParent);
+        }
+        self.append_child_owned(parent, step, locus, &mut |request| {
+            reservation.check_request(request)
+        })
+        .map_err(PathAppendError::Admission)
     }
 
     fn append_child_owned<Cause>(
@@ -258,7 +286,7 @@ impl MembershipPathArena {
         parent: PathToken,
         step: PathStep,
         locus: MembershipLocus,
-        permit: &mut impl FnMut(StorageRequest) -> bool,
+        reserve: &mut impl FnMut(StorageRequest) -> Result<(), StorageFailure>,
     ) -> Result<PathToken, SuppliedAdmissionError<Cause>> {
         let one = StorageRequest::new(1, StorageUnit::AdditionalElements);
         let required = self
@@ -296,9 +324,14 @@ impl MembershipPathArena {
             };
             let additional = target - self.nodes.len();
             let request = StorageRequest::new(additional, StorageUnit::AdditionalElements);
-            if !permit(request) {
-                return Err(SuppliedAdmissionError::Allocation { request, locus });
-            }
+            reserve(request).map_err(|failure| match failure {
+                StorageFailure::Allocation(request) => {
+                    SuppliedAdmissionError::Allocation { request, locus }
+                }
+                StorageFailure::Capacity(request) => {
+                    SuppliedAdmissionError::Capacity { request, locus }
+                }
+            })?;
             #[cfg(test)]
             let previous_capacity = self.nodes.capacity();
             self.nodes

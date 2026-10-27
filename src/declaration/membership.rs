@@ -109,10 +109,9 @@ impl<'a, R: ReservationPolicy> Frontier<'_, 'a, R> {
             MembershipEvent::ChildScheduling,
             at,
         ))?;
-        let reservation = self.reservation;
         let path = self
             .arena
-            .append_child::<Cause>(parent, step, &mut |request| reservation.permit(request))
+            .append_child_with_reservations::<Cause>(parent, step, self.reservation)
             .map_err(|failure| {
                 Error::from(match failure {
                     PathAppendError::ForeignParent => {
