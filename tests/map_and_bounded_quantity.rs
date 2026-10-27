@@ -335,6 +335,9 @@ fn map_value_type_is_refused_as_inside_option_and_collection() {
         for wrapped in [
             ValueType::option(inner.clone()),
             sequence_of(inner.clone()),
+            set_of(through_map.clone()),
+            sequence_of(through_map.clone()),
+            ValueType::option(sequence_of(through_map.clone())),
             through_map.clone(),
             map_of(map_of(inner.clone(), None), bound(0, 2)),
             ValueType::option(map_of(inner.clone(), None)),
@@ -1296,20 +1299,75 @@ fn equality_reads_a_top_level_bounded_quantity_as_a_quantity() {
             );
         }
     }
-    let record_with = |value_type: ValueType| {
-        TypeEnvironment::new([record(1, "R", vec![field("q", value_type)])], []).unwrap()
-    };
-    let holder = record_with(base.clone());
-    assert_eq!(
+    let two_records = |left: ValueType, right: ValueType| {
+        let holder = TypeEnvironment::new(
+            [
+                record(1, "R", vec![field("q", ValueType::option(left))]),
+                record(2, "S", vec![field("q", ValueType::option(right))]),
+            ],
+            [],
+        )
+        .unwrap();
         check(
             &holder,
             &table,
             typed(ValueType::Composite(key(1))),
-            typed(ValueType::Composite(key(1)))
+            typed(ValueType::Composite(key(2))),
         )
-        .map(|checked| checked.schedule()),
-        Ok(EqualitySchedule::Plan)
-    );
+        .map(|checked| checked.schedule())
+    };
+    // Distinct record types whose bounded-quantity fields differ in bounds,
+    // in unit, or in being a plain quantity are never comparable.
+    for other in [
+        ValueType::Quantity(unit_u()),
+        b(Some(0), Some(20)),
+        bounded(unit_v(), Some(0), Some(10)),
+    ] {
+        assert_eq!(
+            two_records(base.clone(), other.clone()),
+            Err(IllTypedCause::TypeMismatch),
+            "{other:?}"
+        );
+    }
+
+    // One record type with a bounded-quantity field: the plan compares the
+    // field values exactly and ignores the bounds.
+    let holder = TypeEnvironment::new(
+        [record(
+            1,
+            "R",
+            vec![field("q", ValueType::option(base.clone()))],
+        )],
+        [],
+    )
+    .unwrap();
+    let checked = check(
+        &holder,
+        &table,
+        typed(ValueType::Composite(key(1))),
+        typed(ValueType::Composite(key(1))),
+    )
+    .unwrap();
+    assert_eq!(checked.schedule(), EqualitySchedule::Plan);
+    let holding = |n: i64| {
+        holder
+            .record(
+                key(1),
+                vec![(
+                    "q",
+                    FieldValue::Present(OptionValue::from_admitted(
+                        base.clone(),
+                        Some(Value::Quantity(quantity(n, unit_u()))),
+                    )),
+                )],
+            )
+            .unwrap()
+    };
+    let compare = |left: i64, right: i64| {
+        checked.evaluate(&holder, &holding(left), &holding(right), &mut meter())
+    };
+    assert!(matches!(compare(9, 3), Outcome::Completed(false)));
+    assert!(matches!(compare(4, 4), Outcome::Completed(true)));
 }
 
 // --------------------------------------------------------------- AC-16

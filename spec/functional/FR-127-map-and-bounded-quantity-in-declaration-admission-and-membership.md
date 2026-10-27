@@ -267,4 +267,4 @@ identity and no value; both belong to QExact.
 
 ## Status
 
-SPEC CANDIDATE; implementation and acceptance tests are unrun.
+IMPLEMENTED; acceptance tests ([TC-927](../test-cases/TC-927-map-and-bounded-quantity-in-declaration-admission-and-membership.md)) are implemented and pass.
