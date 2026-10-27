@@ -1299,7 +1299,7 @@ fn equality_reads_a_top_level_bounded_quantity_as_a_quantity() {
             );
         }
     }
-    let two_records = |left: ValueType, right: ValueType| {
+    let distinct_record_types = |left: ValueType, right: ValueType| {
         let holder = TypeEnvironment::new(
             [
                 record(1, "R", vec![field("q", ValueType::option(left))]),
@@ -1316,22 +1316,25 @@ fn equality_reads_a_top_level_bounded_quantity_as_a_quantity() {
         )
         .map(|checked| checked.schedule())
     };
-    // Distinct record types whose bounded-quantity fields differ in bounds,
-    // in unit, or in being a plain quantity are never comparable.
+    // Records are compared by nominal identity, never by field types: distinct
+    // record types are refused whatever their bounded-quantity fields hold
+    // (differing bounds, unit, or a plain quantity). Field bound compatibility
+    // is enforced by the Option and Sequence pairs above, where `same_type`
+    // descends.
     for other in [
         ValueType::Quantity(unit_u()),
         b(Some(0), Some(20)),
         bounded(unit_v(), Some(0), Some(10)),
     ] {
         assert_eq!(
-            two_records(base.clone(), other.clone()),
+            distinct_record_types(base.clone(), other.clone()),
             Err(IllTypedCause::TypeMismatch),
             "{other:?}"
         );
     }
 
-    // One record type with a bounded-quantity field: the plan compares the
-    // field values exactly and ignores the bounds.
+    // One record type against itself selects the plan schedule, which
+    // compares the field values exactly and ignores the bounds.
     let holder = TypeEnvironment::new(
         [record(
             1,
