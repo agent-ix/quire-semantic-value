@@ -16,6 +16,12 @@ relationships:
     type: references
   - target: ix://agent-ix/quire-exact/FR-387
     type: references
+  - target: ix://agent-ix/quire-exact/FR-381
+    type: references
+  - target: ix://agent-ix/quire-specification/FR-142
+    type: references
+  - target: ix://agent-ix/quire-specification/FR-149
+    type: references
   - target: ix://agent-ix/quire-specification/FR-143
     type: references
   - target: ix://agent-ix/quire-specification/FR-153
@@ -54,8 +60,8 @@ identity and no value; both belong to QExact.
    number of `Option`, `Collection` and `Map` links, including
    `Option<Map<Text, Float64>>`. The metered form charges and reserves for a
    `Map` link exactly as for a `Collection` link.
-2. **Map is not refused for IEEE content.** The declaration type-refusal walk
-   SHALL NOT refuse a `Map` whose value type contains `Float32` or `Float64`.
+2. **Map is not refused for IEEE content.** `quire-semantic-value` SHALL NOT
+   refuse in its declaration type-refusal walk a `Map` whose value type contains `Float32` or `Float64`.
    The existing refusal of IEEE content under `Set`, `Bag` and other
    non-`Sequence` collection kinds exists because those kinds deduplicate,
    order or key their elements by element equality; a map's keys are `Text`,
@@ -64,13 +70,13 @@ identity and no value; both belong to QExact.
    type. A `Set` or `Bag` whose element is a map over floats remains refused,
    because its element `contains_ieee` (Behavior 1) and the existing rule
    applies to the collection, not to the map.
-3. **Map in the declaration type-refusal walk.** The type-refusal walk, plain
-   and metered, SHALL push a `Map` link's value type and apply every refusal to
+3. **Map in the declaration type-refusal walk.** `quire-semantic-value` SHALL,
+   in its type-refusal walk, plain and metered, push a `Map` link's value type and apply every refusal to
    it that it applies inside `Option` and `Collection`: a `Population` inside a
    map's value type is refused `OperatorIneligible`; an unknown `Composite` is
    refused `UnknownDeclaration`; a `Reference` whose target is not a model
-   object type is refused `Type(TypeMismatch)`. The plain and metered walks
-   SHALL agree on cause and on which cause is first.
+   object type is refused `Type(TypeMismatch)`. `quire-semantic-value` SHALL give the plain and
+   metered walks the same cause and the same first cause.
 4. **Map in the union-link and cycle-edge walks.** The union-member position
    walk SHALL descend a `Map` link to its value type, charging one unit per
    link as for `Option` and `Collection`. The cycle-edge walk SHALL descend a
@@ -89,11 +95,25 @@ identity and no value; both belong to QExact.
    leaf that has no nested type, is not IEEE, is never refused, and adds no
    edge, exactly as `Quantity(U)`. A unit named by a `BoundedQuantity` is not
    resolved by these walks.
-6. **No equality-conversion source or target.** `integer_source_admits`
-   SHALL return `false` when the target is `Map` or `BoundedQuantity`, so an
-   `Int` source is never convertible to either. A `Map` or `BoundedQuantity`
-   source or target is admitted by `admits_equality_conversion` only by the
-   existing identity row (the source equals the target); no new row is added.
+6. **Equality-conversion admission.** `quire-semantic-value` SHALL make
+   `integer_source_admits` return `false` when the target is `Map` or
+   `BoundedQuantity`, so an `Int` source is never convertible to either.
+   `admits_equality_conversion` SHALL read a `BoundedQuantity` source over `U`
+   as `Quantity(U)` (the QSpec FR-154 refinement read: a bounded value is read
+   as a `Quantity<u>` by conversion, comparison and equality) and then apply
+   the existing closed `Quantity(from)` to `Quantity(to)` row, so
+   `BoundedQuantity(U, bounds)` to `Quantity(U)` is admitted for every bound
+   shape (inverted included), and to `Quantity(V)` exactly when
+   `Quantity(U)` to `Quantity(V)` is admitted. The conversion SHALL NOT check
+   the source's bounds: a bound is a run-time invariant of QSpec FR-154, not a
+   conversion precondition, and the converted value is a plain quantity.
+   The only conversion row that admits a `BoundedQuantity` target is the
+   identity row (`source == target`); no QSpec row converts into a bounded
+   type, and the flow of a plain `Quantity(U)` into a bounded position is the
+   checker's assignment admission left to the run-time invariant (QSpec
+   FR-154), not an equality-conversion row. A `Map` source or target is
+   admitted only by the identity row; identity is an admission row and not an
+   equality relation (Behavior 10).
 7. **Membership of a Map type admits no value.** Supplied and structural
    membership SHALL admit no value at a `Map` expected type, because QExact
    FR-386 provides no map value. The expected type is reached by the generic
@@ -122,11 +142,68 @@ identity and no value; both belong to QExact.
    and [FR-117](./FR-117-bound-retained-numeric-type-links.md), so that a
    numeric link inside a map's value type is compared by the bounded numeric
    operations and never by unbounded `ValueType` equality. A pair of
-   `BoundedQuantity` links is a leaf pair, equal exactly when QExact FR-387
-   type identity (unit and both bounds) is equal. A `Map` link against a
+   `BoundedQuantity` links is compared by Behavior 12. A `Map` link against a
    non-`Map` link, or a `BoundedQuantity` link against any other link, is a
    mismatch.
-10. **Wildcards are not an implementation.** Every `ValueType` match this
+10. **Equality checking.** `check_equality_in` SHALL refuse with
+    `OperatorIneligible`, before unit resolution and schedule selection, an
+    operand whose source type or conversion target contains a `Map` link at any
+    depth, through `Option`, `Collection`, `Map` links and record, tuple and
+    union declarations, as the IEEE containment walk descends. This holds for
+    two equal `Map` types, because QSpec FR-149 states no map equality relation
+    and QExact FR-386 provides no map value to compare; the identity row of
+    Behavior 6 does not make a map comparable. For an operand whose comparison
+    type is a `BoundedQuantity` over `U`, `check_equality_in` SHALL resolve
+    `U` in the unit scope (an unresolved unit is `TypeMismatch`), apply the
+    `Quantity` dimension and distinct-unit refusals (`IncompatibleDimensions`,
+    `DistinctUnits`) to the pair, and select `EqualitySchedule::Quantity`, for a
+    bounded operand against a bounded operand of any bounds (equal, wider,
+    narrower, disjoint or inverted) and against a plain `Quantity(U)`; the
+    bounds play no part in the selection or in the comparison, which is exact
+    value equality in the identical unit. A `BoundedQuantity` link nested
+    inside a type compared by the plan schedule SHALL be read as `Quantity(U)`
+    of its unit in the same-type test, so `Option<BoundedQuantity(U, bounds)>`
+    and `Option<Quantity(U)>` are the same compared type, and a different unit
+    is still a mismatch.
+11. **Runtime-type resolution and same-type.** `runtime_type` SHALL descend a
+    `Map` link as it descends a `Collection` link, resolving union handles in
+    the value type through verified final-key joins and rebuilding the `Map`
+    with its original bound, and returning `None` when an unsealed union is
+    reached through it. `same_type` SHALL compare two `Map` links by bound
+    (presence included) and then by value type, joining union handles as it
+    does under `Option` and `Collection`, and SHALL NOT fall to unbounded
+    `ValueType` equality, which cannot see that two handles name one sealed
+    union. A `BoundedQuantity` link is a leaf of both walks, compared by QExact
+    FR-387 type identity.
+12. **Retained bounded-quantity type-link comparison.** For a compared pair
+    of retained links of which either is a `BoundedQuantity`,
+    `quire-semantic-value` SHALL, under the caller's authenticated finite
+    magnitude ceiling `B` and original `Cancel` of
+    [FR-117](./FR-117-bound-retained-numeric-type-links.md), proceed in this
+    order and no other. (a) It requests exactly one `TypeLinkComparison` event
+    before any comparison work, so a denied event prevents it. (b) A pair in
+    which only one link is a `BoundedQuantity` is a completed mismatch. (c) A
+    pair of units that differ, or of bounds whose presence differs on either
+    side, is a completed mismatch with no magnitude measured. (d) When the
+    units and the presence of both bounds are equal and a present bound pair
+    remains, and `B` is not configured, it retains
+    `UnsupportedHelper::NumericDomain` at the link locus, after the event and
+    before any measurement, and never invents a default. (e) With `B`, it polls
+    `Cancel`, then measures the magnitude bit length of each present bound with
+    the kernel's public `Rational` part-bit measure, in the stable order
+    expected minimum, expected maximum, actual minimum, actual maximum; the
+    first measure above `B` produces typed unsupported size naming the side,
+    the bound (minimum or maximum), the measured bits, `B` and the rooted
+    locus, distinct from a mismatch and from supplied work-budget exhaustion.
+    (f) Only when every measure is within `B` does it compare the bounds by
+    exact `Rational` equality, which is then finite work of at most `B` bits
+    per operand, polling `Cancel` before each bound pair and before publishing
+    the result; a completed `true` continues the walk and a completed `false`
+    returns the established invalid-type cause at the link locus. Cancellation
+    keeps the original cause. The comparison never falls through to unmeasured
+    `ValueType` equality, charges the initiating event once, adds no evaluator
+    debit, and adds no logical event for a measure or comparison step.
+13. **Wildcards are not an implementation.** Every `ValueType` match this
     requirement names SHALL list `Map` and `BoundedQuantity` explicitly where
     the behaviour above is not that of an existing arm, so that a future
     variant fails to compile at each site rather than inheriting a default.
@@ -143,13 +220,18 @@ identity and no value; both belong to QExact.
 | FR-127-AC-3 | A `Map` whose value type is `Population`, `Option<Population>` or `Sequence<Population>` is refused `OperatorIneligible`; one whose value type is an unregistered `Composite` is refused `UnknownDeclaration` with that key; one whose value type is a `Reference` to a non-object type is refused `Type(TypeMismatch)`; each in the plain and the metered walk with the same cause, and the same type inside `Option` and `Collection` gives the same cause. | Test (TC-927) |
 | FR-127-AC-4 | A union member position of `Map<Text, Integer>`, `Option<Map<Text, Composite>>` and `Map<Text, Map<Text, Boolean>>` is walked to its leaf without error, charging one unit per link; a work budget one unit below that charge stops with the established work limit. | Test (TC-927) |
 | FR-127-AC-5 | A record that refers to itself only through `Map<Text, Self>` and through `Map<Text, Self>[0, 4]` is accepted; one that refers to itself only through `Map<Text, Self>[1, 4]` is refused as a non-escaping cycle, as `Sequence<Self>[1, 4]` is; `Option<Map<Text, Self>[1, 4]>` is accepted because the `Option` escapes; and a named edge reached through a map keeps its recorded name. | Test (TC-927) |
-| FR-127-AC-6 | `BoundedQuantity` over a unit, bounded and unbounded and inverted, is accepted as a record field, an `Option` payload, a `Collection` element and a `Map` value; `contains_ieee` is false for each; it adds no cycle edge; it is never refused; and an `Int` or `Quantity(U)` source with a `BoundedQuantity` target, and a `BoundedQuantity` source with a `Quantity(U)` target, is not admitted by `admits_equality_conversion` while a `BoundedQuantity` equal to itself is. | Test (TC-927) |
+| FR-127-AC-6 | `BoundedQuantity` over a unit, bounded and unbounded and inverted, is accepted as a record field, an `Option` payload, a `Collection` element and a `Map` value; `contains_ieee` is false for each; it adds no cycle edge; it is never refused; and a `BoundedQuantity` equal to itself is admitted by `admits_equality_conversion`. The conversions in and out of a bounded type are the subject of AC-13. | Test (TC-927) |
 | FR-127-AC-7 | `integer_source_admits` returns false for `Int[0, 10]` against a `Map<Text, Integer>` target and against a `BoundedQuantity` target, and the existing rows for the other targets are unchanged. | Test (TC-927) |
 | FR-127-AC-8 | In supplied and structural membership, no value of any variant is admitted at `Map<Text, Boolean>` or at `Map<Text, Option<Boolean>>[1, 3]`: each result is invalid membership with cause `Kind` at the value's locus after one `ValueVisit` event, for a collection, a text, an option, a composite and a quantity value; there is no panic. | Test (TC-927) |
 | FR-127-AC-9 | At `BoundedQuantity` over `U` with bounds `[0, 100]`, membership admits quantities in `U` of magnitude 0, 50 and 100, and refuses magnitude -1 and 101 with cause `Payload`, a magnitude-50 quantity in another unit with cause `Type`, and a text, boolean and option value with cause `Kind`; with `[None, 100]` and `[0, None]` the open side admits any magnitude; with inverted `[5, 3]` every value refuses; the event count at each is one `ValueVisit`. | Test (TC-927) |
 | FR-127-AC-10 | In supplied membership, an `Option` value whose retained payload type is a `Map` type against an expected `Option` of an equal `Map` type is admitted; against an expected `Map` with a different bound (including `None` against `Some(0, max)`), a different value type, or a `Collection` of the same element, it is invalid type at the compared link. With a numeric `Int` value type inside the map the comparison takes its own `TypeLinkComparison` event per pair, uses the configured numeric bound, and returns `UnsupportedHelper::NumericDomain` when none is configured, as for the same `Int` inside a `Collection`. | Test (TC-927) |
-| FR-127-AC-11 | An `Option` value whose retained payload type is a `BoundedQuantity` is admitted against an expected equal `BoundedQuantity` and refused invalid type against one differing only in unit, only in minimum, only in maximum, or only in bound presence, and against `Quantity(U)`. | Test (TC-927) |
-| FR-127-AC-12 | Inspection verifies that the seven `ValueType` matches in `src/declaration.rs` named in the Description (union-link descent, plain and metered `contains_ieee`, plain and metered type-refusal walks, cycle-edge walk, `integer_source_admits`) and the three tuple matches in `src/declaration/membership.rs` (`leaf_cause`, `same_type_walk` and `admit_occurrence`) name `Map` and `BoundedQuantity` explicitly or are pinned by AC-8 and AC-9 where the generic arm already gives the behaviour. | Inspection |
+| FR-127-AC-11 | An `Option` value whose retained payload type is a `BoundedQuantity` is admitted against an expected equal `BoundedQuantity` and refused invalid type against one differing only in unit, only in minimum, only in maximum, or only in bound presence, and against `Quantity(U)`, the bound comparison following Behavior 12 and AC-17. | Test (TC-927) |
+| FR-127-AC-12 | Inspection verifies that these `ValueType` matches name `Map` and `BoundedQuantity` explicitly or are pinned by AC-8 and AC-9 where the generic arm already gives the behaviour: in `src/declaration.rs` the union-link descent, plain and metered `contains_ieee`, plain and metered type-refusal walks, cycle-edge walk, `integer_source_admits`, `admits_equality_conversion`, `check_equality_in`'s schedule selection, `TypeEnvironment::same_type` and `TypeEnvironment::runtime_type`; and in `src/declaration/membership.rs` `leaf_cause`, `same_type_walk` and `admit_occurrence`. | Inspection |
+| FR-127-AC-13 | `admits_equality_conversion` admits `BoundedQuantity(U, [0, 10])`, `BoundedQuantity(U, [None, None])` and inverted `BoundedQuantity(U, [5, 3])` to `Quantity(U)`; admits `BoundedQuantity(U, bounds)` to `Quantity(V)` exactly when `Quantity(U)` to `Quantity(V)` is admitted and refuses it when it is not or when either unit is unresolved; admits a bounded type to an equal bounded type (identity) and refuses it to a bounded type over the same unit with different bounds; refuses `Quantity(U)` to `BoundedQuantity(U, bounds)`; and the conversion never consults the bounds, so it admits the same rows for bounds that no value satisfies. | Test (TC-927) |
+| FR-127-AC-14 | `check_equality_in` refuses `OperatorIneligible` an equality whose operand is `Map<Text, Integer>` against an equal `Map<Text, Integer>`, `Option<Map<Text, Boolean>>`, `Sequence<Map<Text, Boolean>>`, and a record whose field is a map, and one whose conversion target contains a map; with no schedule selected and no unit resolved. | Test (TC-927) |
+| FR-127-AC-15 | `check_equality_in` over `BoundedQuantity(U, [0, 10])` against `BoundedQuantity(U, [0, 10])`, against `BoundedQuantity(U, [5, 20])`, against `BoundedQuantity(U, [11, 5])` and against `Quantity(U)` selects `EqualitySchedule::Quantity`; against a quantity of another unit of the same dimension it refuses `DistinctUnits`, of another dimension `IncompatibleDimensions`, and over an unresolved unit `TypeMismatch`; evaluating it on `50 U` against `3 U` compares exact values and ignores the bounds; `Option<BoundedQuantity(U, [0, 10])>` against `Option<Quantity(U)>` is accepted by the plan schedule and `Option<BoundedQuantity(V, ..)>` against `Option<Quantity(U)>` is a type mismatch. | Test (TC-927) |
+| FR-127-AC-16 | `runtime_type` of `Map<Text, Union>` resolves the union handle to its sealed key and keeps the map's bound, of `Option<Map<Text, Union>[1, 3]>` rebuilds both wrappers, and is `None` for an unsealed union under a map; `same_type` holds for two maps whose union handles name one sealed union and fails for two maps differing only in bound, in bound presence or in value type. | Test (TC-927) |
+| FR-127-AC-17 | In supplied membership with an authenticated `B`, a retained `BoundedQuantity` pair with equal units, both bounds present and equal completes `true`; bounds differing at the minimum, at the maximum, or in presence, or units differing, complete a mismatch (invalid type) and, for units or presence, measure no magnitude even when a bound exceeds `B`; with a bound of exactly `B` bits on each side the comparison completes, and one bit over `B` on the expected minimum, expected maximum, actual minimum and actual maximum each return typed unsupported size naming that side and bound, the bits, `B` and the locus, in that stable order when several exceed; pre-cancellation beats an oversized bound and returns the original cause before any measure; without a configured `B` the pair returns `UnsupportedHelper::NumericDomain` after one event and before any measurement; a denied event at N-1 prevents any measurement and the cumulative spend is the independently enumerated events plus the one initiating event, with no evaluator debit. | Test (TC-927) |
 
 ## Dependencies
 
@@ -164,6 +246,15 @@ identity and no value; both belong to QExact.
   [FR-117](./FR-117-bound-retained-numeric-type-links.md) own the supplied
   traversal, union topology and numeric type-link rules that Behavior 9 extends
   to the new links.
+- [QExact FR-381](ix://agent-ix/quire-exact/FR-381) is the model for Behavior
+  12. QExact exposes no helper for quantity bounds, so Behavior 12 composes the
+  public `Rational` part-bit measure and exact equality, which are finite under
+  `B`; an FR-381-style kernel helper for quantity bounds is a welcome
+  follow-up that would replace steps (e) and (f) and is not required.
+- QSpec FR-149 and FR-154 (the refinement read of a bounded quantity by
+  conversion, comparison and equality, and the closed quantity conversion row)
+  own Behaviors 6 and 10; QSpec states no map equality relation, so the map
+  refusal in Behavior 10 is QSV's decision pending a QSpec ruling.
 - The falsifying controls are
   [TC-927](../test-cases/TC-927-map-and-bounded-quantity-in-declaration-admission-and-membership.md).
 

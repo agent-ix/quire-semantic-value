@@ -10,9 +10,9 @@ relationships:
 
 ## Description
 
-Verify FR-127-AC-1 to AC-11 (and pin AC-12) for `ValueType::Map` and
+Verify FR-127-AC-1 to AC-11 and AC-13 to AC-17 (and pin AC-12) for `ValueType::Map` and
 `ValueType::BoundedQuantity` through the public `TypeEnvironment`,
-`admits_equality_conversion` and supplied-membership API, as integration tests
+`admits_equality_conversion`, `check_equality_in` and supplied-membership API, as integration tests
 of the crate (`tests/map_and_bounded_quantity.rs`). Every control is a
 negative or adverse case that fails if a walk's wildcard or leaf arm handles a
 new variant as it handled the old ones.
@@ -40,9 +40,8 @@ new variant as it handled the old ones.
    `Option<Map<Text, Self>[1, 4]>`, with and without a named field edge (AC-5).
 6. Declare `BoundedQuantity` (bounded, unbounded, inverted) as field, option
    payload, collection element and map value; call `contains_ieee`; check no
-   cycle edge; call `admits_equality_conversion` for `Int`, `Quantity(U)` and
-   `BoundedQuantity` sources against `BoundedQuantity`, `Quantity(U)` and `Map`
-   targets, and for a type equal to itself (AC-6).
+   cycle edge; call `admits_equality_conversion` for a bounded type against
+   itself (AC-6).
 7. Call `integer_source_admits` through `admits_equality_conversion` with an
    `Int[0, 10]` source against `Map<Text, Integer>` and `BoundedQuantity`
    targets, and against the existing targets (AC-7).
@@ -53,7 +52,8 @@ new variant as it handled the old ones.
 9. Run membership of quantities of magnitude -1, 0, 50, 100, 101 and 1/2 in
    `U`, one in another unit, and a text, boolean and option value, against
    `BoundedQuantity` `[0, 100]`, `[None, 100]`, `[0, None]` and inverted
-   `[5, 3]`, recording the events and the cause (AC-9).
+   `[5, 3]`, and the magnitude 1/2 against a `[1, 100]` control, recording the
+   events and the cause (AC-9).
 10. Admit `Option` values whose retained payload type is an equal `Map`, a
     `Map` with a different bound, a `Map` with bound `None` against
     `Some(0, max)`, a different value type, and a `Collection` of the same
@@ -62,8 +62,33 @@ new variant as it handled the old ones.
 11. Admit `Option` values whose retained payload type is a `BoundedQuantity`
     against equal, unit-only, minimum-only, maximum-only, presence-only
     different and `Quantity(U)` expected types (AC-11).
-12. Inspect the ten matches named in AC-12 for explicit `Map` and
+12. Inspect the matches named in AC-12 for explicit `Map` and
     `BoundedQuantity` arms (AC-12).
+13. Call `admits_equality_conversion` with `BoundedQuantity(U, [0, 10])`,
+    `[None, None]` and inverted `[5, 3]` sources against `Quantity(U)`, a
+    convertible and a non-convertible `Quantity(V)`, an unresolved unit, an
+    equal bounded type, a same-unit bounded type with other bounds, and with a
+    `Quantity(U)` source against a bounded target (AC-13).
+14. Call `check_equality_in` for equal `Map<Text, Integer>` operands,
+    `Option<Map<Text, Boolean>>`, `Sequence<Map<Text, Boolean>>`, a record with
+    a map field, and a conversion target holding a map (AC-14).
+15. Call `check_equality_in` for bounded against bounded (equal, wider,
+    disjoint, inverted) and against `Quantity(U)`, a same-dimension other unit,
+    another dimension and an unresolved unit; evaluate `50 U` against `3 U`;
+    check `Option<BoundedQuantity(U, ..)>` against `Option<Quantity(U)>` and
+    against `Option<BoundedQuantity(V, ..)>` (AC-15).
+16. Seal a union and call `runtime_type` on `Map<Text, Union>` and
+    `Option<Map<Text, Union>[1, 3]>`, and on an unsealed one; call `same_type`
+    on maps with different union handles of one sealed union and on maps
+    differing in bound, bound presence and value type (AC-16).
+17. Admit `Option` values whose retained payload type is a `BoundedQuantity`
+    under a configured `B`: equal bounds; minimum, maximum, presence and unit
+    differing (with an oversized bound beside a unit or presence difference);
+    bounds of exactly `B` bits and one bit over `B` on each of the four
+    endpoints, one at a time and several together; pre-cancellation with an
+    oversized bound; cancellation between bound pairs; no configured `B`; a
+    denied event at N-1 and N, recording the events and cumulative spend
+    (AC-17).
 
 ## Expected Results
 
@@ -95,5 +120,21 @@ new variant as it handled the old ones.
   bound.
 - Step 11: only the equal type is admitted; every differing type is invalid
   type.
-- Step 12: each of the ten matches has an explicit arm, or is pinned by Steps 8
-  and 9.
+- Step 12: each named match has an explicit arm, or is pinned by Steps 8 and 9.
+- Step 13: bounded to `Quantity(U)` admitted for all three bound shapes, to
+  `Quantity(V)` exactly as `Quantity(U)` is, refused for the unresolved unit;
+  equal bounded type admitted, other-bounds bounded type refused, `Quantity(U)`
+  to bounded refused; the same rows for bounds no value satisfies.
+- Step 14: `OperatorIneligible` for every shape, with no schedule selected.
+- Step 15: `EqualitySchedule::Quantity` for bounded/bounded and bounded/plain,
+  `DistinctUnits`, `IncompatibleDimensions`, `TypeMismatch` as named; `50 U`
+  against `3 U` compares exact values; the `Option` forms are accepted for the
+  same unit and a mismatch for another.
+- Step 16: sealed key resolved with bound kept, `None` when unsealed; `same_type`
+  true for the joined handles and false for each differing map.
+- Step 17: equal admitted; each differing pair a mismatch with no measurement
+  for unit and presence; `B` bits complete; one over `B` returns typed unsupported
+  size naming side and bound, first in the stable order; pre-cancellation
+  returns the original cause first; no `B` returns `NumericDomain` after one
+  event; the denied event at N-1 prevents any measurement; spend is the
+  enumerated events plus the initiating event.
