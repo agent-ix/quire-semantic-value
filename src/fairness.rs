@@ -17,22 +17,36 @@ pub enum PropertyForm {
     Safety,
     /// A liveness property.
     Liveness,
+    /// A refinement property classified by its liveness flag.
+    Refinement {
+        /// Whether the refinement property has a liveness obligation.
+        liveness: bool,
+    },
 }
 
 impl PropertyForm {
-    fn spelling(self) -> &'static str {
+    fn encode_into<S: Sink + ?Sized>(self, writer: &mut Writer<'_, S>) -> Result<(), Error> {
         match self {
-            Self::ReachableInvariant => "reachable-invariant",
-            Self::BoundedMltl => "bounded-mltl",
-            Self::Safety => "safety",
-            Self::Liveness => "liveness",
+            Self::ReachableInvariant => writer.string("reachable-invariant"),
+            Self::BoundedMltl => writer.string("bounded-mltl"),
+            Self::Safety => writer.string("safety"),
+            Self::Liveness => writer.string("liveness"),
+            Self::Refinement { liveness } => {
+                writer.begin_object()?;
+                writer.name("refinement")?;
+                writer.begin_object()?;
+                writer.name("liveness")?;
+                writer.bool(liveness)?;
+                writer.end_object()?;
+                writer.end_object()
+            }
         }
     }
 }
 
 impl Encode for PropertyForm {
     fn encode_into<S: Sink + ?Sized>(&self, writer: &mut Writer<'_, S>) -> Result<(), Error> {
-        writer.string(self.spelling())
+        (*self).encode_into(writer)
     }
 }
 
@@ -209,8 +223,10 @@ mod tests {
             PropertyForm::BoundedMltl,
             PropertyForm::Safety,
             PropertyForm::Liveness,
+            PropertyForm::Refinement { liveness: false },
+            PropertyForm::Refinement { liveness: true },
         ];
-        assert_eq!(forms.iter().copied().collect::<HashSet<_>>().len(), 4);
+        assert_eq!(forms.iter().copied().collect::<HashSet<_>>().len(), 6);
         let kinds = [FairnessKind::Weak, FairnessKind::Strong];
         let granularities = [FairnessGranularity::Whole, FairnessGranularity::Each];
         for kind in kinds {
@@ -249,9 +265,11 @@ mod tests {
                 PropertyForm::BoundedMltl,
                 PropertyForm::Safety,
                 PropertyForm::Liveness,
+                PropertyForm::Refinement { liveness: false },
+                PropertyForm::Refinement { liveness: true },
             ])
             .len(),
-            4
+            6
         );
         assert_eq!(
             HashSet::from([FairnessKind::Weak, FairnessKind::Strong]).len(),
@@ -284,6 +302,8 @@ mod tests {
             PropertyForm::Safety,
             PropertyForm::BoundedMltl,
             PropertyForm::ReachableInvariant,
+            PropertyForm::Refinement { liveness: true },
+            PropertyForm::Refinement { liveness: false },
         ];
         forms.sort();
         assert_eq!(
@@ -292,7 +312,9 @@ mod tests {
                 PropertyForm::ReachableInvariant,
                 PropertyForm::BoundedMltl,
                 PropertyForm::Safety,
-                PropertyForm::Liveness
+                PropertyForm::Liveness,
+                PropertyForm::Refinement { liveness: false },
+                PropertyForm::Refinement { liveness: true }
             ]
         );
         for left in &forms {
@@ -370,6 +392,14 @@ mod tests {
             (PropertyForm::BoundedMltl, b"\"bounded-mltl\"".as_slice()),
             (PropertyForm::Safety, b"\"safety\"".as_slice()),
             (PropertyForm::Liveness, b"\"liveness\"".as_slice()),
+            (
+                PropertyForm::Refinement { liveness: false },
+                b"{\"refinement\":{\"liveness\":false}}".as_slice(),
+            ),
+            (
+                PropertyForm::Refinement { liveness: true },
+                b"{\"refinement\":{\"liveness\":true}}".as_slice(),
+            ),
         ] {
             assert_eq!(to_vec(&form, limits(4096)).expect("form"), expected);
         }
