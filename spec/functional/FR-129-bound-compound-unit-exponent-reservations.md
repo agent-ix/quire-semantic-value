@@ -58,8 +58,8 @@ governs the upstream encoder's allocation classification.
    second integer implementation.
 5. For controlled verification, the public `compound_unit_id` path SHALL
    admit a safe, test-only, caller-scoped hook at the two fallible exact API
-   result boundaries. The hook SHALL be restored when the calling test scope
-   ends so concurrent tests cannot observe it. A unit test SHALL invoke the
+   result boundaries. The QSV test harness SHALL restore the hook when the
+   calling test scope ends so concurrent tests cannot observe it. A unit test SHALL invoke the
    public function with the hook active, substituting typed
    `IntegerCopyError::Allocation` and
    `IntegerDecimalError::Allocation` results. Production SHALL call the exact
