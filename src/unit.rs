@@ -21,14 +21,15 @@
 //! compound unit's id carries its ordered root terms and exponents.
 
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::hash::{Hash, Hasher};
 
-use quire_canonical::{Encode, Error, Limits, Sink, Writer};
+use quire_canonical::{Encode, Error, LimitExceeded, LimitKind, Limits, Sink, Writer};
 
 use quire_exact::{
-    Integer, InvalidNodeKey, NodeKey, NodeKeyView, PathSegmentView, Rational, UnitId,
+    Integer, IntegerCopyError, IntegerDecimalError, InvalidNodeKey, NodeKey, NodeKeyView,
+    PathSegmentView, Rational, UnitId,
 };
 
 use crate::semantic_node::{
@@ -669,12 +670,25 @@ fn reserve_identity<T, E>(
 /// exceed `limits` (QSL FR-259 Behavior 4): nothing bounds the number of
 /// terms or an exponent's size, so a large enough unit reaches any byte
 /// limit. [`IdentityRefusal::Allocation`] reports failed term-vector, encoder
-/// stack, and structural-node-copy reservations with the requested bytes.
-/// The existing infallible `Integer` clone and decimal formatting remain the
-/// separate IR-1149 allocation residual.
+/// stack, structural-node-copy, integer-copy and decimal-text reservations
+/// with the requested bytes.
 pub fn compound_unit_id<'a>(
     terms: impl IntoIterator<Item = (&'a NodeKey, &'a Integer)>,
     limits: Limits,
+) -> Result<UnitId, IdentityRefusal> {
+    compound_unit_id_with(
+        terms,
+        limits,
+        Integer::try_clone,
+        Integer::try_to_decimal_string,
+    )
+}
+
+fn compound_unit_id_with<'a>(
+    terms: impl IntoIterator<Item = (&'a NodeKey, &'a Integer)>,
+    limits: Limits,
+    copy_exponent: impl Fn(&Integer) -> Result<Integer, IntegerCopyError>,
+    render_exponent: impl Fn(&Integer, usize) -> Result<String, IntegerDecimalError>,
 ) -> Result<UnitId, IdentityRefusal> {
     let mut retained = Vec::new();
     for term in terms {
@@ -683,7 +697,11 @@ pub fn compound_unit_id<'a>(
         })?;
         retained.push(term);
     }
-    quire_canonical::encode(&mut CountingSink, &StructuralTerms(&retained), limits)?;
+    quire_canonical::encode(
+        &mut CountingSink::default(),
+        &StructuralTerms::new(&retained, limits.max_bytes(), &render_exponent),
+        limits,
+    )?;
     let mut owned = Vec::new();
     reserve_identity(&mut owned, retained.len(), &mut |_| Ok(()), |requested| {
         IdentityRefusal::Allocation { requested }
@@ -693,30 +711,126 @@ pub fn compound_unit_id<'a>(
             InvalidNodeKey::Allocation { requested } => IdentityRefusal::Allocation { requested },
             _ => IdentityRefusal::NonCanonical,
         })?;
-        owned.push((unit, exponent.clone()));
+        let exponent = copy_exponent(exponent).map_err(integer_copy_refusal)?;
+        owned.push((unit, exponent));
     }
     Ok(UnitId::compound(owned))
 }
 
-struct CountingSink;
+#[derive(Default)]
+struct CountingSink {
+    bytes: u64,
+}
+
+fn integer_copy_refusal(error: IntegerCopyError) -> IdentityRefusal {
+    match error {
+        IntegerCopyError::Allocation { requested } => IdentityRefusal::Allocation { requested },
+    }
+}
+
+fn integer_decimal_encoder_error(error: IntegerDecimalError) -> Error {
+    match error {
+        IntegerDecimalError::Allocation { requested } => Error::Allocation { requested },
+        IntegerDecimalError::ByteLimit { .. } => Error::Internal {
+            invariant: "decimal byte limit requires a canonical prefix probe",
+        },
+        // No representable reservation can carry an output longer than usize.
+        IntegerDecimalError::OutputSizeOverflow => Error::Allocation {
+            requested: usize::MAX,
+        },
+    }
+}
 
 impl Sink for CountingSink {
-    fn write_bytes(&mut self, _bytes: &[u8]) -> Result<(), Error> {
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        self.bytes = self
+            .bytes
+            .checked_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+            .ok_or(Error::Allocation {
+                requested: usize::MAX,
+            })?;
         Ok(())
     }
 }
 
-struct StructuralTerms<'a>(&'a [(&'a NodeKey, &'a Integer)]);
+struct StructuralTerms<'a> {
+    terms: &'a [(&'a NodeKey, &'a Integer)],
+    bound: u64,
+    prefix_probe: Option<usize>,
+    render_exponent: &'a dyn Fn(&Integer, usize) -> Result<String, IntegerDecimalError>,
+}
+
+impl<'a> StructuralTerms<'a> {
+    fn new(
+        terms: &'a [(&'a NodeKey, &'a Integer)],
+        bound: u64,
+        render_exponent: &'a dyn Fn(&Integer, usize) -> Result<String, IntegerDecimalError>,
+    ) -> Self {
+        Self {
+            terms,
+            bound,
+            prefix_probe: None,
+            render_exponent,
+        }
+    }
+
+    fn prefix_before_decimal(&self, term_index: usize) -> Result<u64, Error> {
+        let mut counter = CountingSink::default();
+        quire_canonical::encode(
+            &mut counter,
+            &Self {
+                terms: self.terms,
+                bound: self.bound,
+                prefix_probe: Some(term_index),
+                render_exponent: self.render_exponent,
+            },
+            Limits::new(u64::MAX),
+        )?;
+        // The probe adds an empty string and closes the term, array and root.
+        counter.bytes.checked_sub(5).ok_or(Error::Internal {
+            invariant: "a probed compound unit has an exponent string and three closing bytes",
+        })
+    }
+}
 
 impl Encode for StructuralTerms<'_> {
     fn encode_into<S: Sink + ?Sized>(&self, writer: &mut Writer<'_, S>) -> Result<(), Error> {
         writer.begin_object()?;
         writer.name("terms")?;
         writer.begin_array()?;
-        for (unit, exponent) in self.0 {
+        for (index, (unit, exponent)) in self.terms.iter().enumerate() {
             writer.begin_object()?;
             writer.name("exponent")?;
-            writer.string(&exponent.to_string())?;
+            if self.prefix_probe == Some(index) {
+                writer.string("")?;
+                writer.end_object()?;
+                writer.end_array()?;
+                return writer.end_object();
+            }
+            // The writer measures the complete canonical preimage; the
+            // decimal bound avoids reserving more text than it can admit.
+            let decimal = match (self.render_exponent)(
+                exponent,
+                usize::try_from(self.bound).unwrap_or(usize::MAX),
+            ) {
+                Ok(decimal) => decimal,
+                Err(IntegerDecimalError::ByteLimit { required, .. }) => {
+                    let prefix = self.prefix_before_decimal(index)?;
+                    let opening_quote = prefix.saturating_add(1);
+                    let required = if opening_quote > self.bound {
+                        opening_quote
+                    } else {
+                        opening_quote.saturating_add(u64::try_from(required).unwrap_or(u64::MAX))
+                    };
+                    return Err(Error::Limit(LimitExceeded {
+                        kind: LimitKind::CanonicalBytes,
+                        bound: self.bound,
+                        required,
+                    }));
+                }
+                Err(error) => return Err(integer_decimal_encoder_error(error)),
+            };
+            writer.string(&decimal)?;
             writer.name("unit")?;
             encode_node_id(writer, unit)?;
             writer.end_object()?;
@@ -907,6 +1021,153 @@ mod tests {
                 bound: required - 1,
                 required,
             })
+        );
+    }
+
+    /// Large signed exponents retain their exact decimal spellings in the
+    /// canonical preimage and the owned structural identity.
+    #[trace("TC-928", "FR-129-AC-1", "FR-129-AC-2")]
+    #[test]
+    fn large_signed_exponent_preserves_canonical_bytes_and_byte_limit() {
+        let root = id(1);
+        let spellings = [
+            (
+                "1234567890123456789012345678901234567890",
+                b"\"exponent\":\"1234567890123456789012345678901234567890\"".as_slice(),
+            ),
+            (
+                "-1234567890123456789012345678901234567890",
+                b"\"exponent\":\"-1234567890123456789012345678901234567890\"".as_slice(),
+            ),
+        ];
+        for (spelling, exponent_member) in spellings {
+            let exponent: Integer = spelling.parse().unwrap();
+            let terms = [(&root, &exponent)];
+            let canonical = quire_canonical::to_vec(
+                &StructuralTerms::new(
+                    &terms,
+                    IDENTITY_LIMITS.max_bytes(),
+                    &Integer::try_to_decimal_string,
+                ),
+                IDENTITY_LIMITS,
+            )
+            .unwrap();
+            assert!(canonical
+                .windows(exponent_member.len())
+                .any(|bytes| bytes == exponent_member));
+
+            let required = u64::try_from(canonical.len()).unwrap();
+            assert_eq!(
+                compound_unit_id(terms, Limits::new(required)),
+                Ok(UnitId::compound(vec![(
+                    root.clone(),
+                    exponent.try_clone().unwrap()
+                )]))
+            );
+            assert_eq!(
+                compound_unit_id([(&root, &exponent)], Limits::new(required - 1)),
+                Err(IdentityRefusal::InputBytes {
+                    bound: required - 1,
+                    required,
+                })
+            );
+            let exponent_prefix = b"\"exponent\":\"";
+            let prefix_at = canonical
+                .windows(exponent_prefix.len())
+                .position(|bytes| bytes == exponent_prefix)
+                .unwrap();
+            let attempted =
+                u64::try_from(prefix_at + exponent_prefix.len() + spelling.len()).unwrap();
+            assert_eq!(
+                compound_unit_id([(&root, &exponent)], Limits::new(36)),
+                Err(IdentityRefusal::InputBytes {
+                    bound: 36,
+                    required: attempted,
+                })
+            );
+        }
+    }
+
+    /// A later exponent's byte-limit refusal includes every earlier term in
+    /// the canonical prefix, even though its decimal text is not allocated.
+    #[trace("TC-928", "FR-129-AC-1", "FR-129-AC-2")]
+    #[test]
+    fn later_exponent_limit_counts_the_prior_canonical_term() {
+        let first = id(1);
+        let second = id(2);
+        let one = Integer::one();
+        let mut spelling = "1234567890".repeat(50);
+        spelling.insert(0, '-');
+        let large: Integer = spelling.parse().unwrap();
+        let terms = [(&first, &one), (&second, &large)];
+        assert_eq!(
+            compound_unit_id(terms, IDENTITY_LIMITS),
+            Ok(UnitId::compound(vec![
+                (first.try_clone().unwrap(), one.try_clone().unwrap(),),
+                (second.try_clone().unwrap(), large.try_clone().unwrap(),)
+            ]))
+        );
+        let canonical = quire_canonical::to_vec(
+            &StructuralTerms::new(
+                &terms,
+                IDENTITY_LIMITS.max_bytes(),
+                &Integer::try_to_decimal_string,
+            ),
+            IDENTITY_LIMITS,
+        )
+        .unwrap();
+        let expected = alloc::format!(
+            r#"{{"terms":[{{"exponent":"1","unit":{{"ordinal":0,"package":"qsv-test","path":["00000000000000000001"]}}}},{{"exponent":"{spelling}","unit":{{"ordinal":0,"package":"qsv-test","path":["00000000000000000002"]}}}}]}}"#
+        );
+        assert_eq!(canonical, expected.as_bytes());
+        let complete_len = u64::try_from(canonical.len()).unwrap();
+        assert!(compound_unit_id(terms, Limits::new(complete_len)).is_ok());
+        assert_eq!(
+            compound_unit_id(terms, Limits::new(complete_len - 1)),
+            Err(IdentityRefusal::InputBytes {
+                bound: complete_len - 1,
+                required: complete_len,
+            })
+        );
+        let marker = b"\"exponent\":\"";
+        let second_prefix = canonical
+            .windows(marker.len())
+            .enumerate()
+            .filter_map(|(at, bytes)| (bytes == marker).then_some(at))
+            .nth(1)
+            .unwrap();
+        let attempted = u64::try_from(second_prefix + marker.len() + spelling.len()).unwrap();
+        assert_eq!(
+            compound_unit_id(terms, Limits::new(200)),
+            Err(IdentityRefusal::InputBytes {
+                bound: 200,
+                required: attempted,
+            })
+        );
+    }
+
+    /// Typed failures substituted at the exact result boundaries travel
+    /// through the same core and refusal projection as the public call.
+    #[trace("TC-928", "FR-129-AC-3")]
+    #[test]
+    fn exponent_result_refusals_keep_the_requested_bytes() {
+        let root = id(1);
+        let exponent = Integer::one();
+        let terms = [(&root, &exponent)];
+        assert_eq!(
+            compound_unit_id_with(
+                terms,
+                IDENTITY_LIMITS,
+                |_| Err(IntegerCopyError::Allocation { requested: 4096 }),
+                Integer::try_to_decimal_string,
+            ),
+            Err(IdentityRefusal::Allocation { requested: 4096 })
+        );
+        assert_eq!(
+            compound_unit_id_with(terms, IDENTITY_LIMITS, Integer::try_clone, |_, _| Err(
+                IntegerDecimalError::Allocation { requested: 8192 }
+            ),),
+            Err(IdentityRefusal::Allocation { requested: 8192 })
         );
     }
 
