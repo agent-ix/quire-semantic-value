@@ -779,13 +779,13 @@ impl TypeEnvironment {
                     MembershipEvent::DescriptorQuery,
                     query,
                 ))?;
+                let expected_handle = self.union_handles.get(declared).unwrap_or(declared);
                 let union_shape = matches!(
                     self.composites
-                        .get(declared)
+                        .get(expected_handle)
                         .map(|declaration| &declaration.shape),
                     Some(CompositeShape::Union(_))
                 );
-                let expected_handle = self.union_handles.get(declared).unwrap_or(declared);
                 let final_key = self.union_keys.get(expected_handle);
                 let member = if final_key == Some(union.declaration()) {
                     self.union_member_ref(expected_handle, union.variant())

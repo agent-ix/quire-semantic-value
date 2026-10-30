@@ -2724,11 +2724,13 @@ impl TypeEnvironment {
     fn composite_conforms_ref(&self, sub: &NodeKey, sup: &NodeKey) -> bool {
         // A union takes no part in composite generalization: no Record or Tuple
         // carrier conforms to a union type, by either its handle or its final key.
+        let sub_handle = self.union_handles.get(sub).unwrap_or(sub);
+        let sup_handle = self.union_handles.get(sup).unwrap_or(sup);
         if matches!(
-            self.composites.get(sub).map(|d| &d.shape),
+            self.composites.get(sub_handle).map(|d| &d.shape),
             Some(CompositeShape::Union(_))
         ) || matches!(
-            self.composites.get(sup).map(|d| &d.shape),
+            self.composites.get(sup_handle).map(|d| &d.shape),
             Some(CompositeShape::Union(_))
         ) {
             return false;
@@ -3338,7 +3340,11 @@ impl TypeEnvironment {
         let mut pending = vec![value_type];
         while let Some(value_type) = pending.pop() {
             match value_type {
-                ValueType::Composite(key) if !self.composites.contains_key(key) => {
+                ValueType::Composite(key)
+                    if !self
+                        .composites
+                        .contains_key(self.union_handles.get(key).unwrap_or(key)) =>
+                {
                     return Some(DeclarationCause::UnknownDeclaration(key.clone()));
                 }
                 // QSpec FR-143: `T` in `Reference<T>` must name a model object
