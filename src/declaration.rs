@@ -2690,6 +2690,11 @@ impl TypeEnvironment {
         self.object_types.get(&key)
     }
 
+    /// Whether an effective object type belongs to this admitted environment.
+    pub(crate) fn contains_object_type(&self, key: &EffectiveId) -> bool {
+        self.object_types.contains_key(key)
+    }
+
     /// Every admitted object type in key order, for resolving a type name
     /// to `ValueType::Reference` alongside [`Self::composites`].
     pub fn object_types(&self) -> impl Iterator<Item = &ObjectTypeDeclaration> {

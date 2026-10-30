@@ -69,6 +69,9 @@ impl ObjectClosure {
         if self.contains(reference) {
             return Resolution::Present;
         }
+        if !types.contains_object_type(reference.object_type()) {
+            return Resolution::Undecidable;
+        }
         if manifest.closed_coverage(types, reference.object_type()) {
             Resolution::Dangling
         } else {
