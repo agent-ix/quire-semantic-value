@@ -32,8 +32,9 @@ controlled reservation refusals without fixing a digest as an oracle.
    result boundary, then call public `compound_unit_id`. Substitute
    `IntegerCopyError::Allocation { requested: 4096 }` at exponent copy and
    `IntegerDecimalError::Allocation { requested: 8192 }` at decimal emission,
-   one at a time. Assert each public result and no partial id. Confirm the
-   production path uses the same mappings. Use exact's
+   one at a time. Restore the caller-scoped hook before another test runs;
+   concurrent tests must not observe it. Assert each public result and no
+   partial id. Confirm the production path uses the same mappings. Use exact's
    FR-390-AC-1/4 controlled-denial test as the independent oracle that real
    exact API failures report actual additional reservation bytes (AC-3).
 4. Inspect the implementation path for the exact fallible calls, error
