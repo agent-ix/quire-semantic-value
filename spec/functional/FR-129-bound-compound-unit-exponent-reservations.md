@@ -56,6 +56,13 @@ governs the upstream encoder's allocation classification.
    `Integer::try_to_decimal_string` at this boundary. It SHALL NOT use
    `Integer::clone` or `Integer::to_string` for these two operations, or add a
    second integer implementation.
+5. For controlled verification, the public `compound_unit_id` path SHALL
+   admit a safe, test-only, caller-scoped hook at the two fallible exact API
+   result boundaries. A unit test SHALL invoke the public function with the
+   hook active, substituting typed `IntegerCopyError::Allocation` and
+   `IntegerDecimalError::Allocation` results. Production SHALL call the exact
+   APIs through the same mapping path. The hook adds no public API, unsafe
+   allocator override, or alternate production identity behavior.
 
 ## Acceptance Criteria
 
@@ -63,7 +70,7 @@ governs the upstream encoder's allocation classification.
 | --- | --- | --- |
 | FR-129-AC-1 | For ordered roots with one inline positive exponent and one large negative exponent, `compound_unit_id` returns the same structural `UnitId::Compound` terms, roots, signs and mathematical exponents supplied; its bounded RFC 8785 term encoding contains the full canonical decimal exponent strings in the same term order and no digest or encoded byte array is the returned id. | Test |
 | FR-129-AC-2 | For the same term preimage, a limit equal to its complete canonical byte length succeeds and a limit one byte shorter returns `InputBytes { bound: length - 1, required: length }`, with no id. With an earlier limit crossed while writing an exponent, `required` equals the canonical encoder's reached output count including preceding structural bytes, and exceeds `bound`; it is not just that exponent's decimal length or necessarily the complete final preimage length. | Test |
-| FR-129-AC-3 | On controlled refusal of an exponent-copy reservation and of an exponent-decimal reservation, each call returns `Allocation { requested }` with the exact additional bytes requested by the refused reservation, returns no id, and does not yield `InputBytes` or `NonCanonical`. | Test |
+| FR-129-AC-3 | With a safe test-only hook active at each exact API result boundary, calls to public `compound_unit_id` substituting distinct typed `IntegerCopyError::Allocation { requested }` and `IntegerDecimalError::Allocation { requested }` failures each return `IdentityRefusal::Allocation` with the unchanged requested value, no id, and no `InputBytes` or `NonCanonical`; production uses the same mappings, while exact's independently controlled reservation tests establish that each upstream requested value is the actual additional reservation bytes. | Test |
 | FR-129-AC-4 | Inspection of the compound identity construction and encoding path finds `Integer::try_clone` and `Integer::try_to_decimal_string`, maps their allocation errors to `IdentityRefusal::Allocation { requested }`, retains the structural `UnitId` output, and finds no infallible exponent `clone`/`to_string`, digest conversion or duplicate integer implementation on that path. | Inspection |
 
 ## Dependencies
@@ -72,8 +79,10 @@ governs the upstream encoder's allocation classification.
   unit identity; [FR-124](./FR-124-identified-quantity-from-an-exact-conversion.md)
   propagates its refusal through the exact quantity handoff.
 - `quire-exact` supplies fallible `Integer::try_clone` and bounded
-  `Integer::try_to_decimal_string`. `quire-canonical` owns RFC 8785 encoding
-  and the caller's byte limit.
+  `Integer::try_to_decimal_string`. Its
+  [FR-390](ix://agent-ix/quire-exact/FR-390) AC-1/4 injected-denial test
+  establishes the requested-byte provenance for both APIs.
+  `quire-canonical` owns RFC 8785 encoding and the caller's byte limit.
 
 ## Status
 
