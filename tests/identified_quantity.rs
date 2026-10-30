@@ -163,7 +163,7 @@ fn an_exact_conversion_hands_over_its_quantity_and_identified_unit() {
 }
 
 /// Trace: FR-124-AC-2
-#[trace("TC-923", "FR-124-AC-2")]
+#[trace("TC-923", "FR-124-AC-2", "FR-128-AC-3")]
 #[test]
 fn the_handed_over_quantity_resolves_and_converts_on_to_joules() {
     let graph = energy_graph();
@@ -344,7 +344,7 @@ fn cancelling(roots: u32) -> (UnitGraph, CompoundUnit) {
 }
 
 /// Trace: FR-124-AC-4
-#[trace("TC-923", "FR-124-AC-4")]
+#[trace("TC-923", "FR-124-AC-4", "FR-128-AC-3")]
 #[test]
 fn an_unidentifiable_target_is_refused_with_the_identity_refusal() {
     let (graph, target) = cancelling(200_000);
@@ -374,7 +374,7 @@ fn an_unidentifiable_target_is_refused_with_the_identity_refusal() {
 }
 
 /// Trace: FR-124-AC-5
-#[trace("TC-923", "FR-124-AC-5")]
+#[trace("TC-923", "FR-124-AC-5", "FR-128-AC-3")]
 #[test]
 fn a_declared_root_and_a_single_root_compound_keep_distinct_ids() {
     let graph = energy_graph();

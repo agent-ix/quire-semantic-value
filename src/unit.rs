@@ -639,6 +639,24 @@ pub enum CompoundUnitCause {
     NotRootUnit,
 }
 
+/// Reserve `additional` elements and report only the bytes this request adds.
+/// The callback lets a test deny the same boundary without a global allocator.
+fn reserve_identity<T, E>(
+    values: &mut Vec<T>,
+    additional: usize,
+    before: &mut impl FnMut(usize) -> Result<(), E>,
+    refused: impl FnOnce(usize) -> E,
+) -> Result<(), E> {
+    if additional <= values.capacity().saturating_sub(values.len()) {
+        return Ok(());
+    }
+    let requested = additional.saturating_mul(core::mem::size_of::<T>());
+    before(requested)?;
+    values
+        .try_reserve(additional)
+        .map_err(|_| refused(requested))
+}
+
 // RFC 8785 JCS: `quire-canonical` orders members itself, so field
 // declaration order carries no meaning.
 /// The compound-arm [`UnitId`] of exactly these structural root terms.
@@ -660,25 +678,16 @@ pub fn compound_unit_id<'a>(
 ) -> Result<UnitId, IdentityRefusal> {
     let mut retained = Vec::new();
     for term in terms {
-        retained
-            .try_reserve(1)
-            .map_err(|_| IdentityRefusal::Allocation {
-                requested: retained
-                    .len()
-                    .saturating_add(1)
-                    .saturating_mul(core::mem::size_of::<(&NodeKey, &Integer)>()),
-            })?;
+        reserve_identity(&mut retained, 1, &mut |_| Ok(()), |requested| {
+            IdentityRefusal::Allocation { requested }
+        })?;
         retained.push(term);
     }
     quire_canonical::encode(&mut CountingSink, &StructuralTerms(&retained), limits)?;
     let mut owned = Vec::new();
-    owned
-        .try_reserve(retained.len())
-        .map_err(|_| IdentityRefusal::Allocation {
-            requested: retained
-                .len()
-                .saturating_mul(core::mem::size_of::<(NodeKey, Integer)>()),
-        })?;
+    reserve_identity(&mut owned, retained.len(), &mut |_| Ok(()), |requested| {
+        IdentityRefusal::Allocation { requested }
+    })?;
     for (unit, exponent) in retained {
         let unit = unit.try_clone().map_err(|error| match error {
             InvalidNodeKey::Allocation { requested } => IdentityRefusal::Allocation { requested },
@@ -717,26 +726,28 @@ impl Encode for StructuralTerms<'_> {
     }
 }
 
+/// One pending action in iterative structural node encoding.
+enum NodeEvent<'a> {
+    Node(NodeKeyView<'a>),
+    Text(&'a str),
+    EndArray,
+    EndObject,
+}
+
 /// Emit a nested structural node id through an explicit stack. A path may
 /// contain node ids, so recursive serialization would use input-sized stack.
 fn encode_node_id<S: Sink + ?Sized>(
     writer: &mut Writer<'_, S>,
     node: &NodeKey,
 ) -> Result<(), Error> {
-    enum Event<'a> {
-        Node(NodeKeyView<'a>),
-        Text(&'a str),
-        EndArray,
-        EndObject,
-    }
     let mut events = Vec::new();
-    events.try_reserve(1).map_err(|_| Error::Allocation {
-        requested: core::mem::size_of::<Event>(),
+    reserve_identity(&mut events, 1, &mut |_| Ok(()), |requested| {
+        Error::Allocation { requested }
     })?;
-    events.push(Event::Node(node.view()));
+    events.push(NodeEvent::Node(node.view()));
     while let Some(event) = events.pop() {
         match event {
-            Event::Node(node) => {
+            NodeEvent::Node(node) => {
                 writer.begin_object()?;
                 writer.name("ordinal")?;
                 writer.integer(i128::from(node.ordinal()))?;
@@ -745,28 +756,23 @@ fn encode_node_id<S: Sink + ?Sized>(
                 writer.name("path")?;
                 writer.begin_array()?;
                 let additional = node.path().count().saturating_add(2);
-                events
-                    .try_reserve(additional)
-                    .map_err(|_| Error::Allocation {
-                        requested: events
-                            .len()
-                            .saturating_add(additional)
-                            .saturating_mul(core::mem::size_of::<Event>()),
-                    })?;
+                reserve_identity(&mut events, additional, &mut |_| Ok(()), |requested| {
+                    Error::Allocation { requested }
+                })?;
                 let path_start = events.len().saturating_add(2);
-                events.push(Event::EndObject);
-                events.push(Event::EndArray);
+                events.push(NodeEvent::EndObject);
+                events.push(NodeEvent::EndArray);
                 for segment in node.path() {
                     events.push(match segment {
-                        PathSegmentView::Text(text) => Event::Text(text),
-                        PathSegmentView::Node(node) => Event::Node(node),
+                        PathSegmentView::Text(text) => NodeEvent::Text(text),
+                        PathSegmentView::Node(node) => NodeEvent::Node(node),
                     });
                 }
                 events[path_start..].reverse();
             }
-            Event::Text(text) => writer.string(text)?,
-            Event::EndArray => writer.end_array()?,
-            Event::EndObject => writer.end_object()?,
+            NodeEvent::Text(text) => writer.string(text)?,
+            NodeEvent::EndArray => writer.end_array()?,
+            NodeEvent::EndObject => writer.end_object()?,
         }
     }
     Ok(())
@@ -902,6 +908,57 @@ mod tests {
                 required,
             })
         );
+    }
+
+    /// The failed request is the additional reservation, even after a term or
+    /// encoder event is already retained.
+    #[trace("TC-728", "FR-259-AC-2")]
+    #[test]
+    fn a_nonempty_identity_reservation_reports_additional_bytes() {
+        let key = id(1);
+        let exponent = Integer::one();
+        let mut terms = Vec::with_capacity(1);
+        terms.push((&key, &exponent));
+        let term_bytes = core::mem::size_of::<(&NodeKey, &Integer)>();
+        let term_denial = reserve_identity(
+            &mut terms,
+            1,
+            &mut |requested| Err(IdentityRefusal::Allocation { requested }),
+            |requested| IdentityRefusal::Allocation { requested },
+        );
+        assert_eq!(
+            term_denial,
+            Err(IdentityRefusal::Allocation {
+                requested: term_bytes
+            })
+        );
+        assert_eq!(terms.len(), 1);
+
+        let mut events = Vec::with_capacity(1);
+        events.push(NodeEvent::EndArray);
+        let event_bytes = 3 * core::mem::size_of::<NodeEvent<'_>>();
+        let event_denial = reserve_identity(
+            &mut events,
+            3,
+            &mut |requested| Err(Error::Allocation { requested }),
+            |requested| Error::Allocation { requested },
+        );
+        assert!(matches!(
+            event_denial,
+            Err(Error::Allocation { requested }) if requested == event_bytes
+        ));
+        assert_eq!(events.len(), 1);
+
+        let mut spare = Vec::with_capacity(4);
+        spare.push(NodeEvent::EndArray);
+        reserve_identity(
+            &mut spare,
+            3,
+            &mut |_| -> Result<(), Error> { panic!("spare capacity makes no reservation") },
+            |requested| Error::Allocation { requested },
+        )
+        .unwrap();
+        assert_eq!(spare.len(), 1);
     }
 
     fn rational(numerator: i64) -> Rational {
