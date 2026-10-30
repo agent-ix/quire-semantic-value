@@ -770,16 +770,16 @@ impl<'t, P: Ord + Clone, E> ManifestOutcome<'t, P, E> {
         self.partial().map(PartialPopulationRows::stop)
     }
 
-    pub(crate) fn closed_coverage(&self, types: &TypeEnvironment, actual: EffectiveId) -> bool {
+    pub(crate) fn closed_coverage(&self, types: &TypeEnvironment, actual: &EffectiveId) -> bool {
         let OutcomeState::Closed(closed) = &self.state else {
             return false;
         };
-        if !ptr::eq(closed.types, types) || types.object_type(actual.clone()).is_none() {
+        if !ptr::eq(closed.types, types) {
             return false;
         }
         closed
             .coverage
-            .binary_search_by_key(&actual, |(object_type, _)| object_type.clone())
+            .binary_search_by(|(object_type, _)| object_type.cmp(actual))
             .ok()
             .and_then(|position| closed.coverage.get(position))
             .is_some_and(|(_, complete)| *complete)
