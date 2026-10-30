@@ -13,8 +13,8 @@ use quire_canonical::{Encode, Error, Sink, Writer};
 use quire_exact::NodeKey;
 
 /// One step row of a refinement declaration, named by its zero-based position
-/// in the refinement's `steps` array, in the order QSpec FR-375 fixes for it,
-/// not the source order of the rows (QSL FR-135 `steps`).
+/// in the declaration node's `steps` order, which is declaration order
+/// (QSpec FR-375; QSL FR-135 `steps`). No sort of any kind applies.
 ///
 /// A refinement has exactly one row per concrete step class (QSL ADR-020
 /// RM-5), so a refinement key and a row position name one row.

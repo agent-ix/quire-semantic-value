@@ -30,8 +30,8 @@ writes, state what an obligation means, or settle one (QSL FR-146).
 The refinement and each hypothesis are `quire_exact::NodeKey` values that the
 caller minted; QSV neither mints nor decodes one (FR-060). A `StepRowRef` names
 one step row of the refinement by its zero-based position in the refinement's
-`steps` array, in the order QSpec FR-375 fixes for it, not the order the rows
-were written in the source. A refinement has exactly one row per concrete
+`steps` order, which is declaration order (QSpec FR-375); no sort of any kind
+applies. A refinement has exactly one row per concrete
 step class (QSL ADR-020 RM-5), so a refinement key and a row position name one
 row. The position is a name, not an index QSV dereferences.
 
