@@ -76,6 +76,7 @@ use core::fmt;
 use quire_exact::CollectionKind;
 use quire_exact::EffectiveId;
 use quire_exact::EnumShape;
+use quire_exact::IdentityCopyError;
 use quire_exact::NodeKey;
 use quire_exact::{compare_text, evaluate_decimal, Identifier, UnionMember, UnionValue, VariantId};
 
@@ -102,14 +103,18 @@ mod storage_reservation_tests {
     use core::cell::Cell;
     use ix_trace_rs::trace;
 
-    struct DenyFirst {
+    struct DenyFirstElement {
         seen: Cell<Option<StorageRequest>>,
     }
 
-    impl ReservationPolicy for DenyFirst {
+    impl ReservationPolicy for DenyFirstElement {
         fn permit(&self, request: StorageRequest) -> bool {
-            self.seen.set(Some(request));
-            false
+            if request.unit() == StorageUnit::AdditionalElements {
+                self.seen.set(Some(request));
+                false
+            } else {
+                true
+            }
         }
     }
 
@@ -123,12 +128,12 @@ mod storage_reservation_tests {
     fn registry_denial_retains_reservation_and_retry_admits() {
         let declarations = || {
             [CompositeDeclaration::new(
-                NodeKey::from_digest([1; 32]),
+                crate::test_identity::node(1),
                 "R",
                 CompositeShape::Tuple(Vec::new()),
             )]
         };
-        let deny = DenyFirst {
+        let deny = DenyFirstElement {
             seen: Cell::new(None),
         };
         let denied = TypeEnvironment::bounded_with_reservations(
@@ -177,12 +182,48 @@ mod storage_reservation_tests {
         }
     }
 
+    struct DenyByteAmount {
+        amount: usize,
+        seen: Cell<Option<StorageRequest>>,
+    }
+
+    impl ReservationPolicy for DenyByteAmount {
+        fn permit(&self, request: StorageRequest) -> bool {
+            if request.unit() == StorageUnit::Bytes && request.amount() == self.amount {
+                self.seen.set(Some(request));
+                false
+            } else {
+                true
+            }
+        }
+    }
+
+    struct NthByteRequest {
+        deny_at: Option<usize>,
+        count: Cell<usize>,
+        denied: Cell<Option<StorageRequest>>,
+    }
+
+    impl ReservationPolicy for NthByteRequest {
+        fn permit(&self, request: StorageRequest) -> bool {
+            if request.unit() == StorageUnit::Bytes {
+                let count = self.count.get() + 1;
+                self.count.set(count);
+                if self.deny_at == Some(count) {
+                    self.denied.set(Some(request));
+                    return false;
+                }
+            }
+            true
+        }
+    }
+
     #[allow(
         clippy::disallowed_methods,
         reason = "structural fixtures retain supplied identities; this is not FR441 minting"
     )]
     fn union_key(byte: u8) -> NodeKey {
-        NodeKey::from_digest([byte; 32])
+        crate::test_identity::node(u64::from(byte))
     }
 
     fn union_topology() -> CompositeDeclaration {
@@ -201,16 +242,8 @@ mod storage_reservation_tests {
 
     fn union_bindings() -> Vec<UnionMember> {
         vec![
-            UnionMember::from_admitted(
-                union_key(40),
-                union_key(10),
-                Identifier::new("End").unwrap(),
-            ),
-            UnionMember::from_admitted(
-                union_key(40),
-                union_key(11),
-                Identifier::new("Next").unwrap(),
-            ),
+            UnionMember::from_admitted(union_key(40), "End").expect("fixture union member"),
+            UnionMember::from_admitted(union_key(40), "Next").expect("fixture union member"),
         ]
     }
 
@@ -340,11 +373,7 @@ mod storage_reservation_tests {
             seen: Cell::new(None),
         };
         let bad = || {
-            vec![UnionMember::from_admitted(
-                union_key(40),
-                union_key(10),
-                Identifier::new("End").unwrap(),
-            )]
+            vec![UnionMember::from_admitted(union_key(40), "End").expect("fixture union member")]
         };
         assert_eq!(
             environment.seal_union_with_reservations(union_key(1), union_key(40), bad(), &denial,),
@@ -379,18 +408,19 @@ mod storage_reservation_tests {
         let declarations = || {
             [
                 CompositeDeclaration::new(
-                    NodeKey::from_digest([1; 32]),
+                    crate::test_identity::node(1),
                     "first",
                     CompositeShape::Tuple(vec![]),
                 ),
                 CompositeDeclaration::new(
-                    NodeKey::from_digest([1; 32]),
+                    crate::test_identity::node(1),
                     "second",
                     CompositeShape::Tuple(vec![]),
                 ),
             ]
         };
-        let deny = DenyBytes {
+        let deny = DenyByteAmount {
+            amount: 6,
             seen: Cell::new(None),
         };
         assert_eq!(
@@ -419,6 +449,91 @@ mod storage_reservation_tests {
         );
     }
 
+    /// Trace: FR-391-AC-4, FR-108-AC-5, FR-115-AC-3.
+    #[trace("TC-907", "TC-915", "FR-391-AC-4", "FR-108-AC-5", "FR-115-AC-3")]
+    #[test]
+    fn structural_copy_requests_keep_byte_units_and_seal_is_atomic_on_denial() {
+        let key = union_key(1);
+        let denial = DenyBytes {
+            seen: Cell::new(None),
+        };
+        let denied = try_clone_node(&key, &denial);
+        let request = denial.seen.get().expect("structural copy requested bytes");
+        assert!(request.amount() > 0);
+        assert_eq!(request.unit(), StorageUnit::Bytes);
+        assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+
+        let effective = crate::test_identity::effective(1);
+        let denial = DenyBytes {
+            seen: Cell::new(None),
+        };
+        let denied = try_clone_effective(&effective, &denial);
+        let request = denial.seen.get().expect("effective copy requested bytes");
+        assert!(request.amount() > 0);
+        assert_eq!(request.unit(), StorageUnit::Bytes);
+        assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+
+        let requested = 17;
+        let bytes = StorageRequest::new(requested, StorageUnit::Bytes);
+        assert_eq!(
+            identity_copy_failure(IdentityCopyError::Policy(StorageFailure::Capacity(bytes))),
+            EnvironmentFailure::Capacity(bytes)
+        );
+        assert_eq!(
+            identity_copy_failure(IdentityCopyError::Allocation { requested }),
+            EnvironmentFailure::Allocation(bytes)
+        );
+        assert_eq!(
+            identity_copy_failure(IdentityCopyError::Capacity { requested }),
+            EnvironmentFailure::Capacity(bytes)
+        );
+
+        let mut environment = TypeEnvironment::new([union_topology()], []).unwrap();
+        let before = environment.clone();
+        let denial = DenyBytes {
+            seen: Cell::new(None),
+        };
+        let denied = environment.seal_union_with_reservations(
+            union_key(1),
+            union_key(40),
+            union_bindings(),
+            &denial,
+        );
+        let request = denial.seen.get().expect("seal copied a structural key");
+        assert!(request.amount() > 0);
+        assert_eq!(request.unit(), StorageUnit::Bytes);
+        assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+        assert_eq!(environment, before);
+
+        let count = NthByteRequest {
+            deny_at: None,
+            count: Cell::new(0),
+            denied: Cell::new(None),
+        };
+        let mut admitted = before.clone();
+        admitted
+            .seal_union_with_reservations(union_key(1), union_key(40), union_bindings(), &count)
+            .expect("same seal admits when reservations succeed");
+        assert!(count.count.get() > 1);
+
+        let last = NthByteRequest {
+            deny_at: Some(count.count.get()),
+            count: Cell::new(0),
+            denied: Cell::new(None),
+        };
+        let mut environment = before.clone();
+        let denied = environment.seal_union_with_reservations(
+            union_key(1),
+            union_key(40),
+            union_bindings(),
+            &last,
+        );
+        let request = last.denied.get().expect("last structural copy was reached");
+        assert_eq!(request.unit(), StorageUnit::Bytes);
+        assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+        assert_eq!(environment, before);
+    }
+
     /// Trace: FR-108-AC-4
     #[trace("TC-907", "FR-108-AC-4")]
     #[allow(
@@ -432,7 +547,7 @@ mod storage_reservation_tests {
         let denied = TypeEnvironment::bounded_with_cancel(
             [],
             [ObjectTypeDeclaration::new(
-                EffectiveId::from_digest([8; 32]),
+                crate::test_identity::effective(8),
                 "O",
                 vec![FieldDeclaration::new(
                     "field",
@@ -460,10 +575,10 @@ mod storage_reservation_tests {
     )]
     #[test]
     fn admission_work_units_admits_at_n_and_reports_n_at_n_minus_one() {
-        let key = EffectiveId::from_digest([9; 32]);
+        let key = crate::test_identity::effective(9);
         let declarations = || {
             [ObjectTypeDeclaration::new(
-                key,
+                key.clone(),
                 "O",
                 vec![FieldDeclaration::new(
                     "field",
@@ -478,7 +593,7 @@ mod storage_reservation_tests {
         };
         let admitted = TypeEnvironment::bounded([], declarations(), limits(2))
             .expect("one field costs exactly two admission work units");
-        assert!(admitted.attribute(key, "field").is_some());
+        assert!(admitted.attribute(key.clone(), "field").is_some());
         let Err(EnvironmentFailure::Limit(limit)) =
             TypeEnvironment::bounded([], declarations(), limits(1))
         else {
@@ -497,10 +612,10 @@ mod storage_reservation_tests {
     )]
     #[test]
     fn inherited_attribute_view_resolves_the_original_field() {
-        let a = EffectiveId::from_digest([1; 32]);
-        let b = EffectiveId::from_digest([2; 32]);
+        let a = crate::test_identity::effective(1);
+        let b = crate::test_identity::effective(2);
         let parent = ObjectTypeDeclaration::new(
-            a,
+            a.clone(),
             "A",
             vec![FieldDeclaration::new(
                 "x",
@@ -508,20 +623,23 @@ mod storage_reservation_tests {
                 Presence::Required,
             )],
         );
-        let child = ObjectTypeDeclaration::new(b, "B", vec![]).with_supertypes(vec![a]);
+        let child =
+            ObjectTypeDeclaration::new(b.clone(), "B", vec![]).with_supertypes(vec![a.clone()]);
         let environment = TypeEnvironment::new([], [child, parent]).expect("inheritance admits");
-        let attributes = environment.attributes(b).expect("child has admitted type");
+        let attributes = environment
+            .attributes(b.clone())
+            .expect("child has admitted type");
         assert_eq!(attributes.len(), 1);
         let inherited = attributes.iter().next().expect("one inherited attribute");
-        assert_eq!(inherited.owner(), a);
+        assert_eq!(inherited.owner(), a.clone());
         assert_eq!(inherited.field().name(), "x");
-        assert!(inherited.stands_for(&FieldRef::new(a, "x")));
+        assert!(inherited.stands_for(&FieldRef::new(a.clone(), "x")));
         assert_eq!(
             environment
-                .attribute(b, "x")
+                .attribute(b.clone(), "x")
                 .expect("name lookup")
                 .identity(),
-            FieldRef::new(a, "x")
+            FieldRef::new(a.clone(), "x")
         );
     }
 
@@ -533,18 +651,18 @@ mod storage_reservation_tests {
     )]
     #[test]
     fn registry_order_and_inherited_slot_order_survive_reversed_inputs() {
-        let record = NodeKey::from_digest([1; 32]);
-        let tuple = NodeKey::from_digest([2; 32]);
-        let parent = EffectiveId::from_digest([1; 32]);
-        let child = EffectiveId::from_digest([2; 32]);
+        let record = crate::test_identity::node(1);
+        let tuple = crate::test_identity::node(2);
+        let parent = crate::test_identity::effective(1);
+        let child = crate::test_identity::effective(2);
         let environment = TypeEnvironment::new(
             [
-                CompositeDeclaration::new(tuple, "T", CompositeShape::Tuple(vec![])),
-                CompositeDeclaration::new(record, "R", CompositeShape::Record(vec![])),
+                CompositeDeclaration::new(tuple.clone(), "T", CompositeShape::Tuple(vec![])),
+                CompositeDeclaration::new(record.clone(), "R", CompositeShape::Record(vec![])),
             ],
             [
                 ObjectTypeDeclaration::new(
-                    child,
+                    child.clone(),
                     "Child",
                     vec![FieldDeclaration::new(
                         "own",
@@ -552,9 +670,9 @@ mod storage_reservation_tests {
                         Presence::Required,
                     )],
                 )
-                .with_supertypes(vec![parent]),
+                .with_supertypes(vec![parent.clone()]),
                 ObjectTypeDeclaration::new(
-                    parent,
+                    parent.clone(),
                     "Parent",
                     vec![FieldDeclaration::new(
                         "inherited",
@@ -570,27 +688,27 @@ mod storage_reservation_tests {
                 .composites()
                 .map(CompositeDeclaration::key)
                 .collect::<Vec<_>>(),
-            vec![record, tuple]
+            vec![record.clone(), tuple.clone()]
         );
         assert_eq!(
             environment
                 .object_types()
                 .map(ObjectTypeDeclaration::key)
                 .collect::<Vec<_>>(),
-            vec![parent, child]
+            vec![parent.clone(), child.clone()]
         );
-        let slots = environment.attributes(child).expect("child admits");
+        let slots = environment.attributes(child.clone()).expect("child admits");
         assert_eq!(
             slots
                 .iter()
                 .map(|slot| (slot.owner(), slot.field().name()))
                 .collect::<Vec<_>>(),
-            vec![(child, "own"), (parent, "inherited")]
+            vec![(child.clone(), "own"), (parent.clone(), "inherited")]
         );
         assert!(environment
-            .attribute(child, "inherited")
+            .attribute(child.clone(), "inherited")
             .expect("inherited link resolves")
-            .stands_for(&FieldRef::new(parent, "inherited")));
+            .stands_for(&FieldRef::new(parent.clone(), "inherited")));
     }
 
     struct DenyPhase {
@@ -626,7 +744,7 @@ mod storage_reservation_tests {
             (
                 [
                     CompositeDeclaration::new(
-                        NodeKey::from_digest([3; 32]),
+                        crate::test_identity::node(3),
                         "R",
                         CompositeShape::Record(vec![FieldDeclaration::new(
                             "field",
@@ -635,13 +753,13 @@ mod storage_reservation_tests {
                         )]),
                     ),
                     CompositeDeclaration::new(
-                        NodeKey::from_digest([4; 32]),
+                        crate::test_identity::node(4),
                         "T",
                         CompositeShape::Tuple(vec![ValueType::Boolean]),
                     ),
                 ],
                 [ObjectTypeDeclaration::new(
-                    EffectiveId::from_digest([5; 32]),
+                    crate::test_identity::effective(5),
                     "O",
                     vec![FieldDeclaration::new(
                         "x",
@@ -680,9 +798,9 @@ mod storage_reservation_tests {
             let (composites, objects) = declarations();
             let retried = TypeEnvironment::new(composites, objects).expect("retry admits");
             assert_eq!(retried, expected);
-            let field = FieldRef::new(EffectiveId::from_digest([5; 32]), "x");
+            let field = FieldRef::new(crate::test_identity::effective(5), "x");
             assert!(retried
-                .attribute(field.owner, &field.name)
+                .attribute(field.owner.clone(), &field.name)
                 .expect("retry restores the member link")
                 .stands_for(&field));
         }
@@ -961,9 +1079,9 @@ impl UnionMemberDeclaration {
     }
 
     /// The exact authored identifier, available before member-key verification.
-    pub fn identifier(&self) -> &Identifier {
+    pub fn identifier(&self) -> &str {
         match &self.identity {
-            UnionMemberIdentity::Resolved(identifier) => identifier,
+            UnionMemberIdentity::Resolved(identifier) => identifier.as_str(),
             UnionMemberIdentity::Verified(member) => member.identifier(),
         }
     }
@@ -1024,7 +1142,7 @@ impl CompositeDeclaration {
 
     /// The declaration node key.
     pub fn key(&self) -> NodeKey {
-        self.key
+        self.key.clone()
     }
 
     /// The declared name, used only to name refusals.
@@ -1087,7 +1205,7 @@ impl ObjectTypeDeclaration {
 
     /// The object type's effective-declaration identity.
     pub fn key(&self) -> EffectiveId {
-        self.key
+        self.key.clone()
     }
 
     /// The declared name.
@@ -1263,7 +1381,7 @@ impl PendingTypeEnvironment {
             .environment
             .object_types
             .get(&owner)
-            .ok_or(PendingFieldFailure::UnknownObjectType(owner))?;
+            .ok_or(PendingFieldFailure::UnknownObjectType(owner.clone()))?;
         let mut found = None;
         for field in &declaration.attributes {
             self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
@@ -1300,7 +1418,7 @@ impl PendingTypeEnvironment {
             .environment
             .object_types
             .get(&child)
-            .ok_or(PendingFieldFailure::UnknownChild(child))?;
+            .ok_or(PendingFieldFailure::UnknownChild(child.clone()))?;
         let mut direct_parent = false;
         for supertype in &child_type.supertypes {
             self.budget.charge(1).map_err(PendingFieldFailure::Limit)?;
@@ -1364,7 +1482,7 @@ impl PendingTypeEnvironment {
             let Some(field) = declaration.attributes.get(slot.field_index) else {
                 continue;
             };
-            selected = Some((slot.owner, field));
+            selected = Some((slot.owner.clone(), field));
         }
         let Some((owner, field)) = selected else {
             return Err(unknown()?);
@@ -1429,7 +1547,7 @@ impl PendingTypeEnvironment {
 impl<'a> EffectiveAttribute<'a> {
     /// The object type that declares this field.
     pub fn owner(&self) -> EffectiveId {
-        self.slot.owner
+        self.slot.owner.clone()
     }
 
     /// The field's declaration.
@@ -1439,7 +1557,7 @@ impl<'a> EffectiveAttribute<'a> {
 
     /// This field's own identity.
     pub fn identity(&self) -> FieldRef {
-        FieldRef::new(self.slot.owner, self.field.name())
+        FieldRef::new(self.slot.owner.clone(), self.field.name())
     }
 
     /// Whether this slot holds `field`: `field` is this attribute, or a field
@@ -1863,7 +1981,7 @@ fn try_push<T, R: ReservationPolicy>(values: &mut Vec<T>, value: T, policy: &R) 
     Ok(())
 }
 
-fn try_extend_copy<T: Copy, R: ReservationPolicy>(
+fn try_extend_clone<T: Clone, R: ReservationPolicy>(
     values: &mut Vec<T>,
     source: &[T],
     policy: &R,
@@ -1904,9 +2022,47 @@ fn try_clone_str<R: ReservationPolicy>(value: &str, policy: &R) -> Admission<Str
     Ok(owned)
 }
 
+fn identity_copy_failure(error: IdentityCopyError<StorageFailure>) -> EnvironmentFailure {
+    match error {
+        IdentityCopyError::Policy(failure) => failure.into(),
+        IdentityCopyError::Allocation { requested } => {
+            EnvironmentFailure::Allocation(StorageRequest::new(requested, StorageUnit::Bytes))
+        }
+        IdentityCopyError::Capacity { requested } => {
+            EnvironmentFailure::Capacity(StorageRequest::new(requested, StorageUnit::Bytes))
+        }
+    }
+}
+
+fn try_clone_node<R: ReservationPolicy>(key: &NodeKey, policy: &R) -> Admission<NodeKey> {
+    key.try_clone_with(&mut |requested| {
+        policy.check_request(StorageRequest::new(requested, StorageUnit::Bytes))
+    })
+    .map_err(identity_copy_failure)
+}
+
+fn try_clone_effective<R: ReservationPolicy>(
+    key: &EffectiveId,
+    policy: &R,
+) -> Admission<EffectiveId> {
+    key.try_clone_with(&mut |requested| {
+        policy.check_request(StorageRequest::new(requested, StorageUnit::Bytes))
+    })
+    .map_err(identity_copy_failure)
+}
+
+fn try_clone_variant<R: ReservationPolicy>(
+    variant: &VariantId,
+    policy: &R,
+) -> Admission<VariantId> {
+    let owner = try_clone_node(variant.owner(), policy)?;
+    let case = try_clone_str(variant.case(), policy)?;
+    Ok(VariantId::new(owner, case).expect("admitted variant case is nonempty"))
+}
+
 fn try_clone_field_ref<R: ReservationPolicy>(value: &FieldRef, policy: &R) -> Admission<FieldRef> {
     Ok(FieldRef {
-        owner: value.owner,
+        owner: try_clone_effective(&value.owner, policy)?,
         name: try_clone_str(&value.name, policy)?,
     })
 }
@@ -2138,9 +2294,9 @@ impl PartialEq for TypeEnvironment {
 impl Eq for TypeEnvironment {}
 
 /// One containment edge of the recursion rule.
-#[derive(Clone, Copy)]
-struct Edge {
-    target: NodeKey,
+#[derive(Clone)]
+struct Edge<'a> {
+    target: &'a NodeKey,
     named: bool,
     escapes: bool,
 }
@@ -2313,11 +2469,11 @@ impl TypeEnvironment {
                         return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch))?);
                     }
                     if names
-                        .try_insert(member.identifier().as_str(), (), reserve)?
+                        .try_insert(member.identifier(), (), reserve)?
                         .is_some()
                     {
                         return Err(refuse(DeclarationCause::DuplicateMember(try_clone_str(
-                            member.identifier().as_str(),
+                            member.identifier(),
                             reserve,
                         )?))?);
                     }
@@ -2327,7 +2483,7 @@ impl TypeEnvironment {
                                 IllTypedCause::TypeMismatch,
                             ))?);
                         };
-                        if binding.declaration() != declaration.key
+                        if binding.declaration() != &declaration.key
                             || binding.identifier() != member.identifier()
                         {
                             return Err(refuse(DeclarationCause::Type(
@@ -2336,7 +2492,14 @@ impl TypeEnvironment {
                         }
                         if environment
                             .union_members
-                            .try_insert((declaration.key, binding.variant()), position, reserve)?
+                            .try_insert(
+                                (
+                                    try_clone_node(&declaration.key, reserve)?,
+                                    try_clone_variant(binding.variant(), reserve)?,
+                                ),
+                                position,
+                                reserve,
+                            )?
                             .is_some()
                         {
                             return Err(refuse(DeclarationCause::DuplicateKey)?);
@@ -2371,12 +2534,14 @@ impl TypeEnvironment {
                     }
                 }
                 if sealed {
-                    environment
-                        .union_keys
-                        .try_insert(declaration.key, declaration.key, reserve)?;
+                    environment.union_keys.try_insert(
+                        try_clone_node(&declaration.key, reserve)?,
+                        try_clone_node(&declaration.key, reserve)?,
+                        reserve,
+                    )?;
                     environment.union_handles.try_insert(
-                        declaration.key,
-                        declaration.key,
+                        try_clone_node(&declaration.key, reserve)?,
+                        try_clone_node(&declaration.key, reserve)?,
                         reserve,
                     )?;
                 }
@@ -2384,9 +2549,11 @@ impl TypeEnvironment {
             if environment.composites.contains_key(&declaration.key) {
                 return Err(refuse(DeclarationCause::DuplicateKey)?);
             }
-            environment
-                .composites
-                .try_insert(declaration.key, declaration, reserve)?;
+            environment.composites.try_insert(
+                try_clone_node(&declaration.key, reserve)?,
+                declaration,
+                reserve,
+            )?;
         }
         for declaration in object_types {
             let refuse = |cause| -> Admission<EnvironmentFailure> {
@@ -2403,9 +2570,11 @@ impl TypeEnvironment {
             if environment.object_types.contains_key(&declaration.key) {
                 return Err(refuse(DeclarationCause::DuplicateKey)?);
             }
-            environment
-                .object_types
-                .try_insert(declaration.key, declaration, reserve)?;
+            environment.object_types.try_insert(
+                try_clone_effective(&declaration.key, reserve)?,
+                declaration,
+                reserve,
+            )?;
         }
         reserve.phase(StoragePhase::MemberTypes);
         environment.check_member_types(&mut budget, reserve)?;
@@ -2433,7 +2602,9 @@ impl TypeEnvironment {
         reserve.phase(StoragePhase::KeyJoin);
         reserve_elements(&mut environment.field_keys, table.fields.len(), reserve)?;
         for (owner, _, _, index) in &table.fields {
-            environment.field_keys.push((*owner, *index));
+            environment
+                .field_keys
+                .push((try_clone_effective(owner, reserve)?, *index));
         }
         Ok(PendingTypeEnvironment {
             environment,
@@ -2505,7 +2676,7 @@ impl TypeEnvironment {
 
     /// The admitted record or tuple declaration with this key.
     pub fn composite(&self, key: NodeKey) -> Option<&CompositeDeclaration> {
-        let handle = self.union_handles.get(&key).copied().unwrap_or(key);
+        let handle = self.union_handles.get(&key).cloned().unwrap_or(key);
         self.composites.get(&handle)
     }
 
@@ -2519,6 +2690,11 @@ impl TypeEnvironment {
         self.object_types.get(&key)
     }
 
+    /// Whether an effective object type belongs to this admitted environment.
+    pub(crate) fn contains_object_type(&self, key: &EffectiveId) -> bool {
+        self.object_types.contains_key(key)
+    }
+
     /// Every admitted object type in key order, for resolving a type name
     /// to `ValueType::Reference` alongside [`Self::composites`].
     pub fn object_types(&self) -> impl Iterator<Item = &ObjectTypeDeclaration> {
@@ -2530,6 +2706,10 @@ impl TypeEnvironment {
     /// `sub` in the admitted supertypes graph. `false` for either key
     /// outside this environment's own admitted object types, never a panic.
     pub fn conforms(&self, sub: EffectiveId, sup: EffectiveId) -> bool {
+        self.conforms_ref(&sub, &sup)
+    }
+
+    fn conforms_ref(&self, sub: &EffectiveId, sup: &EffectiveId) -> bool {
         sub == sup || self.ancestry.is_ancestor(sub, sup)
     }
 
@@ -2538,29 +2718,39 @@ impl TypeEnvironment {
     /// Unknown unequal keys never conform, and a union declaration never conforms
     /// to or from anything.
     pub fn composite_conforms(&self, sub: NodeKey, sup: NodeKey) -> bool {
+        self.composite_conforms_ref(&sub, &sup)
+    }
+
+    fn composite_conforms_ref(&self, sub: &NodeKey, sup: &NodeKey) -> bool {
         // A union takes no part in composite generalization: no Record or Tuple
         // carrier conforms to a union type, by either its handle or its final key.
-        if matches!(self.shape(sub), Some(CompositeShape::Union(_)))
-            || matches!(self.shape(sup), Some(CompositeShape::Union(_)))
-        {
+        let sub_handle = self.union_handles.get(sub).unwrap_or(sub);
+        let sup_handle = self.union_handles.get(sup).unwrap_or(sup);
+        if matches!(
+            self.composites.get(sub_handle).map(|d| &d.shape),
+            Some(CompositeShape::Union(_))
+        ) || matches!(
+            self.composites.get(sup_handle).map(|d| &d.shape),
+            Some(CompositeShape::Union(_))
+        ) {
             return false;
         }
         sub == sup
             || self
                 .composite_ancestry
-                .get(&sub)
-                .is_some_and(|ancestors| ancestors.binary_search(&sup).is_ok())
+                .get(sub)
+                .is_some_and(|ancestors| ancestors.binary_search(sup).is_ok())
     }
 
     /// The settled canonical key explicitly attached to this internal union handle.
     /// Returns `None` before sealing; no temporary handle is promoted implicitly.
     pub fn union_key(&self, handle: NodeKey) -> Option<NodeKey> {
-        self.union_keys.get(&handle).copied()
+        self.union_keys.get(&handle).cloned()
     }
 
     /// The original declaration handle for a verified final union key.
     pub fn union_handle(&self, final_key: NodeKey) -> Option<NodeKey> {
-        self.union_handles.get(&final_key).copied()
+        self.union_handles.get(&final_key).cloned()
     }
 
     /// Attach a settled canonical key and producer-verified FR-441 bindings to an
@@ -2611,17 +2801,18 @@ impl TypeEnvironment {
             return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch))?);
         }
         reserve.phase(StoragePhase::Sealing);
-        let mut keys: OrderedIndex<VariantId, ()> = OrderedIndex::default();
+        let mut keys: OrderedIndex<&VariantId, ()> = OrderedIndex::default();
         for (member, binding) in members.iter().zip(&bindings) {
             if member.member().is_some()
-                || binding.declaration() != final_key
+                || binding.declaration() != &final_key
                 || binding.identifier() != member.identifier()
             {
                 return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch))?);
             }
-            if keys.try_insert(binding.variant(), (), reserve)?.is_some() {
-                return Err(refuse(DeclarationCause::DuplicateKey)?);
-            }
+            // A variant is `(final key, identifier)`; topology has already
+            // refused duplicate identifiers. Keep the fallible index insert
+            // for the admission reservation accounting.
+            let _ = keys.try_insert(binding.variant(), (), reserve)?;
         }
         // All three destinations reserve their complete growth before a binding
         // is attached. Subsequent inserts fit these capacities and cannot deny a
@@ -2630,6 +2821,16 @@ impl TypeEnvironment {
         reserve_elements(&mut self.union_members.entries, bindings.len(), reserve)?;
         reserve_elements(&mut self.union_keys.entries, 1, reserve)?;
         reserve_elements(&mut self.union_handles.entries, 1, reserve)?;
+        let mut member_keys = Vec::new();
+        reserve_elements(&mut member_keys, bindings.len(), reserve)?;
+        for binding in &bindings {
+            member_keys.push((
+                try_clone_node(&handle, reserve)?,
+                try_clone_variant(binding.variant(), reserve)?,
+            ));
+        }
+        let handle_for_union_key = try_clone_node(&handle, reserve)?;
+        let final_for_union_key = try_clone_node(&final_key, reserve)?;
         // Validation completes before the first mutation. The exact same
         // declaration remains in this registry; only its verified attachment changes.
         let Some(declaration) = self.composites.get_mut(&handle) else {
@@ -2644,12 +2845,17 @@ impl TypeEnvironment {
                 cause: DeclarationCause::Type(IllTypedCause::TypeMismatch),
             }));
         };
-        for (position, (member, binding)) in members.iter_mut().zip(bindings).enumerate() {
-            self.union_members
-                .try_insert((handle, binding.variant()), position, reserve)?;
+        for (position, ((member, binding), key)) in members
+            .iter_mut()
+            .zip(bindings)
+            .zip(member_keys)
+            .enumerate()
+        {
+            self.union_members.try_insert(key, position, reserve)?;
             member.identity = UnionMemberIdentity::Verified(binding);
         }
-        self.union_keys.try_insert(handle, final_key, reserve)?;
+        self.union_keys
+            .try_insert(handle_for_union_key, final_for_union_key, reserve)?;
         self.union_handles.try_insert(final_key, handle, reserve)?;
         Ok(())
     }
@@ -2733,13 +2939,13 @@ impl TypeEnvironment {
         }
         let mut resolved = match link {
             ValueType::Composite(key) => {
-                let declaration = self.composite(*key)?;
+                let declaration = self.composite(key.clone())?;
                 match declaration.shape() {
                     CompositeShape::Union(_) => {
                         ValueType::Composite(self.union_key(declaration.key())?)
                     }
                     CompositeShape::Record(_) | CompositeShape::Tuple(_) => {
-                        ValueType::Composite(*key)
+                        ValueType::Composite(key.clone())
                     }
                 }
             }
@@ -2786,14 +2992,25 @@ impl TypeEnvironment {
         declaration: NodeKey,
         variant: VariantId,
     ) -> Option<(usize, &UnionMemberDeclaration)> {
-        let declaration = self
-            .union_handles
-            .get(&declaration)
-            .copied()
-            .unwrap_or(declaration);
-        self.union_key(declaration)?;
-        let position = *self.union_members.get(&(declaration, variant))?;
-        let CompositeShape::Union(members) = self.shape(declaration)? else {
+        self.union_member_ref(&declaration, &variant)
+    }
+
+    fn union_member_ref(
+        &self,
+        declaration: &NodeKey,
+        variant: &VariantId,
+    ) -> Option<(usize, &UnionMemberDeclaration)> {
+        let handle = self.union_handles.get(declaration).unwrap_or(declaration);
+        self.union_keys.get(handle)?;
+        let position = self
+            .union_members
+            .entries
+            .binary_search_by(|((key, member), _)| {
+                key.cmp(handle).then_with(|| member.cmp(variant))
+            })
+            .ok()?;
+        let position = self.union_members.entries.get(position)?.1;
+        let CompositeShape::Union(members) = &self.composites.get(handle)?.shape else {
             return None;
         };
         Some((position, members.get(position)?))
@@ -2811,7 +3028,7 @@ impl TypeEnvironment {
         members
             .iter()
             .enumerate()
-            .find(|(_, member)| member.identifier().as_str() == name)
+            .find(|(_, member)| member.identifier() == name)
     }
 
     /// Whether `value_type` admits `value` under this environment's
@@ -3025,10 +3242,14 @@ impl TypeEnvironment {
                 ValueType::Option(payload) => pending.push(payload),
                 ValueType::Collection(collection) => pending.push(collection.element()),
                 ValueType::Composite(key) => {
-                    if !visited.insert(*key) {
+                    if !visited.insert(key) {
                         continue;
                     }
-                    match self.composite(*key).map(|declaration| &declaration.shape) {
+                    match self
+                        .composites
+                        .get(key)
+                        .map(|declaration| &declaration.shape)
+                    {
                         Some(CompositeShape::Record(fields)) => {
                             pending.extend(fields.iter().map(FieldDeclaration::value_type));
                         }
@@ -3073,10 +3294,14 @@ impl TypeEnvironment {
                 ValueType::Collection(collection) => pending.push(collection.element()),
                 ValueType::Map(map) => pending.push(map.values()),
                 ValueType::Composite(key) => {
-                    if !visited.insert(*key) {
+                    if !visited.insert(key) {
                         continue;
                     }
-                    match self.composite(*key).map(|declaration| &declaration.shape) {
+                    match self
+                        .composites
+                        .get(key)
+                        .map(|declaration| &declaration.shape)
+                    {
                         Some(CompositeShape::Record(fields)) => {
                             pending.extend(fields.iter().map(FieldDeclaration::value_type));
                         }
@@ -3115,8 +3340,12 @@ impl TypeEnvironment {
         let mut pending = vec![value_type];
         while let Some(value_type) = pending.pop() {
             match value_type {
-                ValueType::Composite(key) if self.composite(*key).is_none() => {
-                    return Some(DeclarationCause::UnknownDeclaration(*key));
+                ValueType::Composite(key)
+                    if !self
+                        .composites
+                        .contains_key(self.union_handles.get(key).unwrap_or(key)) =>
+                {
+                    return Some(DeclarationCause::UnknownDeclaration(key.clone()));
                 }
                 // QSpec FR-143: `T` in `Reference<T>` must name a model object
                 // type; any other target is `type-mismatch`. The key is an
@@ -3178,7 +3407,7 @@ impl TypeEnvironment {
         charge: &mut impl FnMut(usize) -> Admission<()>,
         reserve: &R,
     ) -> Admission<bool> {
-        let mut visited: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
+        let mut visited: OrderedIndex<&NodeKey, ()> = OrderedIndex::default();
         charge(1)?;
         let mut pending = Vec::new();
         try_push(&mut pending, value_type, reserve)?;
@@ -3196,10 +3425,10 @@ impl TypeEnvironment {
                 }
                 ValueType::Map(map) => try_push(&mut pending, map.values(), reserve)?,
                 ValueType::Composite(key) => {
-                    if visited.contains_key(key) {
+                    if visited.contains_key(&key) {
                         continue;
                     }
-                    visited.try_insert(*key, (), reserve)?;
+                    visited.try_insert(key, (), reserve)?;
                     match self
                         .composites
                         .get(key)
@@ -3263,7 +3492,9 @@ impl TypeEnvironment {
             first = false;
             match value_type {
                 ValueType::Composite(key) if !self.composites.contains_key(key) => {
-                    return Ok(Some(DeclarationCause::UnknownDeclaration(*key)));
+                    return Ok(Some(DeclarationCause::UnknownDeclaration(try_clone_node(
+                        key, reserve,
+                    )?)));
                 }
                 ValueType::Reference(key) if !self.object_types.contains_key(key) => {
                     return Ok(Some(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
@@ -3379,11 +3610,11 @@ impl TypeEnvironment {
     }
 
     /// The recursion-rule edges leaving one declaration.
-    fn edges<R: ReservationPolicy>(
-        declaration: &CompositeDeclaration,
+    fn edges<'a, R: ReservationPolicy>(
+        declaration: &'a CompositeDeclaration,
         budget: &mut WorkBudget,
         reserve: &R,
-    ) -> Admission<Vec<Edge>> {
+    ) -> Admission<Vec<Edge<'a>>> {
         let mut members: Vec<(&ValueType, bool, bool)> = Vec::new();
         match &declaration.shape {
             CompositeShape::Record(fields) => {
@@ -3434,7 +3665,7 @@ impl TypeEnvironment {
                     ValueType::Composite(target) => try_push(
                         &mut edges,
                         Edge {
-                            target: *target,
+                            target,
                             named,
                             escapes,
                         },
@@ -3486,7 +3717,7 @@ impl TypeEnvironment {
         budget: &mut WorkBudget,
         reserve: &R,
     ) -> Admission<()> {
-        let mut graph: OrderedIndex<NodeKey, Vec<NodeKey>> = OrderedIndex::default();
+        let mut graph: OrderedIndex<&NodeKey, Vec<&NodeKey>> = OrderedIndex::default();
         for declaration in self.composites.values() {
             if matches!(declaration.shape, CompositeShape::Union(_)) {
                 budget.charge(1).map_err(EnvironmentFailure::Limit)?;
@@ -3501,39 +3732,52 @@ impl TypeEnvironment {
                     try_push(&mut targets, edge.target, reserve)?;
                 }
             }
-            graph.try_insert(declaration.key, targets, reserve)?;
+            graph.try_insert(&declaration.key, targets, reserve)?;
         }
         let name = |key: &NodeKey| {
             self.composites
                 .get(key)
                 .map_or("", |declaration| declaration.name.as_str())
         };
-        let mut finished: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
-        let mut active: OrderedIndex<NodeKey, usize> = OrderedIndex::default();
+        let mut finished: OrderedIndex<&NodeKey, ()> = OrderedIndex::default();
+        let mut active: OrderedIndex<&NodeKey, usize> = OrderedIndex::default();
         for root in graph.keys() {
-            if matches!(self.shape(*root), Some(CompositeShape::Union(_))) {
+            if matches!(
+                self.composites.get(*root).map(|d| &d.shape),
+                Some(CompositeShape::Union(_))
+            ) {
                 budget.charge(1).map_err(EnvironmentFailure::Limit)?;
             }
             if finished.contains_key(root) {
                 continue;
             }
-            let mut path: Vec<(NodeKey, usize)> = Vec::new();
+            let mut path: Vec<(&NodeKey, usize)> = Vec::new();
             try_push(&mut path, (*root, 0), reserve)?;
             active.try_insert(*root, 0, reserve)?;
             while let Some((node, next)) = path.last_mut() {
-                if matches!(self.shape(*node), Some(CompositeShape::Union(_))) {
+                if matches!(
+                    self.composites.get(*node).map(|d| &d.shape),
+                    Some(CompositeShape::Union(_))
+                ) {
                     budget.charge(1).map_err(EnvironmentFailure::Limit)?;
                 }
                 let node = *node;
-                let Some(target) = graph.get(&node).and_then(|targets| targets.get(*next)) else {
+                let Some(target) = graph
+                    .get(&node)
+                    .and_then(|targets| targets.get(*next))
+                    .copied()
+                else {
                     finished.try_insert(node, (), reserve)?;
                     active.remove(&node);
                     path.pop();
                     continue;
                 };
                 *next += 1;
-                if let Some(&start) = active.get(target) {
-                    if matches!(self.shape(*target), Some(CompositeShape::Union(_))) {
+                if let Some(&start) = active.get(&target) {
+                    if matches!(
+                        self.composites.get(target).map(|d| &d.shape),
+                        Some(CompositeShape::Union(_))
+                    ) {
                         budget
                             .charge(path.len() - start + 1)
                             .map_err(EnvironmentFailure::Limit)?;
@@ -3551,9 +3795,9 @@ impl TypeEnvironment {
                         },
                     }));
                 }
-                if !finished.contains_key(target) {
-                    active.try_insert(*target, path.len(), reserve)?;
-                    try_push(&mut path, (*target, 0), reserve)?;
+                if !finished.contains_key(&target) {
+                    active.try_insert(target, path.len(), reserve)?;
+                    try_push(&mut path, (target, 0), reserve)?;
                 }
             }
         }
@@ -3580,7 +3824,9 @@ impl TypeEnvironment {
                 let Some(target) = self.composites.get(supertype) else {
                     return Err(EnvironmentFailure::Refused(InvalidDeclaration {
                         declaration: try_clone_str(&declaration.name, reserve)?,
-                        cause: DeclarationCause::UnknownDeclaration(*supertype),
+                        cause: DeclarationCause::UnknownDeclaration(try_clone_node(
+                            supertype, reserve,
+                        )?),
                     }));
                 };
                 // FR-115: a union takes no part in composite generalization,
@@ -3593,20 +3839,20 @@ impl TypeEnvironment {
                 }
             }
         }
-        let mut finished: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
-        let mut on_path: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
+        let mut finished: OrderedIndex<&NodeKey, ()> = OrderedIndex::default();
+        let mut on_path: OrderedIndex<&NodeKey, ()> = OrderedIndex::default();
         for root in self.composites.keys() {
-            if finished.contains_key(root) {
+            if finished.contains_key(&root) {
                 continue;
             }
-            let mut path: Vec<(NodeKey, usize)> = Vec::new();
-            try_push(&mut path, (*root, 0), reserve)?;
-            on_path.try_insert(*root, (), reserve)?;
+            let mut path: Vec<(&NodeKey, usize)> = Vec::new();
+            try_push(&mut path, (root, 0), reserve)?;
+            on_path.try_insert(root, (), reserve)?;
             while let Some((node, next)) = path.last_mut() {
                 let node = *node;
                 let Some(target) = self
                     .composites
-                    .get(&node)
+                    .get(node)
                     .and_then(|declaration| declaration.supertypes.get(*next))
                 else {
                     finished.try_insert(node, (), reserve)?;
@@ -3616,10 +3862,10 @@ impl TypeEnvironment {
                 };
                 *next += 1;
                 budget.charge(1).map_err(EnvironmentFailure::Limit)?;
-                if on_path.contains_key(target) {
+                if on_path.contains_key(&target) {
                     let start = path
                         .iter()
-                        .position(|(on_path, _)| on_path == target)
+                        .position(|(on_path, _)| *on_path == target)
                         .unwrap_or_default();
                     let mut cycle = Vec::new();
                     for (key, _) in path.iter().skip(start) {
@@ -3631,9 +3877,9 @@ impl TypeEnvironment {
                         cause: DeclarationCause::CompositeGeneralizationCycle { cycle },
                     }));
                 }
-                if !finished.contains_key(target) {
-                    on_path.try_insert(*target, (), reserve)?;
-                    try_push(&mut path, (*target, 0), reserve)?;
+                if !finished.contains_key(&target) {
+                    on_path.try_insert(target, (), reserve)?;
+                    try_push(&mut path, (target, 0), reserve)?;
                 }
             }
         }
@@ -3653,15 +3899,15 @@ impl TypeEnvironment {
             if ancestry.contains_key(root) {
                 continue;
             }
-            let mut path: Vec<(NodeKey, usize)> = Vec::new();
-            try_push(&mut path, (*root, 0), reserve)?;
+            let mut path: Vec<(&NodeKey, usize)> = Vec::new();
+            try_push(&mut path, (root, 0), reserve)?;
             while let Some((node, next)) = path.last_mut() {
                 let node = *node;
-                let declaration = self.composites.get(&node).expect("validated composite key");
+                let declaration = self.composites.get(node).expect("validated composite key");
                 if let Some(target) = declaration.supertypes.get(*next) {
                     *next += 1;
                     if !ancestry.contains_key(target) {
-                        try_push(&mut path, (*target, 0), reserve)?;
+                        try_push(&mut path, (target, 0), reserve)?;
                     }
                     continue;
                 }
@@ -3672,8 +3918,11 @@ impl TypeEnvironment {
                     budget
                         .charge(further.len().saturating_add(1))
                         .map_err(EnvironmentFailure::Limit)?;
-                    try_push(&mut ancestors, *supertype, reserve)?;
-                    try_extend_copy(&mut ancestors, further, reserve)?;
+                    try_push(&mut ancestors, try_clone_node(supertype, reserve)?, reserve)?;
+                    reserve_elements(&mut ancestors, further.len(), reserve)?;
+                    for ancestor in further {
+                        ancestors.push(try_clone_node(ancestor, reserve)?);
+                    }
                 }
                 if !ancestors.is_empty() {
                     let gathered = ancestors.len();
@@ -3686,7 +3935,7 @@ impl TypeEnvironment {
                     ancestors.sort_unstable();
                     ancestors.dedup();
                 }
-                ancestry.try_insert(node, ancestors, reserve)?;
+                ancestry.try_insert(try_clone_node(node, reserve)?, ancestors, reserve)?;
             }
         }
         Ok(ancestry)
@@ -3745,25 +3994,27 @@ impl TypeEnvironment {
                 if !self.object_types.contains_key(supertype) {
                     return Err(EnvironmentFailure::Refused(InvalidDeclaration {
                         declaration: try_clone_str(&declaration.name, reserve)?,
-                        cause: DeclarationCause::UnknownObjectType(*supertype),
+                        cause: DeclarationCause::UnknownObjectType(try_clone_effective(
+                            supertype, reserve,
+                        )?),
                     }));
                 }
             }
         }
-        let mut finished: OrderedIndex<EffectiveId, ()> = OrderedIndex::default();
-        let mut on_path: OrderedIndex<EffectiveId, ()> = OrderedIndex::default();
+        let mut finished: OrderedIndex<&EffectiveId, ()> = OrderedIndex::default();
+        let mut on_path: OrderedIndex<&EffectiveId, ()> = OrderedIndex::default();
         for root in self.object_types.keys() {
-            if finished.contains_key(root) {
+            if finished.contains_key(&root) {
                 continue;
             }
-            let mut path: Vec<(EffectiveId, usize)> = Vec::new();
-            try_push(&mut path, (*root, 0), reserve)?;
-            on_path.try_insert(*root, (), reserve)?;
+            let mut path: Vec<(&EffectiveId, usize)> = Vec::new();
+            try_push(&mut path, (root, 0), reserve)?;
+            on_path.try_insert(root, (), reserve)?;
             while let Some((node, next)) = path.last_mut() {
                 let node = *node;
                 let Some(target) = self
                     .object_types
-                    .get(&node)
+                    .get(node)
                     .and_then(|declaration| declaration.supertypes.get(*next))
                 else {
                     finished.try_insert(node, (), reserve)?;
@@ -3773,11 +4024,11 @@ impl TypeEnvironment {
                 };
                 *next += 1;
                 budget.charge(1).map_err(EnvironmentFailure::Limit)?;
-                if on_path.contains_key(target) {
+                if on_path.contains_key(&target) {
                     // Found once, on the refusal path only.
                     let start = path
                         .iter()
-                        .position(|(on_path, _)| on_path == target)
+                        .position(|(on_path, _)| *on_path == target)
                         .unwrap_or_default();
                     let mut cycle = Vec::new();
                     for (key, _) in path.iter().skip(start) {
@@ -3789,9 +4040,9 @@ impl TypeEnvironment {
                         cause: DeclarationCause::GeneralizationCycle { cycle },
                     }));
                 }
-                if !finished.contains_key(target) {
-                    on_path.try_insert(*target, (), reserve)?;
-                    try_push(&mut path, (*target, 0), reserve)?;
+                if !finished.contains_key(&target) {
+                    on_path.try_insert(target, (), reserve)?;
+                    try_push(&mut path, (target, 0), reserve)?;
                 }
             }
         }
@@ -3829,7 +4080,7 @@ impl TypeEnvironment {
         }
         let mut positions = OrderedIndex::default();
         for (key, position) in self.object_types.keys().zip(0_u32..) {
-            positions.try_insert(*key, position, reserve)?;
+            positions.try_insert(try_clone_effective(key, reserve)?, position, reserve)?;
         }
         let mut ancestors: Vec<Option<Vec<u32>>> = Vec::new();
         reserve_elements(&mut ancestors, self.object_types.len(), reserve)?;
@@ -3901,7 +4152,7 @@ impl TypeEnvironment {
                 .charge(further.len().saturating_add(1))
                 .map_err(EnvironmentFailure::Limit)?;
             try_push(&mut own, position, reserve)?;
-            try_extend_copy(&mut own, further, reserve)?;
+            try_extend_clone(&mut own, further, reserve)?;
         }
         match node.supertypes.len() {
             // No supertype, or one: its set is already ascending, and only
@@ -3954,7 +4205,7 @@ impl TypeEnvironment {
                 .unwrap_or(0);
             let followed = self
                 .ancestry
-                .of(declaration.key)
+                .of(&declaration.key)
                 .unwrap_or_default()
                 .iter()
                 .filter_map(|position| edges(*position))
@@ -3984,7 +4235,7 @@ impl TypeEnvironment {
                 .iter()
                 .filter_map(FieldDeclaration::redefines)
             {
-                let inherited = self.ancestry.is_ancestor(declaration.key, target.owner)
+                let inherited = self.ancestry.is_ancestor(&declaration.key, &target.owner)
                     && table.position(target).is_some();
                 if !inherited {
                     return Err(EnvironmentFailure::Refused(InvalidDeclaration {
@@ -4041,7 +4292,7 @@ impl TypeEnvironment {
             (ValueType::Int(inner), ValueType::Int(outer)) => {
                 outer.contains(inner.lower()) && outer.contains(inner.upper())
             }
-            (ValueType::Reference(sub), ValueType::Reference(sup)) => self.conforms(*sub, *sup),
+            (ValueType::Reference(sub), ValueType::Reference(sup)) => self.conforms_ref(sub, sup),
             _ => false,
         }
     }
@@ -4105,7 +4356,11 @@ impl TypeEnvironment {
                     Ok(attributes) => attributes,
                     Err(stopped) => return Err(stopped.at(&node.name, reserve)?),
                 };
-                effective.try_insert(node.key, attributes, reserve)?;
+                effective.try_insert(
+                    try_clone_effective(&node.key, reserve)?,
+                    attributes,
+                    reserve,
+                )?;
             }
         }
         Ok(EffectiveStorage {
@@ -4138,7 +4393,7 @@ impl TypeEnvironment {
         let mut fresh: Vec<bool> = Vec::new();
         for (field_index, field) in declaration.attributes.iter().enumerate() {
             let attribute = own_attribute(
-                declaration.key,
+                &declaration.key,
                 field_index,
                 field,
                 table,
@@ -4229,10 +4484,10 @@ impl TypeEnvironment {
                 candidates
                     .get(index)
                     .and_then(|slot| slots.get(*slot))
-                    .map(|slot| slot.owner)
+                    .map(|slot| &slot.owner)
             };
             let properly = |sub: usize, sup: usize| match (owner(sub), owner(sup)) {
-                (Some(sub), Some(sup)) => sub != sup && self.conforms(sub, sup),
+                (Some(sub), Some(sup)) => sub != sup && self.conforms_ref(sub, sup),
                 _ => false,
             };
             let mut best = members.first().copied().unwrap_or(*root);
@@ -4335,7 +4590,7 @@ impl TypeEnvironment {
         declaration: NodeKey,
         fields: Vec<(&str, FieldValue)>,
     ) -> Result<Value, ConstructionRefusal> {
-        let Some(CompositeShape::Record(declared)) = self.shape(declaration) else {
+        let Some(CompositeShape::Record(declared)) = self.shape(declaration.clone()) else {
             return refuse(Component::Value, ConstructionCause::UnknownDeclaration);
         };
         let slots = fill_slots(self, declared, fields)?;
@@ -4348,7 +4603,7 @@ impl TypeEnvironment {
         declaration: NodeKey,
         positions: Vec<Value>,
     ) -> Result<Value, ConstructionRefusal> {
-        let declared = self.tuple_positions(declaration, positions.len())?;
+        let declared = self.tuple_positions(declaration.clone(), positions.len())?;
         for (position, (value_type, value)) in declared.iter().zip(&positions).enumerate() {
             match self.admits_checked(value_type, value) {
                 Ok(true) => {}
@@ -4451,7 +4706,7 @@ impl TypeEnvironment {
         fields: Vec<(&str, FieldExpression<'_>)>,
         meter: &mut Meter,
     ) -> Result<Outcome<Value>, ConstructionRefusal> {
-        let Some(CompositeShape::Record(declared)) = self.shape(declaration) else {
+        let Some(CompositeShape::Record(declared)) = self.shape(declaration.clone()) else {
             return refuse(Component::Value, ConstructionCause::UnknownDeclaration);
         };
         let mut supplied = match_names(declared, fields)?;
@@ -4499,7 +4754,7 @@ impl TypeEnvironment {
         positions: Vec<Deferred<'_>>,
         meter: &mut Meter,
     ) -> Result<Outcome<Value>, ConstructionRefusal> {
-        let declared = self.tuple_positions(declaration, positions.len())?;
+        let declared = self.tuple_positions(declaration.clone(), positions.len())?;
         let mut slots = Vec::with_capacity(declared.len());
         for (value_type, expression) in declared.iter().zip(positions) {
             match admitted(self, value_type, expression(meter)) {
@@ -4549,14 +4804,14 @@ struct Ancestry {
 }
 
 impl Ancestry {
-    fn of(&self, key: EffectiveId) -> Option<&[u32]> {
-        let position = self.positions.get(&key)?;
+    fn of(&self, key: &EffectiveId) -> Option<&[u32]> {
+        let position = self.positions.get(key)?;
         self.ancestors.get(*position as usize).map(Vec::as_slice)
     }
 
     /// Whether `ancestor` is a proper ancestor of `key`.
-    fn is_ancestor(&self, key: EffectiveId, ancestor: EffectiveId) -> bool {
-        match (self.of(key), self.positions.get(&ancestor)) {
+    fn is_ancestor(&self, key: &EffectiveId, ancestor: &EffectiveId) -> bool {
+        match (self.of(key), self.positions.get(ancestor)) {
             (Some(ancestors), Some(position)) => ancestors.binary_search(position).is_ok(),
             _ => false,
         }
@@ -4568,7 +4823,7 @@ impl Ancestry {
 /// has admitted every link, and each one moves to a proper ancestor of an
 /// acyclic graph; `budget` is charged each link all the same.
 fn own_attribute<R: ReservationPolicy>(
-    owner: EffectiveId,
+    owner: &EffectiveId,
     field_index: usize,
     field: &FieldDeclaration,
     table: &FieldTable<'_>,
@@ -4580,7 +4835,7 @@ fn own_attribute<R: ReservationPolicy>(
         Some(identity) => identity,
         None => {
             return Err(DeclarationCause::RedefinitionTarget(FieldRef {
-                owner,
+                owner: try_clone_effective(owner, reserve)?,
                 name: try_clone_str(field.name(), reserve)?,
             })
             .into())
@@ -4609,7 +4864,7 @@ fn own_attribute<R: ReservationPolicy>(
     try_push(
         slots,
         AttributeSlot {
-            owner,
+            owner: try_clone_effective(owner, reserve)?,
             field_index,
             members,
             identity,
@@ -4632,14 +4887,14 @@ fn merge<R: ReservationPolicy>(
     for index in group {
         if let Some(attribute) = slots.get(index) {
             budget.charge(attribute.members.len())?;
-            try_extend_copy(&mut members, &attribute.members, reserve)?;
+            try_extend_clone(&mut members, &attribute.members, reserve)?;
         }
     }
     let Some(winner_slot) = slots.get(winner) else {
         return Ok(winner);
     };
     budget.charge(winner_slot.members.len())?;
-    try_extend_copy(&mut members, &winner_slot.members, reserve)?;
+    try_extend_clone(&mut members, &winner_slot.members, reserve)?;
     members.sort_unstable();
     members.dedup();
     if members == winner_slot.members {
@@ -4649,7 +4904,7 @@ fn merge<R: ReservationPolicy>(
     try_push(
         slots,
         AttributeSlot {
-            owner: winner_slot.owner,
+            owner: try_clone_effective(&winner_slot.owner, reserve)?,
             field_index: winner_slot.field_index,
             members,
             identity: winner_slot.identity,
@@ -4665,7 +4920,7 @@ fn merge<R: ReservationPolicy>(
 /// duplicate-member check.
 struct FieldTable<'e> {
     /// By position: the owner, the declaration and the name's number.
-    fields: Vec<(EffectiveId, &'e FieldDeclaration, usize, usize)>,
+    fields: Vec<(&'e EffectiveId, &'e FieldDeclaration, usize, usize)>,
     names: usize,
 }
 
@@ -4679,7 +4934,7 @@ impl<'e> FieldTable<'e> {
             for (field_index, field) in declaration.attributes.iter().enumerate() {
                 try_push(
                     &mut fields,
-                    (declaration.key, field, 0, field_index),
+                    (&declaration.key, field, 0, field_index),
                     reserve,
                 )?;
             }
@@ -4714,13 +4969,13 @@ impl<'e> FieldTable<'e> {
     }
 
     fn position(&self, field: &FieldRef) -> Option<usize> {
-        self.position_parts(field.owner, field.name.as_str())
+        self.position_parts(&field.owner, field.name.as_str())
     }
 
-    fn position_parts(&self, owner: EffectiveId, name: &str) -> Option<usize> {
+    fn position_parts(&self, owner: &EffectiveId, name: &str) -> Option<usize> {
         self.fields
             .binary_search_by(|(stored_owner, declared, _, _)| {
-                (stored_owner, declared.name()).cmp(&(&owner, name))
+                (*stored_owner, declared.name()).cmp(&(owner, name))
             })
             .ok()
     }
@@ -4742,7 +4997,7 @@ impl<'e> FieldTable<'e> {
             .get(position)
             .map(|(owner, field, _, _)| {
                 Ok(FieldRef {
-                    owner: *owner,
+                    owner: try_clone_effective(owner, reserve)?,
                     name: try_clone_str(field.name(), reserve)?,
                 })
             })
@@ -5045,7 +5300,7 @@ impl TypeEnvironment {
             operator,
             left,
             right,
-            &|shape: &EnumShape| enum_members.filtered(shape.variants()),
+            &|shape: &EnumShape| enum_members.filtered(shape.variants().cloned()),
         )
     }
 
@@ -5111,7 +5366,7 @@ impl TypeEnvironment {
             .chain(right.target.iter())
         {
             if let Some(id) = top_level_unit(value_type) {
-                let Some(unit) = units.get(id) else {
+                let Some(unit) = units.get(id.clone()) else {
                     return ill_typed(IllTypedCause::TypeMismatch);
                 };
                 resolved.insert_held(id, unit.clone());
@@ -5137,8 +5392,8 @@ impl TypeEnvironment {
             (ValueType::Enum(_), ValueType::Enum(_)) => EqualitySchedule::Enum,
             (ValueType::Quantity(l), ValueType::Quantity(r))
                 if resolved
-                    .get(*l)
-                    .zip(resolved.get(*r))
+                    .get(l.clone())
+                    .zip(resolved.get(r.clone()))
                     .is_some_and(|(l, r)| !l.has_dimension_of(r)) =>
             {
                 return ill_typed(IllTypedCause::IncompatibleDimensions)
@@ -5162,7 +5417,7 @@ impl TypeEnvironment {
             // their static types, so this admits more pairs and decides
             // none differently.
             (ValueType::Reference(l), ValueType::Reference(r))
-                if self.conforms(*l, *r) || self.conforms(*r, *l) =>
+                if self.conforms(l.clone(), r.clone()) || self.conforms(r.clone(), l.clone()) =>
             {
                 EqualitySchedule::Plan
             }
@@ -5233,8 +5488,8 @@ impl CheckedEquality {
             }
             (EqualitySchedule::Enum, Value::Enum(l), Value::Enum(r)) => {
                 let (Some(l), Some(r)) = (
-                    self.enum_members.resolve(l.variant()),
-                    self.enum_members.resolve(r.variant()),
+                    self.enum_members.resolve(l.variant().clone()),
+                    self.enum_members.resolve(r.variant().clone()),
                 ) else {
                     return Err(invariant(
                         CheckedInvariantCause::EqualityEnumVariantUnresolved,
@@ -5274,8 +5529,8 @@ fn invariant(cause: CheckedInvariantCause) -> Stop {
 /// The unit a top-level quantity type names, bounded or not.
 fn top_level_unit(value_type: &ValueType) -> Option<UnitId> {
     match value_type {
-        ValueType::Quantity(id) => Some(*id),
-        ValueType::BoundedQuantity(bounded) => Some(bounded.unit()),
+        ValueType::Quantity(id) => Some(id.clone()),
+        ValueType::BoundedQuantity(bounded) => Some(bounded.unit().clone()),
         ValueType::Boolean
         | ValueType::Integer
         | ValueType::Int(_)
@@ -5301,7 +5556,7 @@ fn top_level_unit(value_type: &ValueType) -> Option<UnitId> {
 /// run-time invariant. `None` for every other type, which is read as itself.
 fn bounded_read(value_type: &ValueType) -> Option<ValueType> {
     match value_type {
-        ValueType::BoundedQuantity(bounded) => Some(ValueType::Quantity(bounded.unit())),
+        ValueType::BoundedQuantity(bounded) => Some(ValueType::Quantity(bounded.unit().clone())),
         ValueType::Boolean
         | ValueType::Integer
         | ValueType::Int(_)
@@ -5337,7 +5592,7 @@ pub fn admits_equality_conversion(
         // QSpec FR-154: a bounded quantity is read as `Quantity<u>`; its
         // bounds are a run-time invariant, not a conversion precondition.
         (ValueType::BoundedQuantity(from), target) => {
-            admits_equality_conversion(&ValueType::Quantity(from.unit()), target, units)
+            admits_equality_conversion(&ValueType::Quantity(from.unit().clone()), target, units)
         }
         // No row converts into a bounded type or a map, or out of a map,
         // except identity above.
@@ -5385,8 +5640,8 @@ pub fn admits_equality_conversion(
             integer_source_admits(from.lower(), from.upper(), target)
         }
         (ValueType::Quantity(from), ValueType::Quantity(to)) => units
-            .get(*from)
-            .zip(units.get(*to))
+            .get(from.clone())
+            .zip(units.get(to.clone()))
             .is_some_and(|(from, to)| from.converts_to(to)),
         _ => false,
     }
@@ -5553,10 +5808,10 @@ mod native_type_tests {
     )]
     #[test]
     fn native_string_member_is_admitted_and_constructible_in_a_record() {
-        let record = NodeKey::from_digest([23; 32]);
+        let record = crate::test_identity::node(23);
         let types = TypeEnvironment::new(
             [CompositeDeclaration::new(
-                record,
+                record.clone(),
                 "StringRecord",
                 CompositeShape::Record(vec![FieldDeclaration::new(
                     "label",
@@ -5570,7 +5825,7 @@ mod native_type_tests {
 
         let value = types
             .record(
-                record,
+                record.clone(),
                 vec![("label", FieldValue::Present(Value::String("hello".into())))],
             )
             .expect("native String field value is admitted");
@@ -5583,7 +5838,7 @@ mod native_type_tests {
             [FieldValue::Present(Value::String(text))] if text.as_str() == "hello"
         ));
         assert!(types
-            .admits(&ValueType::Composite(record), &value)
+            .admits(&ValueType::Composite(record.clone()), &value)
             .expect("admission reserves storage"));
     }
 
@@ -5596,14 +5851,14 @@ mod native_type_tests {
     )]
     #[test]
     fn union_value_is_refused_at_record_and_tuple_slots() {
-        let record = NodeKey::from_digest([31; 32]);
-        let tuple = NodeKey::from_digest([32; 32]);
-        let holder = NodeKey::from_digest([34; 32]);
-        let pair = NodeKey::from_digest([35; 32]);
+        let record = crate::test_identity::node(31);
+        let tuple = crate::test_identity::node(32);
+        let holder = crate::test_identity::node(34);
+        let pair = crate::test_identity::node(35);
         let types = TypeEnvironment::new(
             [
                 CompositeDeclaration::new(
-                    record,
+                    record.clone(),
                     "Plain",
                     CompositeShape::Record(vec![FieldDeclaration::new(
                         "label",
@@ -5612,23 +5867,23 @@ mod native_type_tests {
                     )]),
                 ),
                 CompositeDeclaration::new(
-                    tuple,
+                    tuple.clone(),
                     "Pair",
                     CompositeShape::Tuple(vec![ValueType::Integer]),
                 ),
                 CompositeDeclaration::new(
-                    holder,
+                    holder.clone(),
                     "Holder",
                     CompositeShape::Record(vec![FieldDeclaration::new(
                         "member",
-                        ValueType::Composite(record),
+                        ValueType::Composite(record.clone()),
                         Presence::Required,
                     )]),
                 ),
                 CompositeDeclaration::new(
-                    pair,
+                    pair.clone(),
                     "Holds",
-                    CompositeShape::Tuple(vec![ValueType::Composite(tuple)]),
+                    CompositeShape::Tuple(vec![ValueType::Composite(tuple.clone())]),
                 ),
             ],
             [],
@@ -5636,37 +5891,36 @@ mod native_type_tests {
         .expect("record and tuple admit");
         let union_at = |key| {
             quire_exact::UnionValue::from_admitted(
-                quire_exact::UnionMember::from_admitted(
-                    key,
-                    NodeKey::from_digest([33; 32]),
-                    quire_exact::Identifier::new("m").expect("identifier"),
-                ),
+                quire_exact::UnionMember::from_admitted(key, "m").expect("fixture union member"),
                 vec![Value::Integer(Integer::one())],
             )
         };
-        for key in [record, tuple] {
-            let value = union_at(key);
+        for key in [record.clone(), tuple.clone()] {
+            let value = union_at(key.clone());
             assert!(!types
-                .admits(&ValueType::Composite(key), &value)
+                .admits(&ValueType::Composite(key.clone()), &value)
                 .expect("admission reserves storage"));
             assert!(!types
                 .admits(
-                    &ValueType::option(ValueType::Composite(key)),
-                    &quire_exact::OptionValue::present(ValueType::Composite(key), value.clone())
-                        .expect("option payload type matches")
+                    &ValueType::option(ValueType::Composite(key.clone())),
+                    &quire_exact::OptionValue::present(
+                        ValueType::Composite(key.clone()),
+                        value.clone()
+                    )
+                    .expect("option payload type matches")
                 )
                 .expect("admission reserves storage"));
         }
         let refusal = types
             .record(
-                holder,
-                vec![("member", FieldValue::Present(union_at(record)))],
+                holder.clone(),
+                vec![("member", FieldValue::Present(union_at(record.clone())))],
             )
             .expect_err("a union is not a Plain record");
         assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
         assert_eq!(refusal.component, Component::Field("member".into()));
         let refusal = types
-            .tuple(pair, vec![union_at(tuple)])
+            .tuple(pair.clone(), vec![union_at(tuple.clone())])
             .expect_err("a union is not a Pair tuple");
         assert_eq!(refusal.cause, ConstructionCause::TypeMismatch);
         assert_eq!(refusal.component, Component::Position(0));
@@ -5680,14 +5934,14 @@ mod native_type_tests {
     )]
     #[test]
     fn composite_child_admits_at_parent_boundary_without_identity_widening() {
-        let parent = NodeKey::from_digest([31; 32]);
-        let intermediate = NodeKey::from_digest([32; 32]);
-        let child = NodeKey::from_digest([33; 32]);
-        let unrelated = NodeKey::from_digest([34; 32]);
+        let parent = crate::test_identity::node(31);
+        let intermediate = crate::test_identity::node(32);
+        let child = crate::test_identity::node(33);
+        let unrelated = crate::test_identity::node(34);
         let types = TypeEnvironment::new(
             [
                 CompositeDeclaration::new(
-                    parent,
+                    parent.clone(),
                     "Parent",
                     CompositeShape::Record(vec![FieldDeclaration::new(
                         "label",
@@ -5696,7 +5950,7 @@ mod native_type_tests {
                     )]),
                 ),
                 CompositeDeclaration::new(
-                    intermediate,
+                    intermediate.clone(),
                     "Intermediate",
                     CompositeShape::Record(vec![FieldDeclaration::new(
                         "label",
@@ -5704,9 +5958,9 @@ mod native_type_tests {
                         Presence::Required,
                     )]),
                 )
-                .with_supertypes(vec![parent]),
+                .with_supertypes(vec![parent.clone()]),
                 CompositeDeclaration::new(
-                    child,
+                    child.clone(),
                     "Child",
                     CompositeShape::Record(vec![FieldDeclaration::new(
                         "label",
@@ -5714,9 +5968,9 @@ mod native_type_tests {
                         Presence::Required,
                     )]),
                 )
-                .with_supertypes(vec![intermediate]),
+                .with_supertypes(vec![intermediate.clone()]),
                 CompositeDeclaration::new(
-                    unrelated,
+                    unrelated.clone(),
                     "Unrelated",
                     CompositeShape::Record(vec![FieldDeclaration::new(
                         "label",
@@ -5730,34 +5984,37 @@ mod native_type_tests {
         .expect("acyclic composite ancestry admits");
         let value = types
             .record(
-                child,
+                child.clone(),
                 vec![("label", FieldValue::Present(Value::String("child".into())))],
             )
             .expect("child record construction succeeds");
 
-        assert!(types.composite_conforms(intermediate, parent));
-        assert!(types.composite_conforms(child, intermediate));
-        assert!(types.composite_conforms(child, parent));
-        assert!(!types.composite_conforms(parent, child));
+        assert!(types.composite_conforms(intermediate.clone(), parent.clone()));
+        assert!(types.composite_conforms(child.clone(), intermediate));
+        assert!(types.composite_conforms(child.clone(), parent.clone()));
+        assert!(!types.composite_conforms(parent.clone(), child.clone()));
         assert!(types
-            .admits(&ValueType::Composite(parent), &value)
+            .admits(&ValueType::Composite(parent.clone()), &value)
             .expect("admission reserves storage"));
         assert!(types
-            .admits(&ValueType::Composite(child), &value)
-            .expect("admission reserves storage"));
-        assert!(!types
-            .admits(&ValueType::Composite(child), &record_value(&types, parent))
+            .admits(&ValueType::Composite(child.clone()), &value)
             .expect("admission reserves storage"));
         assert!(!types
             .admits(
-                &ValueType::Composite(parent),
+                &ValueType::Composite(child.clone()),
+                &record_value(&types, parent.clone())
+            )
+            .expect("admission reserves storage"));
+        assert!(!types
+            .admits(
+                &ValueType::Composite(parent.clone()),
                 &record_value(&types, unrelated)
             )
             .expect("admission reserves storage"));
         let Value::Composite(composite) = &value else {
             panic!("record construction returns a composite value");
         };
-        assert_eq!(composite.declaration(), child);
+        assert_eq!(composite.declaration(), &child);
         assert!(!admits_equality_conversion(
             &ValueType::Composite(child),
             &ValueType::Composite(parent),
@@ -5773,14 +6030,14 @@ mod native_type_tests {
     )]
     #[test]
     fn composite_ancestry_cycles_and_walks_are_bounded() {
-        let a = NodeKey::from_digest([34; 32]);
-        let b = NodeKey::from_digest([35; 32]);
+        let a = crate::test_identity::node(34);
+        let b = crate::test_identity::node(35);
         let declarations = || {
             [
-                CompositeDeclaration::new(a, "A", CompositeShape::Tuple(vec![]))
-                    .with_supertypes(vec![b]),
-                CompositeDeclaration::new(b, "B", CompositeShape::Tuple(vec![]))
-                    .with_supertypes(vec![a]),
+                CompositeDeclaration::new(a.clone(), "A", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![b.clone()]),
+                CompositeDeclaration::new(b.clone(), "B", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![a.clone()]),
             ]
         };
         let Err(EnvironmentFailure::Refused(refusal)) = TypeEnvironment::new(declarations(), [])
@@ -5797,28 +6054,28 @@ mod native_type_tests {
         assert_eq!(cycle.first(), cycle.last());
         assert_eq!(refusal.code(), IllTyped::CODE);
 
-        let missing = NodeKey::from_digest([36; 32]);
+        let missing = crate::test_identity::node(36);
         assert!(matches!(
             TypeEnvironment::new(
                 [CompositeDeclaration::new(
-                    a,
+                    a.clone(),
                     "A",
                     CompositeShape::Tuple(vec![]),
                 )
-                .with_supertypes(vec![missing])],
+                .with_supertypes(vec![missing.clone()])],
                 []
             ),
             Err(EnvironmentFailure::Refused(InvalidDeclaration {
                 cause: DeclarationCause::UnknownDeclaration(key),
                 ..
-            })) if key == missing
+            })) if key == missing.clone()
         ));
 
         let types = TypeEnvironment::bounded(
             [
-                CompositeDeclaration::new(a, "A", CompositeShape::Tuple(vec![])),
-                CompositeDeclaration::new(b, "B", CompositeShape::Tuple(vec![]))
-                    .with_supertypes(vec![a]),
+                CompositeDeclaration::new(a.clone(), "A", CompositeShape::Tuple(vec![])),
+                CompositeDeclaration::new(b.clone(), "B", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![a.clone()]),
             ],
             [],
             TypeEnvironmentLimits {
@@ -5834,9 +6091,9 @@ mod native_type_tests {
 
         let types = TypeEnvironment::bounded(
             [
-                CompositeDeclaration::new(a, "A", CompositeShape::Tuple(vec![])),
-                CompositeDeclaration::new(b, "B", CompositeShape::Tuple(vec![]))
-                    .with_supertypes(vec![a]),
+                CompositeDeclaration::new(a.clone(), "A", CompositeShape::Tuple(vec![])),
+                CompositeDeclaration::new(b.clone(), "B", CompositeShape::Tuple(vec![]))
+                    .with_supertypes(vec![a.clone()]),
             ],
             [],
             TypeEnvironmentLimits {
@@ -5962,7 +6219,8 @@ pub fn operand_value(
             Value::Integer(rational.numerator().clone())
         }
         (_, ValueType::Quantity(unit), Value::Quantity(quantity)) => {
-            let (Some(source), Some(target)) = (units.resolve(quantity), units.get(*unit)) else {
+            let (Some(source), Some(target)) = (units.resolve(quantity), units.get(unit.clone()))
+            else {
                 return Err(invariant(CheckedInvariantCause::EqualityUnitUnresolved));
             };
             let conversion = outcome_into_stop(
@@ -5976,7 +6234,7 @@ pub fn operand_value(
             )?;
             match conversion.value() {
                 ConvertedValue::Exact(exact) => {
-                    Value::Quantity(Quantity::new(exact.clone(), *unit))
+                    Value::Quantity(Quantity::new(exact.clone(), unit.clone()))
                 }
                 ConvertedValue::Decimal(_) | ConvertedValue::Integer { .. } => {
                     return Err(invariant(
@@ -6088,7 +6346,7 @@ mod checked_invariant_tests {
     use crate::enumeration::EnumDeclaration;
     use crate::unit::{DimensionNode, NominalDeclaration, UnitGraph, UnitNode};
     use ix_trace_rs::trace;
-    use quire_exact::{EnumMember, ScalarLimits, UnitId, VariantId};
+    use quire_exact::{EnumMember, ScalarLimits, UnitId};
 
     fn meter() -> Meter {
         Meter::new(ScalarLimits {
@@ -6195,12 +6453,12 @@ mod checked_invariant_tests {
     )]
     #[test]
     fn deferred_record_and_tuple_evaluation_preserve_admission_and_prior_refusal() {
-        let record = NodeKey::from_digest([21; 32]);
-        let tuple = NodeKey::from_digest([22; 32]);
+        let record = crate::test_identity::node(21);
+        let tuple = crate::test_identity::node(22);
         let environment = TypeEnvironment::new(
             [
                 CompositeDeclaration::new(
-                    record,
+                    record.clone(),
                     "R",
                     CompositeShape::Record(vec![FieldDeclaration::new(
                         "flag",
@@ -6209,7 +6467,7 @@ mod checked_invariant_tests {
                     )]),
                 ),
                 CompositeDeclaration::new(
-                    tuple,
+                    tuple.clone(),
                     "T",
                     CompositeShape::Tuple(vec![ValueType::Boolean]),
                 ),
@@ -6221,12 +6479,12 @@ mod checked_invariant_tests {
         let good =
             FieldExpression::Evaluate(Box::new(|_| Outcome::Completed(Value::Boolean(true))));
         let result = environment
-            .evaluate_record(record, vec![("flag", good)], &mut meter())
+            .evaluate_record(record.clone(), vec![("flag", good)], &mut meter())
             .unwrap();
         assert!(matches!(
             result,
             Outcome::Completed(Value::Composite(composite))
-                if composite.declaration() == record
+                if composite.declaration() == &record
                     && matches!(composite.slots(), [FieldValue::Present(Value::Boolean(true))])
         ));
         let bad = FieldExpression::Evaluate(Box::new(|_| {
@@ -6241,7 +6499,7 @@ mod checked_invariant_tests {
 
         let result = environment
             .evaluate_tuple(
-                tuple,
+                tuple.clone(),
                 vec![Box::new(|_| Outcome::Completed(Value::Boolean(true)))],
                 &mut meter(),
             )
@@ -6249,12 +6507,12 @@ mod checked_invariant_tests {
         assert!(matches!(
             result,
             Outcome::Completed(Value::Composite(composite))
-                if composite.declaration() == tuple
+                if composite.declaration() == &tuple
                     && matches!(composite.slots(), [FieldValue::Present(Value::Boolean(true))])
         ));
         let result = environment
             .evaluate_tuple(
-                tuple,
+                tuple.clone(),
                 vec![Box::new(|_| {
                     Outcome::Completed(Value::Integer(Integer::one()))
                 })],
@@ -6349,19 +6607,19 @@ mod checked_invariant_tests {
             ),
             CheckedInvariantCause::EqualityOperandNonIntegralDecimal,
         );
-        let unresolved = quire_exact::UnitId::declared(NodeKey::from_digest([9; 32]));
+        let unresolved = quire_exact::UnitId::declared(crate::test_identity::node(9));
         refusal(
             operand_value(
                 &TypeEnvironment::default(),
                 &EqualityOperand::converted(
-                    ValueType::Quantity(unresolved),
-                    ValueType::Quantity(quire_exact::UnitId::declared(NodeKey::from_digest(
-                        [10; 32],
+                    ValueType::Quantity(unresolved.clone()),
+                    ValueType::Quantity(quire_exact::UnitId::declared(crate::test_identity::node(
+                        10,
                     ))),
                 ),
                 &Value::Quantity(Quantity::new(
                     Rational::from_integer(Integer::one()),
-                    unresolved,
+                    unresolved.clone(),
                 )),
                 &scope,
                 &mut meter,
@@ -6395,13 +6653,16 @@ mod checked_invariant_tests {
             })
         ));
 
-        let unit = UnitId::declared(NodeKey::from_digest([1; 32]));
+        let unit = UnitId::declared(crate::test_identity::node(1));
         let unresolved_unit = checked(
             EqualitySchedule::Quantity,
-            EqualityOperand::typed(ValueType::Quantity(unit)),
-            EqualityOperand::typed(ValueType::Quantity(unit)),
+            EqualityOperand::typed(ValueType::Quantity(unit.clone())),
+            EqualityOperand::typed(ValueType::Quantity(unit.clone())),
         );
-        let quantity = Value::Quantity(Quantity::new(Rational::from_integer(Integer::one()), unit));
+        let quantity = Value::Quantity(Quantity::new(
+            Rational::from_integer(Integer::one()),
+            unit.clone(),
+        ));
         assert!(matches!(
             unresolved_unit.evaluate(
                 &TypeEnvironment::default(),
@@ -6414,14 +6675,14 @@ mod checked_invariant_tests {
             })
         ));
 
-        let variant = VariantId::from_digest([2; 32]);
-        let enum_type = ValueType::Enum(EnumShape::new(true, [variant]));
+        let variant = crate::test_identity::variant(2);
+        let enum_type = ValueType::Enum(EnumShape::new(true, [variant.clone()]));
         let unresolved_variant = checked(
             EqualitySchedule::Enum,
             EqualityOperand::typed(enum_type.clone()),
             EqualityOperand::typed(enum_type),
         );
-        let member = Value::Enum(EnumMember::new(variant, 0));
+        let member = Value::Enum(EnumMember::new(variant.clone(), 0));
         assert!(matches!(
             unresolved_variant.evaluate(&TypeEnvironment::default(), &member, &member, &mut meter),
             Outcome::Refused(Refusal::CheckedInvariant {
@@ -6437,13 +6698,13 @@ mod checked_invariant_tests {
     )]
     #[test]
     fn scheduled_comparator_preserves_its_ill_typed_cause() {
-        let left = EnumDeclaration::new(NodeKey::from_digest([1; 32]), true, vec!["A".into()])
+        let left = EnumDeclaration::new(crate::test_identity::node(1), true, vec!["A".into()])
             .unwrap()
-            .member("A", NodeKey::from_digest([3; 32]))
+            .member("A", crate::test_identity::node(3))
             .unwrap();
-        let right = EnumDeclaration::new(NodeKey::from_digest([2; 32]), true, vec!["B".into()])
+        let right = EnumDeclaration::new(crate::test_identity::node(2), true, vec!["B".into()])
             .unwrap()
-            .member("B", NodeKey::from_digest([4; 32]))
+            .member("B", crate::test_identity::node(4))
             .unwrap();
         let mut equality = checked(
             EqualitySchedule::Enum,
@@ -6475,9 +6736,9 @@ mod checked_invariant_tests {
     )]
     #[test]
     fn scheduled_comparison_keeps_an_earlier_charge_stop() {
-        let member = EnumDeclaration::new(NodeKey::from_digest([31; 32]), true, vec!["A".into()])
+        let member = EnumDeclaration::new(crate::test_identity::node(31), true, vec!["A".into()])
             .unwrap()
-            .member("A", NodeKey::from_digest([32; 32]))
+            .member("A", crate::test_identity::node(32))
             .unwrap();
         let mut equality = checked(
             EqualitySchedule::Enum,
@@ -6505,19 +6766,19 @@ mod checked_invariant_tests {
     fn equality_quantity_conversion_preserves_its_ill_typed_cause() {
         let dimensions = BTreeMap::from([
             (
-                NodeKey::from_digest([1; 32]),
+                crate::test_identity::node(1),
                 DimensionNode::checked(vec![], NominalDeclaration::default()).unwrap(),
             ),
             (
-                NodeKey::from_digest([2; 32]),
+                crate::test_identity::node(2),
                 DimensionNode::checked(vec![], NominalDeclaration::default()).unwrap(),
             ),
         ]);
         let units = BTreeMap::from([
             (
-                NodeKey::from_digest([3; 32]),
+                crate::test_identity::node(3),
                 UnitNode::checked(
-                    [1; 32],
+                    crate::test_identity::node(1),
                     None,
                     Rational::from_integer(Integer::one()),
                     Rational::from_integer(Integer::zero()),
@@ -6526,9 +6787,9 @@ mod checked_invariant_tests {
                 .unwrap(),
             ),
             (
-                NodeKey::from_digest([4; 32]),
+                crate::test_identity::node(4),
                 UnitNode::checked(
-                    [2; 32],
+                    crate::test_identity::node(2),
                     None,
                     Rational::from_integer(Integer::one()),
                     Rational::from_integer(Integer::zero()),
@@ -6540,18 +6801,18 @@ mod checked_invariant_tests {
         let graph = UnitGraph::from_checked_nodes(&dimensions, &units).unwrap();
         let table = UnitTable::declared(&graph);
         let scope = UnitScope::new(&table);
-        let source = UnitId::declared(NodeKey::from_digest([3; 32]));
-        let target = UnitId::declared(NodeKey::from_digest([4; 32]));
+        let source = UnitId::declared(crate::test_identity::node(3));
+        let target = UnitId::declared(crate::test_identity::node(4));
         refusal(
             operand_value(
                 &TypeEnvironment::default(),
                 &EqualityOperand::converted(
-                    ValueType::Quantity(source),
+                    ValueType::Quantity(source.clone()),
                     ValueType::Quantity(target),
                 ),
                 &Value::Quantity(Quantity::new(
                     Rational::from_integer(Integer::one()),
-                    source,
+                    source.clone(),
                 )),
                 &scope,
                 &mut meter(),
@@ -6569,18 +6830,18 @@ mod checked_invariant_tests {
     )]
     #[test]
     fn quantity_conversion_keeps_charge_stop_and_places_integer_successfully() {
-        let dimension = NodeKey::from_digest([41; 32]);
-        let source = UnitId::declared(NodeKey::from_digest([42; 32]));
-        let target = UnitId::declared(NodeKey::from_digest([43; 32]));
+        let dimension = crate::test_identity::node(41);
+        let source = UnitId::declared(crate::test_identity::node(42));
+        let target = UnitId::declared(crate::test_identity::node(43));
         let dimensions = BTreeMap::from([(
             dimension,
             DimensionNode::checked(vec![], NominalDeclaration::default()).unwrap(),
         )]);
         let units = BTreeMap::from([
             (
-                NodeKey::from_digest([42; 32]),
+                crate::test_identity::node(42),
                 UnitNode::checked(
-                    [41; 32],
+                    crate::test_identity::node(41),
                     None,
                     Rational::from_integer(Integer::one()),
                     Rational::from_integer(Integer::zero()),
@@ -6589,10 +6850,10 @@ mod checked_invariant_tests {
                 .unwrap(),
             ),
             (
-                NodeKey::from_digest([43; 32]),
+                crate::test_identity::node(43),
                 UnitNode::checked(
-                    [41; 32],
-                    Some([42; 32]),
+                    crate::test_identity::node(41),
+                    Some(crate::test_identity::node(42)),
                     Rational::from_integer(Integer::one()),
                     Rational::from_integer(Integer::zero()),
                     NominalDeclaration::default(),
@@ -6603,7 +6864,7 @@ mod checked_invariant_tests {
         let graph = UnitGraph::from_checked_nodes(&dimensions, &units).unwrap();
         let table = UnitTable::declared(&graph);
         let scope = UnitScope::new(&table);
-        let quantity = Quantity::new(Rational::from_integer(Integer::one()), source);
+        let quantity = Quantity::new(Rational::from_integer(Integer::one()), source.clone());
         let mut denied = meter().with_injected_denial(quire_exact::InjectedDenial {
             point: ChargePoint::UnitIdentityRead,
             occurrence: core::num::NonZeroU64::new(1).unwrap(),
@@ -6612,8 +6873,8 @@ mod checked_invariant_tests {
             operand_value(
                 &TypeEnvironment::default(),
                 &EqualityOperand::converted(
-                    ValueType::Quantity(source),
-                    ValueType::Quantity(target),
+                    ValueType::Quantity(source.clone()),
+                    ValueType::Quantity(target.clone()),
                 ),
                 &Value::Quantity(quantity.clone()),
                 &scope,
@@ -6624,7 +6885,7 @@ mod checked_invariant_tests {
 
         let conversion = convert_quantity(
             scope.resolve(&quantity).unwrap(),
-            scope.get(target).unwrap(),
+            scope.get(target.clone()).unwrap(),
             &QuantityTarget::Integer {
                 domain: quire_exact::IntegerInterval::spanning(
                     Integer::zero(),
@@ -6670,14 +6931,14 @@ mod work_budget_tests {
 mod staged_admission_tests {
     use super::*;
     use ix_trace_rs::trace;
-    use quire_exact::{ObjectId, ObjectReference, UniverseId};
+    use quire_exact::{ObjectId, ObjectReference};
 
     #[allow(
         clippy::disallowed_methods,
         reason = "fixtures supply model-minted effective identities"
     )]
     fn id(n: u8) -> EffectiveId {
-        EffectiveId::from_digest([n; 32])
+        crate::test_identity::effective(u64::from(n))
     }
 
     fn parent_child(child_type: ValueType, parent_type: ValueType) -> Vec<ObjectTypeDeclaration> {
@@ -7100,7 +7361,7 @@ mod staged_admission_tests {
         assert_eq!(pending.spent(), before + 3);
         cancel.cancel(quire_exact::CancelCause::Requested);
         assert!(matches!(
-            pending.composite(NodeKey::from_digest([1; 32])),
+            pending.composite(crate::test_identity::node(1)),
             Err(PendingFieldFailure::Limit(_))
         ));
         assert!(matches!(
@@ -7344,17 +7605,21 @@ mod staged_admission_tests {
             clippy::disallowed_methods,
             reason = "test supplies checked composite identities"
         )]
-        let composite_key = NodeKey::from_digest([17; 32]);
+        let composite_key = crate::test_identity::node(17);
         #[allow(
             clippy::disallowed_methods,
             reason = "test supplies checked composite identities"
         )]
-        let other_composite_key = NodeKey::from_digest([18; 32]);
+        let other_composite_key = crate::test_identity::node(18);
         let composite_cycle = [
-            CompositeDeclaration::new(composite_key, "A", CompositeShape::Tuple(vec![]))
-                .with_supertypes(vec![other_composite_key]),
-            CompositeDeclaration::new(other_composite_key, "B", CompositeShape::Tuple(vec![]))
-                .with_supertypes(vec![composite_key]),
+            CompositeDeclaration::new(composite_key.clone(), "A", CompositeShape::Tuple(vec![]))
+                .with_supertypes(vec![other_composite_key.clone()]),
+            CompositeDeclaration::new(
+                other_composite_key.clone(),
+                "B",
+                CompositeShape::Tuple(vec![]),
+            )
+            .with_supertypes(vec![composite_key.clone()]),
         ];
         assert!(matches!(
             TypeEnvironment::stage_model_with_cancel(
@@ -7566,7 +7831,7 @@ mod staged_admission_tests {
         .complete()
         .expect("subtype safety admits");
         let reference = Value::Reference(ObjectReference::new(
-            UniverseId::from_digest([7; 32]),
+            crate::test_identity::universe(7),
             id(4),
             ObjectId::new("object").expect("identity"),
         ));
@@ -7590,7 +7855,7 @@ mod staged_admission_tests {
             .admits(child_field.field().value_type(), &reference)
             .expect("admission reserves storage"));
         let unrelated = Value::Reference(ObjectReference::new(
-            UniverseId::from_digest([7; 32]),
+            crate::test_identity::universe(7),
             id(5),
             ObjectId::new("other").expect("identity"),
         ));
@@ -7600,7 +7865,7 @@ mod staged_admission_tests {
         let Value::Reference(actual) = reference else {
             panic!("reference fixture")
         };
-        assert_eq!(actual.object_type(), id(4));
+        assert_eq!(actual.object_type(), &id(4));
         let mut reversed = parent_child(ValueType::Reference(id(3)), ValueType::Reference(id(4)));
         reversed.push(ObjectTypeDeclaration::new(id(3), "Target", vec![]));
         reversed.push(
@@ -7636,7 +7901,7 @@ mod ancestor_steps_tests {
         reason = "a test fixture needs an EffectiveId; production code mints none"
     )]
     fn id(byte: u8) -> EffectiveId {
-        EffectiveId::from_digest([byte; 32])
+        crate::test_identity::effective(u64::from(byte))
     }
 
     fn object(byte: u8, supertypes: &[u8]) -> ObjectTypeDeclaration {
@@ -7719,7 +7984,7 @@ mod nested_conformance_tests {
     use ix_trace_rs::trace;
     use quire_exact::{
         form, from_admitted, CollectionKind, CollectionType, ObjectId, ObjectReference,
-        OptionValue, ScalarLimits, UniverseId,
+        OptionValue, ScalarLimits,
     };
 
     /// The chain `P <- M <- C` (so `C` is a grandchild of `P`), the
@@ -7740,9 +8005,9 @@ mod nested_conformance_tests {
 
     fn fixture() -> Fixture {
         let [p, m, c, u, holder_record, holder_tuple] =
-            [41, 42, 43, 44, 51, 52].map(|byte| NodeKey::from_digest([byte; 32]));
+            [41, 42, 43, 44, 51, 52].map(crate::test_identity::node);
         let [parent_object, child_object, stranger_object] =
-            [71, 72, 73].map(|byte| EffectiveId::from_digest([byte; 32]));
+            [71, 72, 73].map(crate::test_identity::effective);
         let record = |key, name: &str, supertypes: Vec<NodeKey>| {
             CompositeDeclaration::new(
                 key,
@@ -7755,18 +8020,18 @@ mod nested_conformance_tests {
             )
             .with_supertypes(supertypes)
         };
-        let parent = ValueType::Composite(p);
+        let parent = ValueType::Composite(p.clone());
         let object = |key, name: &str, supertypes: Vec<EffectiveId>| {
             ObjectTypeDeclaration::new(key, name, vec![]).with_supertypes(supertypes)
         };
         let types = TypeEnvironment::new(
             [
-                record(p, "P", vec![]),
-                record(m, "M", vec![p]),
-                record(c, "C", vec![m]),
-                record(u, "U", vec![]),
+                record(p.clone(), "P", vec![]),
+                record(m.clone(), "M", vec![p.clone()]),
+                record(c.clone(), "C", vec![m.clone()]),
+                record(u.clone(), "U", vec![]),
                 CompositeDeclaration::new(
-                    holder_record,
+                    holder_record.clone(),
                     "HolderRecord",
                     CompositeShape::Record(vec![
                         FieldDeclaration::new("member", parent.clone(), Presence::Required),
@@ -7778,15 +8043,19 @@ mod nested_conformance_tests {
                     ]),
                 ),
                 CompositeDeclaration::new(
-                    holder_tuple,
+                    holder_tuple.clone(),
                     "HolderTuple",
                     CompositeShape::Tuple(vec![parent]),
                 ),
             ],
             [
-                object(parent_object, "ParentObject", vec![]),
-                object(child_object, "ChildObject", vec![parent_object]),
-                object(stranger_object, "StrangerObject", vec![]),
+                object(parent_object.clone(), "ParentObject", vec![]),
+                object(
+                    child_object.clone(),
+                    "ChildObject",
+                    vec![parent_object.clone()],
+                ),
+                object(stranger_object.clone(), "StrangerObject", vec![]),
             ],
         )
         .expect("acyclic ancestry admits");
@@ -7857,7 +8126,7 @@ mod nested_conformance_tests {
         let Value::Composite(composite) = value else {
             panic!("expected a composite value");
         };
-        composite.declaration()
+        composite.declaration().clone()
     }
 
     /// A container of `P` holding a conforming descendant is admitted and
@@ -7866,9 +8135,9 @@ mod nested_conformance_tests {
     #[test]
     fn container_of_parent_admits_conforming_descendants() {
         let fx = fixture();
-        let parent = ValueType::Composite(fx.p);
-        let child = fx.value(fx.c, "child");
-        let intermediate = fx.value(fx.m, "intermediate");
+        let parent = ValueType::Composite(fx.p.clone());
+        let child = fx.value(fx.c.clone(), "child");
+        let intermediate = fx.value(fx.m.clone(), "intermediate");
 
         let present = option(parent.clone(), Some(child.clone()));
         assert!(fx
@@ -7897,7 +8166,7 @@ mod nested_conformance_tests {
             .expect("admission reserves storage"));
         assert!(fx
             .types
-            .admits(&ValueType::Composite(fx.m), &child)
+            .admits(&ValueType::Composite(fx.m.clone()), &child)
             .expect("admission reserves storage"));
     }
 
@@ -7907,12 +8176,12 @@ mod nested_conformance_tests {
     #[test]
     fn container_of_parent_refuses_nonconforming_contents_and_covariance() {
         let fx = fixture();
-        let parent = ValueType::Composite(fx.p);
-        let child_type = ValueType::Composite(fx.c);
-        let intermediate_type = ValueType::Composite(fx.m);
-        let unrelated = fx.value(fx.u, "unrelated");
-        let child = fx.value(fx.c, "child");
-        let plain = fx.value(fx.p, "parent");
+        let parent = ValueType::Composite(fx.p.clone());
+        let child_type = ValueType::Composite(fx.c.clone());
+        let intermediate_type = ValueType::Composite(fx.m.clone());
+        let unrelated = fx.value(fx.u.clone(), "unrelated");
+        let child = fx.value(fx.c.clone(), "child");
+        let plain = fx.value(fx.p.clone(), "parent");
 
         // `U` inside `Option<P>` and every collection kind of `P`.
         let option_of_unrelated = option(parent.clone(), Some(unrelated.clone()));
@@ -7982,7 +8251,7 @@ mod nested_conformance_tests {
     #[test]
     fn nested_option_sequence_option_admits_by_conformance() {
         let fx = fixture();
-        let parent = ValueType::Composite(fx.p);
+        let parent = ValueType::Composite(fx.p.clone());
         let inner_option = ValueType::option(parent.clone());
         let sequence = collection_type(CollectionKind::Sequence, inner_option.clone());
         let declared = ValueType::option(ValueType::collection(sequence.clone()));
@@ -7997,15 +8266,18 @@ mod nested_conformance_tests {
             )
         };
 
-        let conforming = build(vec![fx.value(fx.c, "c"), fx.value(fx.p, "p")]);
+        let conforming = build(vec![
+            fx.value(fx.c.clone(), "c"),
+            fx.value(fx.p.clone(), "p"),
+        ]);
         assert!(fx
             .types
             .admits(&declared, &conforming)
             .expect("admission reserves storage"));
         let mixed = build(vec![
-            fx.value(fx.c, "c"),
-            fx.value(fx.u, "u"),
-            fx.value(fx.m, "m"),
+            fx.value(fx.c.clone(), "c"),
+            fx.value(fx.u.clone(), "u"),
+            fx.value(fx.m.clone(), "m"),
         ]);
         assert!(!fx
             .types
@@ -8019,14 +8291,15 @@ mod nested_conformance_tests {
     #[test]
     fn evaluate_record_and_tuple_admit_members_by_conformance() {
         let fx = fixture();
-        let (environment, record, tuple) = (&fx.types, fx.holder_record, fx.holder_tuple);
-        let child = fx.value(fx.c, "child");
-        let unrelated = fx.value(fx.u, "unrelated");
+        let (environment, record, tuple) =
+            (&fx.types, fx.holder_record.clone(), fx.holder_tuple.clone());
+        let child = fx.value(fx.c.clone(), "child");
+        let unrelated = fx.value(fx.u.clone(), "unrelated");
 
         let supplied = child.clone();
         let result = environment
             .evaluate_record(
-                record,
+                record.clone(),
                 vec![(
                     "member",
                     FieldExpression::Evaluate(Box::new(move |_| Outcome::Completed(supplied))),
@@ -8040,12 +8313,12 @@ mod nested_conformance_tests {
         let [FieldValue::Present(member), ..] = evaluated.slots() else {
             panic!("the member slot is present");
         };
-        assert_eq!(key_of(member), fx.c);
+        assert_eq!(key_of(member), fx.c.clone());
 
         let supplied = unrelated.clone();
         assert!(matches!(
             environment.evaluate_record(
-                record,
+                record.clone(),
                 vec![(
                     "member",
                     FieldExpression::Evaluate(Box::new(move |_| Outcome::Completed(supplied))),
@@ -8060,7 +8333,7 @@ mod nested_conformance_tests {
         let supplied = child.clone();
         let result = environment
             .evaluate_tuple(
-                tuple,
+                tuple.clone(),
                 vec![Box::new(move |_| Outcome::Completed(supplied))],
                 &mut big_meter(),
             )
@@ -8071,12 +8344,12 @@ mod nested_conformance_tests {
         let [FieldValue::Present(position)] = evaluated.slots() else {
             panic!("the position is present");
         };
-        assert_eq!(key_of(position), fx.c);
+        assert_eq!(key_of(position), fx.c.clone());
 
         let supplied = unrelated;
         assert!(matches!(
             environment.evaluate_tuple(
-                tuple,
+                tuple.clone(),
                 vec![Box::new(move |_| Outcome::Completed(supplied))],
                 &mut big_meter(),
             ),
@@ -8093,14 +8366,15 @@ mod nested_conformance_tests {
     #[test]
     fn construction_refuses_nonconforming_member_naming_the_component() {
         let fx = fixture();
-        let (environment, record, tuple) = (&fx.types, fx.holder_record, fx.holder_tuple);
-        let parent = ValueType::Composite(fx.p);
-        let unrelated = fx.value(fx.u, "unrelated");
-        let child = fx.value(fx.c, "child");
+        let (environment, record, tuple) =
+            (&fx.types, fx.holder_record.clone(), fx.holder_tuple.clone());
+        let parent = ValueType::Composite(fx.p.clone());
+        let unrelated = fx.value(fx.u.clone(), "unrelated");
+        let child = fx.value(fx.c.clone(), "child");
 
         let refusal = environment
             .record(
-                record,
+                record.clone(),
                 vec![("member", FieldValue::Present(unrelated.clone()))],
             )
             .expect_err("a U at a P field is refused");
@@ -8110,7 +8384,7 @@ mod nested_conformance_tests {
         let nested = option(parent.clone(), Some(unrelated.clone()));
         let refusal = environment
             .record(
-                record,
+                record.clone(),
                 vec![
                     ("member", FieldValue::Present(child.clone())),
                     ("maybe", FieldValue::Present(nested.clone())),
@@ -8123,7 +8397,7 @@ mod nested_conformance_tests {
         let kept = option(parent, Some(child.clone()));
         environment
             .record(
-                record,
+                record.clone(),
                 vec![
                     ("member", FieldValue::Present(child)),
                     ("maybe", FieldValue::Present(kept)),
@@ -8155,16 +8429,16 @@ mod nested_conformance_tests {
     #[test]
     fn operand_value_checks_composite_operands_by_conformance() {
         let fx = fixture();
-        let parent = ValueType::Composite(fx.p);
+        let parent = ValueType::Composite(fx.p.clone());
 
-        for key in [fx.c, fx.m] {
-            let value = fx.value(key, "held");
+        for key in [fx.c.clone(), fx.m.clone()] {
+            let value = fx.value(key.clone(), "held");
             let admitted =
                 operand_result(&fx, parent.clone(), &value).expect("conforming operand admits");
             assert_eq!(key_of(&admitted), key);
         }
 
-        let child = fx.value(fx.c, "child");
+        let child = fx.value(fx.c.clone(), "child");
         let wrapped = option(parent.clone(), Some(child.clone()));
         let admitted = operand_result(&fx, ValueType::option(parent.clone()), &wrapped)
             .expect("Option<P> holding C admits");
@@ -8181,15 +8455,22 @@ mod nested_conformance_tests {
 
         let expected = CheckedInvariantCause::EqualityOperandSourceNotAdmitted;
         let cases = [
-            (parent.clone(), fx.value(fx.u, "u")),
-            (ValueType::Composite(fx.c), fx.value(fx.p, "p")),
+            (parent.clone(), fx.value(fx.u.clone(), "u")),
+            (
+                ValueType::Composite(fx.c.clone()),
+                fx.value(fx.p.clone(), "p"),
+            ),
             (
                 ValueType::option(parent.clone()),
-                option(parent.clone(), Some(fx.value(fx.u, "u"))),
+                option(parent.clone(), Some(fx.value(fx.u.clone(), "u"))),
             ),
             (
                 sequence_type,
-                collection(CollectionKind::Sequence, parent, vec![fx.value(fx.u, "u")]),
+                collection(
+                    CollectionKind::Sequence,
+                    parent,
+                    vec![fx.value(fx.u.clone(), "u")],
+                ),
             ),
         ];
         for (source, value) in cases {
@@ -8208,18 +8489,22 @@ mod nested_conformance_tests {
     #[test]
     fn operand_value_checks_reference_operand_by_kind_only() {
         let fx = fixture();
-        let declared = EffectiveId::from_digest([61; 32]);
-        let other = EffectiveId::from_digest([62; 32]);
+        let declared = crate::test_identity::effective(61);
+        let other = crate::test_identity::effective(62);
         let reference = Value::Reference(ObjectReference::new(
-            UniverseId::from_digest([63; 32]),
+            crate::test_identity::universe(63),
             other,
             ObjectId::new("object").expect("non-empty identity"),
         ));
-        let admitted = operand_result(&fx, ValueType::Reference(declared), &reference)
+        let admitted = operand_result(&fx, ValueType::Reference(declared.clone()), &reference)
             .expect("a reference operand is admitted by kind");
         assert!(matches!(admitted, Value::Reference(_)));
         assert!(matches!(
-            operand_result(&fx, ValueType::Reference(declared), &Value::Boolean(true)),
+            operand_result(
+                &fx,
+                ValueType::Reference(declared.clone()),
+                &Value::Boolean(true)
+            ),
             Err(Stop::Refused(Refusal::CheckedInvariant {
                 cause: CheckedInvariantCause::EqualityOperandSourceNotAdmitted
             }))
@@ -8234,18 +8519,18 @@ mod nested_conformance_tests {
         let fx = fixture();
         let reference = |object_type| {
             Value::Reference(ObjectReference::new(
-                UniverseId::from_digest([74; 32]),
+                crate::test_identity::universe(74),
                 object_type,
                 ObjectId::new("object").expect("non-empty identity"),
             ))
         };
-        let declared_parent = ValueType::Reference(fx.parent_object);
-        let declared_child = ValueType::Reference(fx.child_object);
+        let declared_parent = ValueType::Reference(fx.parent_object.clone());
+        let declared_child = ValueType::Reference(fx.child_object.clone());
         let option_at = |recorded: &ValueType, held| option(recorded.clone(), Some(held));
         let option_type = ValueType::option(declared_parent.clone());
         // A conforming object type, and the identical one, are admitted.
-        for object_type in [fx.child_object, fx.parent_object] {
-            let held = option_at(&declared_parent, reference(object_type));
+        for object_type in [fx.child_object.clone(), fx.parent_object.clone()] {
+            let held = option_at(&declared_parent, reference(object_type.clone()));
             assert!(
                 fx.types
                     .admits(&option_type, &held)
@@ -8255,12 +8540,12 @@ mod nested_conformance_tests {
         }
         // An unrelated object type and a supertype at a child slot are refused,
         // although the recorded payload type alone would admit them.
-        let stranger = option_at(&declared_parent, reference(fx.stranger_object));
+        let stranger = option_at(&declared_parent, reference(fx.stranger_object.clone()));
         assert!(!fx
             .types
             .admits(&option_type, &stranger)
             .expect("admission reserves storage"));
-        let reversed = option_at(&declared_child, reference(fx.parent_object));
+        let reversed = option_at(&declared_child, reference(fx.parent_object.clone()));
         assert!(!fx
             .types
             .admits(&ValueType::option(declared_child.clone()), &reversed)
@@ -8271,7 +8556,7 @@ mod nested_conformance_tests {
         let conforming = collection(
             CollectionKind::Sequence,
             declared_parent.clone(),
-            vec![reference(fx.child_object)],
+            vec![reference(fx.child_object.clone())],
         );
         assert!(fx
             .types
@@ -8280,7 +8565,10 @@ mod nested_conformance_tests {
         let unrelated = collection(
             CollectionKind::Sequence,
             declared_parent,
-            vec![reference(fx.child_object), reference(fx.stranger_object)],
+            vec![
+                reference(fx.child_object.clone()),
+                reference(fx.stranger_object.clone()),
+            ],
         );
         assert!(!fx
             .types
@@ -8295,12 +8583,15 @@ mod nested_conformance_tests {
     #[test]
     fn set_and_bag_of_parent_keep_equal_field_child_and_parent_distinct() {
         let fx = fixture();
-        let parent = ValueType::Composite(fx.p);
+        let parent = ValueType::Composite(fx.p.clone());
         for kind in [CollectionKind::Set, CollectionKind::Bag] {
             let collection_type = collection_type(kind, parent.clone());
             let Outcome::Completed(formed) = form(
                 &collection_type,
-                vec![fx.value(fx.c, "same"), fx.value(fx.p, "same")],
+                vec![
+                    fx.value(fx.c.clone(), "same"),
+                    fx.value(fx.p.clone(), "same"),
+                ],
                 &mut big_meter(),
             ) else {
                 panic!("{kind:?} formation completes");
@@ -8367,8 +8658,8 @@ mod nested_conformance_tests {
             };
         let (composite, part, events) = walk_failure(
             &fx.types,
-            &ValueType::Composite(fx.p),
-            &fx.value(fx.u, "stranger"),
+            &ValueType::Composite(fx.p.clone()),
+            &fx.value(fx.u.clone(), "stranger"),
         );
         assert_eq!(
             cause(&composite),
@@ -8383,13 +8674,13 @@ mod nested_conformance_tests {
             ]
         );
         let reference = Value::Reference(ObjectReference::new(
-            UniverseId::from_digest([74; 32]),
-            fx.stranger_object,
+            crate::test_identity::universe(74),
+            fx.stranger_object.clone(),
             ObjectId::new("object").expect("non-empty identity"),
         ));
         let (reference, part, _) = walk_failure(
             &fx.types,
-            &ValueType::Reference(fx.parent_object),
+            &ValueType::Reference(fx.parent_object.clone()),
             &reference,
         );
         assert_eq!(
@@ -8398,14 +8689,11 @@ mod nested_conformance_tests {
         );
         assert_eq!(part, MembershipPart::Descriptor(0));
         let union = quire_exact::UnionValue::from_admitted(
-            quire_exact::UnionMember::from_admitted(
-                fx.p,
-                NodeKey::from_digest([33; 32]),
-                quire_exact::Identifier::new("m").expect("identifier"),
-            ),
+            quire_exact::UnionMember::from_admitted(fx.p.clone(), "m")
+                .expect("fixture union member"),
             vec![Value::Integer(Integer::one())],
         );
-        let (union, part, _) = walk_failure(&fx.types, &ValueType::Composite(fx.p), &union);
+        let (union, part, _) = walk_failure(&fx.types, &ValueType::Composite(fx.p.clone()), &union);
         assert_eq!(
             cause(&union),
             Some(InvalidMembershipCause::UnsupportedUnion)

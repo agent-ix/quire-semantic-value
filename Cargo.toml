@@ -15,10 +15,9 @@ path = "src/lib.rs"
 
 [dependencies]
 quire-exact = { git = "https://github.com/agent-ix/quire-exact", branch = "main" }
-# The one RFC 8785 encoder, without `std`, for the
-# `quire.value.compound-unit/v1` id.
+# The one RFC 8785 encoder, without `std`, for bounded measurement of
+# structural compound-unit terms.
 quire-canonical = { git = "https://github.com/agent-ix/quire-canonical", branch = "main", default-features = false }
-serde = { version = "1.0.228", default-features = false, features = ["derive", "alloc"] }
 thiserror = { version = "2.0.20", default-features = false }
 
 [features]

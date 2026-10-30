@@ -8,7 +8,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -107,7 +107,7 @@ impl EnumDeclaration {
 
     /// The declaration node key.
     pub fn key(&self) -> NodeKey {
-        self.key
+        self.key.clone()
     }
 
     /// Whether the declaration selects ordered semantics.
@@ -137,7 +137,7 @@ impl EnumDeclaration {
                 cause: SemanticGraphCause::UndeclaredCase,
             })?;
         Ok(EnumValue {
-            declaration: self.key,
+            declaration: self.key.clone(),
             member,
             ordered: self.ordered,
             position,
@@ -159,12 +159,12 @@ pub struct EnumValue {
 impl EnumValue {
     /// Declaration node key.
     pub fn declaration(&self) -> NodeKey {
-        self.declaration
+        self.declaration.clone()
     }
 
     /// Member node key.
     pub fn member(&self) -> NodeKey {
-        self.member
+        self.member.clone()
     }
 
     /// Zero-based QSpec FR-141 canonical-list position of the member: the same
@@ -185,15 +185,12 @@ impl EnumValue {
         &self.case
     }
 
-    /// This member's kernel `VariantId`: the same
-    /// `quire.checked-semantic-node/v1` bytes as [`Self::member`], retyped,
-    /// with no fresh computation. It is the `quire.enum-member-node/v1`
-    /// identity exactly when the member key the value was built with is:
-    /// a caller's admission verifies
-    /// that against the preimage, while [`EnumDeclaration::member`] takes
-    /// the key as given.
+    /// This member's kernel `VariantId`: its admitted declaration node and
+    /// exact case name, with no digest or fresh node identity computation.
+    /// The caller checks that the member node belongs to that declaration.
     pub fn variant(&self) -> VariantId {
-        VariantId::from_digest(*self.member.as_bytes())
+        VariantId::new(self.declaration.clone(), self.case.to_string())
+            .expect("admitted enumeration cases are nonempty")
     }
 }
 
@@ -302,7 +299,7 @@ mod tests {
         reason = "a test fixture needs a NodeKey; production code mints none"
     )]
     fn key(byte: u8) -> NodeKey {
-        NodeKey::from_digest([byte; 32])
+        crate::test_identity::node(u64::from(byte))
     }
 
     fn cases(names: &[&str]) -> Vec<String> {

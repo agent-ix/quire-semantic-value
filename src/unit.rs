@@ -11,34 +11,28 @@
 //! This module owns the graph's topology and conversion logic: given nodes
 //! that already passed their per-node checks, [`UnitGraph::from_checked_nodes`]
 //! resolves their references, refuses a malformed graph and composes each
-//! unit's exact path to its root. Reading a node's preimage, recomputing its
-//! key and checking its owner is the compile side's work, which needs `serde`
-//! and RFC 8785.
+//! unit's exact path to its root. The compile side admits structural keys and
+//! checks their owner before building the graph.
 //!
-//! It never constructs a `NodeKey`: only the checking stage mints one. A node id
-//! read from a preimage is its 32 digest bytes; it resolves to a `NodeKey` only
-//! by lookup among the admitted nodes' keys.
+//! It never constructs a `NodeKey`: only the checking stage mints one. The
+//! admitted structural key resolves by lookup among the graph's keys.
 //!
-//! A declared unit's kernel [`UnitId`] is its admitted node key under the
-//! `quire.checked-semantic-node/v1` label ([`Unit::id`], and
-//! [`UnitGraph::declared_unit_id`], which refuses any key that is not an
-//! admitted unit's). A compound unit's is its `quire.value.compound-unit/v1`
-//! digest ([`CompoundUnit::id`], [`compound_unit_id`]), encoded and hashed by
-//! `quire-canonical` (the one RFC 8785 implementation).
+//! A declared unit's kernel [`UnitId`] carries its admitted node key. A
+//! compound unit's id carries its ordered root terms and exponents.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::hash::{Hash, Hasher};
 
-use quire_canonical::{FixedShape, Limits};
-use serde::Serialize;
+use quire_canonical::{Encode, Error, Limits, Sink, Writer};
 
-use quire_exact::{Integer, NodeKey, Rational, UnitId, COMPOUND_UNIT_DOMAIN};
+use quire_exact::{
+    Integer, InvalidNodeKey, NodeKey, NodeKeyView, PathSegmentView, Rational, UnitId,
+};
 
 use crate::semantic_node::{
-    check_terms, CanonicalNodeId, IdentityRefusal, InvalidSemanticGraph, SemanticGraphCause,
-    IDENTITY_LIMITS,
+    check_terms, IdentityRefusal, InvalidSemanticGraph, SemanticGraphCause, IDENTITY_LIMITS,
 };
 
 /// The graph refusal of `cause`.
@@ -65,7 +59,7 @@ impl Dimension {
 
     /// Ascending `(base dimension, exponent)` terms; no exponent is zero.
     pub fn exponents(&self) -> impl Iterator<Item = (NodeKey, &Integer)> {
-        self.0.iter().map(|(key, exponent)| (*key, exponent))
+        self.0.iter().map(|(key, exponent)| (key.clone(), exponent))
     }
 
     /// Add exponents.
@@ -90,7 +84,7 @@ fn combine(
     right: &BTreeMap<NodeKey, Integer>,
     operation: fn(&Integer, &Integer) -> Integer,
 ) -> BTreeMap<NodeKey, Integer> {
-    let keys: BTreeSet<_> = left.keys().chain(right.keys()).copied().collect();
+    let keys: BTreeSet<_> = left.keys().chain(right.keys()).cloned().collect();
     let zero = Integer::zero();
     keys.into_iter()
         .map(|key| {
@@ -110,7 +104,7 @@ fn scale_exponents(
 ) -> BTreeMap<NodeKey, Integer> {
     terms
         .iter()
-        .map(|(key, value)| (*key, value.mul(exponent)))
+        .map(|(key, value)| (key.clone(), value.mul(exponent)))
         .filter(|(_, value)| !value.is_zero())
         .collect()
 }
@@ -168,18 +162,18 @@ pub struct Unit {
 impl Unit {
     /// The unit node key.
     pub fn key(&self) -> NodeKey {
-        self.key
+        self.key.clone()
     }
 
     /// The declared-arm [`UnitId`]: this admitted unit's node key under the
     /// `quire.checked-semantic-node/v1` label.
     pub fn id(&self) -> UnitId {
-        UnitId::declared(self.key)
+        UnitId::declared(self.key.clone())
     }
 
     /// The unit's dimension node key.
     pub fn dimension_node(&self) -> NodeKey {
-        self.dimension_node
+        self.dimension_node.clone()
     }
 
     /// The normalized dimension map.
@@ -189,7 +183,7 @@ impl Unit {
 
     /// The canonical root unit of the unit's dimension node.
     pub fn root(&self) -> NodeKey {
-        self.root
+        self.root.clone()
     }
 
     /// Edges from this unit to the root, in source-to-root order.
@@ -213,8 +207,8 @@ impl Unit {
 /// What lowering builds a dimension's or unit's nominal node from (QSL FR-094),
 /// beyond the graph's topology: the node's qualified declaration name and
 /// the RFC 8785 bytes of its `quire.dimension-node/v1` or
-/// `quire.unit-node/v1` preimage, whose SHA-256 is its key. The compile
-/// side reads and checks both; this layer only carries them.
+/// `quire.unit-node/v1` body. The compile side reads and checks both; this
+/// layer only carries them. Its structural key is admitted separately.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct NominalDeclaration {
     /// The preimage's qualified declaration segments.
@@ -266,12 +260,12 @@ pub enum NominalUnitForm {
 
 /// A dimension node after its per-node checks, as read: its
 /// `(base dimension id, exponent)` terms, empty for a base dimension, and
-/// its [`NominalDeclaration`]. Each id is the 32 digest bytes of a node key,
-/// resolved by lookup among the admitted dimension keys. Built only by
+/// its [`NominalDeclaration`]. Each id is an admitted structural node key.
+/// Built only by
 /// [`DimensionNode::checked`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DimensionNode {
-    terms: Vec<([u8; 32], Integer)>,
+    terms: Vec<(NodeKey, Integer)>,
     declaration: NominalDeclaration,
 }
 
@@ -280,7 +274,7 @@ impl DimensionNode {
     /// exponent refuses, then a repeated base dimension, then terms not
     /// strictly ascending by id.
     pub fn checked(
-        terms: Vec<([u8; 32], Integer)>,
+        terms: Vec<(NodeKey, Integer)>,
         declaration: NominalDeclaration,
     ) -> Result<Self, SemanticGraphCause> {
         check_terms(&terms)?;
@@ -289,13 +283,13 @@ impl DimensionNode {
 }
 
 /// A unit node after its per-node checks, as read, with its
-/// [`NominalDeclaration`]. Its dimension and target ids are the 32 digest
-/// bytes of node keys, resolved by lookup among the admitted keys. Built
+/// [`NominalDeclaration`]. Its dimension and target ids are admitted
+/// structural node keys, resolved by lookup among the admitted keys. Built
 /// only by [`UnitNode::checked`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UnitNode {
-    dimension: [u8; 32],
-    target: Option<[u8; 32]>,
+    dimension: NodeKey,
+    target: Option<NodeKey>,
     edge: UnitEdge,
     declaration: NominalDeclaration,
 }
@@ -306,8 +300,8 @@ impl UnitNode {
     /// root (`target` is `None`) whose edge is not the identity (scale one,
     /// offset zero).
     pub fn checked(
-        dimension: [u8; 32],
-        target: Option<[u8; 32]>,
+        dimension: NodeKey,
+        target: Option<NodeKey>,
         scale: Rational,
         offset: Rational,
         declaration: NominalDeclaration,
@@ -327,8 +321,6 @@ impl UnitNode {
 pub struct UnitGraph {
     dimensions: BTreeMap<NodeKey, Dimension>,
     units: BTreeMap<NodeKey, Unit>,
-    /// Resolves a unit node id to an admitted unit's key.
-    unit_ids: BTreeMap<[u8; 32], NodeKey>,
     /// Each admitted dimension and unit node as lowering builds it, by key.
     nominal: BTreeMap<NodeKey, NominalUnitNode>,
 }
@@ -340,25 +332,14 @@ struct ResolvedUnit {
     edge: UnitEdge,
 }
 
-/// The index that resolves a node id to one of `keys` by lookup.
-fn id_index(keys: impl IntoIterator<Item = NodeKey>) -> BTreeMap<[u8; 32], NodeKey> {
-    keys.into_iter().map(|key| (*key.as_bytes(), key)).collect()
-}
-
-/// The admitted key `id` names, or `None` when no admitted node has it.
-fn resolve(index: &BTreeMap<[u8; 32], NodeKey>, id: [u8; 32]) -> Option<NodeKey> {
-    index.get(&id).copied()
-}
-
 impl UnitGraph {
     /// Admit the topology of dimension and unit nodes, keyed by their
     /// distinct retained keys. Each node's own checks are its constructor's
     /// ([`DimensionNode::checked`], [`UnitNode::checked`]).
     ///
-    /// This checks topology only. It does not check that a key is the digest
-    /// of its node's preimage or that the node's owner is selected: that is
-    /// the caller's, and the compile side does both. A graph built
-    /// from keys nobody checked carries no key-provenance guarantee.
+    /// This checks topology only. The caller admits each structural key and
+    /// its owner. A graph built from unchecked keys carries no provenance
+    /// guarantee.
     ///
     /// The graph, referenced by node ids, is checked for unknown or derived
     /// dimension terms, unknown dimensions, unknown and cross-dimension
@@ -369,24 +350,22 @@ impl UnitGraph {
         dimensions: &BTreeMap<NodeKey, DimensionNode>,
         units: &BTreeMap<NodeKey, UnitNode>,
     ) -> Result<Self, InvalidSemanticGraph> {
-        let dimension_ids = id_index(dimensions.keys().copied());
-        let dimension_maps = dimension_maps(dimensions, &dimension_ids)?;
-        let unit_ids = id_index(units.keys().copied());
-        let resolved = resolve_units(units, &dimension_ids, &unit_ids)?;
+        let dimension_maps = dimension_maps(dimensions)?;
+        let resolved = resolve_units(units, dimensions)?;
         let mut nominal = BTreeMap::new();
         for (key, node) in dimensions {
             let terms = match dimension_maps.get(key) {
                 Some(map) if !node.terms.is_empty() => map
                     .0
                     .iter()
-                    .map(|(base, exponent)| (*base, exponent.clone()))
+                    .map(|(base, exponent)| (base.clone(), exponent.clone()))
                     .collect(),
                 _ => Vec::new(),
             };
             nominal.insert(
-                *key,
+                key.clone(),
                 NominalUnitNode {
-                    key: *key,
+                    key: key.clone(),
                     declaration: node.declaration.clone(),
                     form: NominalUnitForm::Dimension { terms },
                 },
@@ -395,13 +374,13 @@ impl UnitGraph {
         for (key, node) in units {
             if let Some(unit) = resolved.get(key) {
                 nominal.insert(
-                    *key,
+                    key.clone(),
                     NominalUnitNode {
-                        key: *key,
+                        key: key.clone(),
                         declaration: node.declaration.clone(),
                         form: NominalUnitForm::Unit {
-                            dimension: unit.dimension,
-                            target: unit.target,
+                            dimension: unit.dimension.clone(),
+                            target: unit.target.clone(),
                             scale: unit.edge.scale.clone(),
                             offset: unit.edge.offset.clone(),
                         },
@@ -413,7 +392,6 @@ impl UnitGraph {
         Ok(Self {
             dimensions: dimension_maps,
             units,
-            unit_ids,
             nominal,
         })
     }
@@ -441,11 +419,12 @@ impl UnitGraph {
 
     /// A unit node key as a declared-arm [`UnitId`]. Only the
     /// key of a unit in this graph converts; any other node key, such as a
-    /// dimension's, is refused. That the key is the digest of its
-    /// `quire.unit-node/v1` preimage holds when the graph's builder checked
-    /// it, as the compile side does ([`Self::from_checked_nodes`]).
+    /// dimension's, is refused. The caller must supply a checked structural
+    /// key, as the compile side does before [`Self::from_checked_nodes`].
     pub fn declared_unit_id(&self, key: NodeKey) -> Result<UnitId, NotAUnitKey> {
-        self.unit(key).map(Unit::id).ok_or(NotAUnitKey { key })
+        self.unit(key.clone())
+            .map(Unit::id)
+            .ok_or(NotAUnitKey { key })
     }
 
     /// Construct a compound unit from schema-valid `(unit node id,
@@ -453,7 +432,7 @@ impl UnitGraph {
     /// unit with a nonzero exponent, strictly ascending by id.
     pub fn compound_unit(
         &self,
-        terms: &[([u8; 32], Integer)],
+        terms: &[(NodeKey, Integer)],
     ) -> Result<CompoundUnit, InvalidCompoundUnit> {
         check_terms(terms).map_err(|cause| InvalidCompoundUnit {
             cause: match cause {
@@ -466,21 +445,22 @@ impl UnitGraph {
         let mut dimension = Dimension::dimensionless();
         let mut compound_terms = BTreeMap::new();
         for (id, exponent) in terms {
-            let (key, root) = resolve(&self.unit_ids, *id)
-                .and_then(|key| Some((key, self.units.get(&key)?)))
-                .filter(|(key, unit)| unit.root == *key)
+            let (key, root) = self
+                .units
+                .get_key_value(id)
+                .filter(|(key, unit)| unit.root == **key)
                 .ok_or(InvalidCompoundUnit {
                     cause: CompoundUnitCause::NotRootUnit,
                 })?;
             dimension = dimension.multiply(&root.dimension.power(exponent));
-            compound_terms.insert(key, exponent.clone());
+            compound_terms.insert(key.clone(), exponent.clone());
         }
         Ok(CompoundUnit::new(compound_terms, dimension))
     }
 }
 
 /// The refusal: the node key names no admitted unit.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, thiserror::Error)]
 #[error("node key {key} names no admitted unit")]
 pub struct NotAUnitKey {
     /// The refused node key.
@@ -491,18 +471,22 @@ pub struct NotAUnitKey {
 /// each resolved by lookup among the admitted dimension keys.
 fn dimension_maps(
     dimensions: &BTreeMap<NodeKey, DimensionNode>,
-    ids: &BTreeMap<[u8; 32], NodeKey>,
 ) -> Result<BTreeMap<NodeKey, Dimension>, InvalidSemanticGraph> {
     dimensions
         .iter()
         .map(|(key, node)| {
             if node.terms.is_empty() {
-                return Ok((*key, Dimension([(*key, Integer::one())].into())));
+                return Ok((
+                    key.clone(),
+                    Dimension([(key.clone(), Integer::one())].into()),
+                ));
             }
             let mut terms = BTreeMap::new();
             for (term, exponent) in &node.terms {
-                let base =
-                    resolve(ids, *term).ok_or(refuse(SemanticGraphCause::UnknownDimension))?;
+                let base = dimensions
+                    .get_key_value(term)
+                    .map(|(key, _)| key.clone())
+                    .ok_or(refuse(SemanticGraphCause::UnknownDimension))?;
                 if dimensions
                     .get(&base)
                     .is_some_and(|base| !base.terms.is_empty())
@@ -511,7 +495,7 @@ fn dimension_maps(
                 }
                 terms.insert(base, exponent.clone());
             }
-            Ok((*key, Dimension(terms)))
+            Ok((key.clone(), Dimension(terms)))
         })
         .collect()
 }
@@ -520,12 +504,15 @@ fn dimension_maps(
 /// the admitted keys.
 fn resolve_units(
     units: &BTreeMap<NodeKey, UnitNode>,
-    dimension_ids: &BTreeMap<[u8; 32], NodeKey>,
-    unit_ids: &BTreeMap<[u8; 32], NodeKey>,
+    dimensions: &BTreeMap<NodeKey, DimensionNode>,
 ) -> Result<BTreeMap<NodeKey, ResolvedUnit>, InvalidSemanticGraph> {
     let resolved_dimensions = units
         .values()
-        .map(|unit| resolve(dimension_ids, unit.dimension))
+        .map(|unit| {
+            dimensions
+                .get_key_value(&unit.dimension)
+                .map(|(key, _)| key.clone())
+        })
         .collect::<Option<Vec<_>>>()
         .ok_or(refuse(SemanticGraphCause::UnknownDimension))?;
     units
@@ -534,10 +521,16 @@ fn resolve_units(
         .map(|((key, unit), dimension)| {
             let target = unit
                 .target
-                .map(|id| resolve(unit_ids, id).ok_or(refuse(SemanticGraphCause::UnknownTarget)))
+                .as_ref()
+                .map(|id| {
+                    units
+                        .get_key_value(id)
+                        .map(|(key, _)| key.clone())
+                        .ok_or(refuse(SemanticGraphCause::UnknownTarget))
+                })
                 .transpose()?;
             Ok((
-                *key,
+                key.clone(),
                 ResolvedUnit {
                     dimension,
                     target,
@@ -553,19 +546,23 @@ fn unit_paths(
     units: &BTreeMap<NodeKey, ResolvedUnit>,
     dimensions: &BTreeMap<NodeKey, Dimension>,
 ) -> Result<BTreeMap<NodeKey, Unit>, InvalidSemanticGraph> {
-    let targets = || units.values().filter_map(|unit| Some((unit, unit.target?)));
+    let targets = || {
+        units
+            .values()
+            .filter_map(|unit| Some((unit, unit.target.as_ref()?)))
+    };
     if targets().any(|(unit, target)| {
         units
-            .get(&target)
+            .get(target)
             .is_some_and(|target| target.dimension != unit.dimension)
     }) {
         return Err(refuse(SemanticGraphCause::CrossDimensionTarget));
     }
     let mut roots: BTreeMap<NodeKey, Vec<NodeKey>> = BTreeMap::new();
     for (key, unit) in units {
-        let slot = roots.entry(unit.dimension).or_default();
+        let slot = roots.entry(unit.dimension.clone()).or_default();
         if unit.target.is_none() {
-            slot.push(*key);
+            slot.push(key.clone());
         }
     }
     if roots.values().any(Vec::is_empty) {
@@ -582,8 +579,8 @@ fn unit_paths(
                 scale: Rational::from_integer(Integer::one()),
                 offset: Rational::from_integer(Integer::zero()),
             };
-            let mut current = (*key, unit);
-            while let Some(target) = current.1.target {
+            let mut current = (key, unit);
+            while let Some(target) = current.1.target.as_ref() {
                 if path.len() >= units.len() {
                     return Err(refuse(SemanticGraphCause::TargetCycle));
                 }
@@ -594,7 +591,7 @@ fn unit_paths(
                 };
                 path.push(edge);
                 let next = units
-                    .get(&target)
+                    .get(target)
                     .ok_or(refuse(SemanticGraphCause::UnknownTarget))?;
                 current = (target, next);
             }
@@ -603,12 +600,12 @@ fn unit_paths(
                 .cloned()
                 .ok_or(refuse(SemanticGraphCause::UnknownDimension))?;
             Ok((
-                *key,
+                key.clone(),
                 Unit {
-                    key: *key,
-                    dimension_node: unit.dimension,
+                    key: key.clone(),
+                    dimension_node: unit.dimension.clone(),
                     dimension,
-                    root: current.0,
+                    root: current.0.clone(),
                     path,
                     canonical,
                 },
@@ -642,47 +639,143 @@ pub enum CompoundUnitCause {
     NotRootUnit,
 }
 
+/// Reserve `additional` elements and report only the bytes this request adds.
+/// The callback lets a test deny the same boundary without a global allocator.
+fn reserve_identity<T, E>(
+    values: &mut Vec<T>,
+    additional: usize,
+    before: &mut impl FnMut(usize) -> Result<(), E>,
+    refused: impl FnOnce(usize) -> E,
+) -> Result<(), E> {
+    if additional <= values.capacity().saturating_sub(values.len()) {
+        return Ok(());
+    }
+    let requested = additional.saturating_mul(core::mem::size_of::<T>());
+    before(requested)?;
+    values
+        .try_reserve(additional)
+        .map_err(|_| refused(requested))
+}
+
 // RFC 8785 JCS: `quire-canonical` orders members itself, so field
 // declaration order carries no meaning.
-#[derive(Serialize, FixedShape)]
-struct CanonicalCompoundTerm {
-    exponent: String,
-    unit_node_id: CanonicalNodeId,
-}
-
-#[derive(Serialize, FixedShape)]
-struct CanonicalCompound {
-    terms: Vec<CanonicalCompoundTerm>,
-    version: &'static str,
-}
-
-/// The compound-arm [`UnitId`] of exactly these `(unit node id, exponent)`
-/// terms, each id as its 32 digest bytes: the SHA-256 of their JCS
-/// `quire.value.compound-unit/v1` preimage, encoded and hashed by
-/// `quire-canonical` (the one RFC 8785 implementation) under `limits`.
+/// The compound-arm [`UnitId`] of exactly these structural root terms.
+/// Their FR-201 `terms` arm is encoded under `limits` solely to bound the
+/// work of carrying the identity; neither the bytes nor a digest are retained.
 ///
 /// # Errors
 ///
 /// [`IdentityRefusal::InputBytes`] when the preimage's canonical bytes would
 /// exceed `limits` (QSL FR-259 Behavior 4): nothing bounds the number of
 /// terms or an exponent's size, so a large enough unit reaches any byte
-/// limit. [`IdentityRefusal::Allocation`] when a heap reservation fails.
+/// limit. [`IdentityRefusal::Allocation`] reports failed term-vector, encoder
+/// stack, and structural-node-copy reservations with the requested bytes.
+/// The existing infallible `Integer` clone and decimal formatting remain the
+/// separate IR-1149 allocation residual.
 pub fn compound_unit_id<'a>(
-    terms: impl IntoIterator<Item = ([u8; 32], &'a Integer)>,
+    terms: impl IntoIterator<Item = (&'a NodeKey, &'a Integer)>,
     limits: Limits,
 ) -> Result<UnitId, IdentityRefusal> {
-    let preimage = CanonicalCompound {
-        terms: terms
-            .into_iter()
-            .map(|(unit, exponent)| CanonicalCompoundTerm {
-                exponent: exponent.to_string(),
-                unit_node_id: CanonicalNodeId::from(unit),
-            })
-            .collect(),
-        version: COMPOUND_UNIT_DOMAIN,
-    };
-    let digest = quire_canonical::sha256(&preimage, limits)?;
-    Ok(UnitId::compound(*digest.as_bytes()))
+    let mut retained = Vec::new();
+    for term in terms {
+        reserve_identity(&mut retained, 1, &mut |_| Ok(()), |requested| {
+            IdentityRefusal::Allocation { requested }
+        })?;
+        retained.push(term);
+    }
+    quire_canonical::encode(&mut CountingSink, &StructuralTerms(&retained), limits)?;
+    let mut owned = Vec::new();
+    reserve_identity(&mut owned, retained.len(), &mut |_| Ok(()), |requested| {
+        IdentityRefusal::Allocation { requested }
+    })?;
+    for (unit, exponent) in retained {
+        let unit = unit.try_clone().map_err(|error| match error {
+            InvalidNodeKey::Allocation { requested } => IdentityRefusal::Allocation { requested },
+            _ => IdentityRefusal::NonCanonical,
+        })?;
+        owned.push((unit, exponent.clone()));
+    }
+    Ok(UnitId::compound(owned))
+}
+
+struct CountingSink;
+
+impl Sink for CountingSink {
+    fn write_bytes(&mut self, _bytes: &[u8]) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+struct StructuralTerms<'a>(&'a [(&'a NodeKey, &'a Integer)]);
+
+impl Encode for StructuralTerms<'_> {
+    fn encode_into<S: Sink + ?Sized>(&self, writer: &mut Writer<'_, S>) -> Result<(), Error> {
+        writer.begin_object()?;
+        writer.name("terms")?;
+        writer.begin_array()?;
+        for (unit, exponent) in self.0 {
+            writer.begin_object()?;
+            writer.name("exponent")?;
+            writer.string(&exponent.to_string())?;
+            writer.name("unit")?;
+            encode_node_id(writer, unit)?;
+            writer.end_object()?;
+        }
+        writer.end_array()?;
+        writer.end_object()
+    }
+}
+
+/// One pending action in iterative structural node encoding.
+enum NodeEvent<'a> {
+    Node(NodeKeyView<'a>),
+    Text(&'a str),
+    EndArray,
+    EndObject,
+}
+
+/// Emit a nested structural node id through an explicit stack. A path may
+/// contain node ids, so recursive serialization would use input-sized stack.
+fn encode_node_id<S: Sink + ?Sized>(
+    writer: &mut Writer<'_, S>,
+    node: &NodeKey,
+) -> Result<(), Error> {
+    let mut events = Vec::new();
+    reserve_identity(&mut events, 1, &mut |_| Ok(()), |requested| {
+        Error::Allocation { requested }
+    })?;
+    events.push(NodeEvent::Node(node.view()));
+    while let Some(event) = events.pop() {
+        match event {
+            NodeEvent::Node(node) => {
+                writer.begin_object()?;
+                writer.name("ordinal")?;
+                writer.integer(i128::from(node.ordinal()))?;
+                writer.name("package")?;
+                writer.string(node.package())?;
+                writer.name("path")?;
+                writer.begin_array()?;
+                let additional = node.path().count().saturating_add(2);
+                reserve_identity(&mut events, additional, &mut |_| Ok(()), |requested| {
+                    Error::Allocation { requested }
+                })?;
+                let path_start = events.len().saturating_add(2);
+                events.push(NodeEvent::EndObject);
+                events.push(NodeEvent::EndArray);
+                for segment in node.path() {
+                    events.push(match segment {
+                        PathSegmentView::Text(text) => NodeEvent::Text(text),
+                        PathSegmentView::Node(node) => NodeEvent::Node(node),
+                    });
+                }
+                events[path_start..].reverse();
+            }
+            NodeEvent::Text(text) => writer.string(text)?,
+            NodeEvent::EndArray => writer.end_array()?,
+            NodeEvent::EndObject => writer.end_object()?,
+        }
+    }
+    Ok(())
 }
 
 /// A normalized compound unit: canonical root-unit keys to nonzero exponents.
@@ -715,12 +808,17 @@ impl CompoundUnit {
 
     /// The single-term compound unit `root^1` of a declared unit's root.
     pub(crate) fn of_root(unit: &Unit) -> Self {
-        Self::new([(unit.root, Integer::one())].into(), unit.dimension.clone())
+        Self::new(
+            [(unit.root.clone(), Integer::one())].into(),
+            unit.dimension.clone(),
+        )
     }
 
     /// Ascending `(root unit, exponent)` terms.
     pub fn terms(&self) -> impl Iterator<Item = (NodeKey, &Integer)> {
-        self.terms.iter().map(|(key, exponent)| (*key, exponent))
+        self.terms
+            .iter()
+            .map(|(key, exponent)| (key.clone(), exponent))
     }
 
     /// The normalized dimension map.
@@ -728,19 +826,14 @@ impl CompoundUnit {
         &self.dimension
     }
 
-    /// The compound-arm [`UnitId`]: the `quire.value.compound-unit/v1`
-    /// digest of the terms under [`IDENTITY_LIMITS`], computed on each call.
+    /// The structural compound-arm [`UnitId`] after its ordered terms pass
+    /// the [`IDENTITY_LIMITS`] encoding bound.
     ///
     /// # Errors
     ///
     /// As [`compound_unit_id`].
     pub fn id(&self) -> Result<UnitId, IdentityRefusal> {
-        compound_unit_id(
-            self.terms
-                .iter()
-                .map(|(key, exponent)| (*key.as_bytes(), exponent)),
-            IDENTITY_LIMITS,
-        )
+        compound_unit_id(self.terms.iter(), IDENTITY_LIMITS)
     }
 
     pub(crate) fn multiply(&self, other: &Self) -> Self {
@@ -771,8 +864,8 @@ mod tests {
     use alloc::vec;
     use ix_trace_rs::trace;
 
-    fn id(byte: u8) -> [u8; 32] {
-        [byte; 32]
+    fn id(byte: u8) -> NodeKey {
+        crate::test_identity::node(u64::from(byte))
     }
 
     /// QSL FR-259 Behavior 4: a compound-unit preimage over the byte limit
@@ -783,7 +876,9 @@ mod tests {
     #[test]
     fn a_compound_unit_over_the_identity_byte_limit_refuses_with_the_limit() {
         let (one, two) = (Integer::from(1_i64), Integer::from(-2_i64));
-        let terms = || [(id(1), &one), (id(2), &two)];
+        let first = id(1);
+        let second = id(2);
+        let terms = || [(&first, &one), (&second, &two)];
         assert!(compound_unit_id(terms(), IDENTITY_LIMITS).is_ok());
         let Err(IdentityRefusal::InputBytes { bound, required }) =
             compound_unit_id(terms(), Limits::new(64))
@@ -792,6 +887,78 @@ mod tests {
         };
         assert_eq!(bound, 64);
         assert!(required > 64, "the refusal names the bytes it needed");
+    }
+
+    /// A nested structural path is measured as the complete FR-201 node form.
+    #[trace("TC-728", "FR-259-AC-2")]
+    #[test]
+    fn a_nested_node_path_is_measured_before_carrying_the_compound_id() {
+        let outer = crate::test_identity::nested_node();
+        let exponent = Integer::one();
+        let canonical = br#"{"terms":[{"exponent":"1","unit":{"ordinal":2,"package":"P","path":[{"ordinal":1,"package":"P","path":["inner"]},"outer"]}}]}"#;
+        let required = u64::try_from(canonical.len()).unwrap();
+        assert_eq!(
+            compound_unit_id([(&outer, &exponent)], Limits::new(required)),
+            Ok(UnitId::compound(vec![(outer.clone(), exponent.clone())]))
+        );
+        assert_eq!(
+            compound_unit_id([(&outer, &exponent)], Limits::new(required - 1)),
+            Err(IdentityRefusal::InputBytes {
+                bound: required - 1,
+                required,
+            })
+        );
+    }
+
+    /// The failed request is the additional reservation, even after a term or
+    /// encoder event is already retained.
+    #[trace("TC-728", "FR-259-AC-2")]
+    #[test]
+    fn a_nonempty_identity_reservation_reports_additional_bytes() {
+        let key = id(1);
+        let exponent = Integer::one();
+        let mut terms = Vec::with_capacity(1);
+        terms.push((&key, &exponent));
+        let term_bytes = core::mem::size_of::<(&NodeKey, &Integer)>();
+        let term_denial = reserve_identity(
+            &mut terms,
+            1,
+            &mut |requested| Err(IdentityRefusal::Allocation { requested }),
+            |requested| IdentityRefusal::Allocation { requested },
+        );
+        assert_eq!(
+            term_denial,
+            Err(IdentityRefusal::Allocation {
+                requested: term_bytes
+            })
+        );
+        assert_eq!(terms.len(), 1);
+
+        let mut events = Vec::with_capacity(1);
+        events.push(NodeEvent::EndArray);
+        let event_bytes = 3 * core::mem::size_of::<NodeEvent<'_>>();
+        let event_denial = reserve_identity(
+            &mut events,
+            3,
+            &mut |requested| Err(Error::Allocation { requested }),
+            |requested| Error::Allocation { requested },
+        );
+        assert!(matches!(
+            event_denial,
+            Err(Error::Allocation { requested }) if requested == event_bytes
+        ));
+        assert_eq!(events.len(), 1);
+
+        let mut spare = Vec::with_capacity(4);
+        spare.push(NodeEvent::EndArray);
+        reserve_identity(
+            &mut spare,
+            3,
+            &mut |_| -> Result<(), Error> { panic!("spare capacity makes no reservation") },
+            |requested| Error::Allocation { requested },
+        )
+        .unwrap();
+        assert_eq!(spare.len(), 1);
     }
 
     fn rational(numerator: i64) -> Rational {

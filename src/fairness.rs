@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Shared checked property-form and fairness values.
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 
 use quire_canonical::{Encode, Error, Sink, Writer};
 use quire_exact::EffectiveId;
@@ -104,7 +104,7 @@ impl FairnessOperation {
 
     /// The identity of the declaring model type.
     pub fn declaring_type(&self) -> EffectiveId {
-        self.declaring_type
+        self.declaring_type.clone()
     }
 
     /// The resolved operation name.
@@ -117,11 +117,35 @@ impl Encode for FairnessOperation {
     fn encode_into<S: Sink + ?Sized>(&self, writer: &mut Writer<'_, S>) -> Result<(), Error> {
         writer.begin_object()?;
         writer.name("declaring_type")?;
-        writer.string(&self.declaring_type.to_string())?;
+        encode_effective_id(writer, &self.declaring_type)?;
         writer.name("name")?;
         writer.string(&self.name)?;
         writer.end_object()
     }
+}
+
+/// Encode FR-201's recursive effective identity with a bounded native stack.
+fn encode_effective_id<S: Sink + ?Sized>(
+    writer: &mut Writer<'_, S>,
+    id: &EffectiveId,
+) -> Result<(), Error> {
+    let chain = id.owner_chain();
+    for _ in chain.iter().rev() {
+        writer.begin_object()?;
+        writer.name("owner_effective_type")?;
+    }
+    writer.null()?;
+    for original in chain {
+        writer.name("original")?;
+        writer.begin_object()?;
+        writer.name("package")?;
+        writer.string(original.package())?;
+        writer.name("node")?;
+        writer.string(original.node())?;
+        writer.end_object()?;
+        writer.end_object()?;
+    }
+    Ok(())
 }
 
 /// A resolved fairness constraint over one declaring-type operation.
@@ -195,7 +219,7 @@ mod tests {
         reason = "a test fixture supplies EffectiveId; production code mints none"
     )]
     fn id(byte: u8) -> EffectiveId {
-        EffectiveId::from_digest([byte; 32])
+        crate::test_identity::effective(u64::from(byte))
     }
 
     fn limits(bytes: u64) -> Limits {
@@ -361,7 +385,7 @@ mod tests {
     #[test]
     fn canonical_constraint_bytes_reflect_every_field_and_escape_names() {
         let base = constraint(FairnessKind::Weak, 0, "tick", FairnessGranularity::Whole);
-        let expected = b"{\"granularity\":\"whole\",\"kind\":\"weak\",\"operation\":{\"declaring_type\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"name\":\"tick\"}}";
+        let expected = b"{\"granularity\":\"whole\",\"kind\":\"weak\",\"operation\":{\"declaring_type\":{\"original\":{\"node\":\"Type000\",\"package\":\"qsv-test\"},\"owner_effective_type\":null},\"name\":\"tick\"}}";
         let encoded = to_vec(&base, limits(4096)).expect("canonical constraint");
         assert_eq!(encoded, expected);
         for changed in [
@@ -377,7 +401,7 @@ mod tests {
         }
         let quoted = constraint(FairnessKind::Weak, 0, "t\"ick", FairnessGranularity::Whole);
         let quoted_bytes = to_vec(&quoted, limits(4096)).expect("quoted name");
-        let expected_quoted = b"{\"granularity\":\"whole\",\"kind\":\"weak\",\"operation\":{\"declaring_type\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"name\":\"t\\\"ick\"}}";
+        let expected_quoted = b"{\"granularity\":\"whole\",\"kind\":\"weak\",\"operation\":{\"declaring_type\":{\"original\":{\"node\":\"Type000\",\"package\":\"qsv-test\"},\"owner_effective_type\":null},\"name\":\"t\\\"ick\"}}";
         assert_eq!(quoted_bytes, expected_quoted);
     }
 
@@ -405,16 +429,19 @@ mod tests {
         }
         let value = constraint(FairnessKind::Weak, 0, "tick", FairnessGranularity::Whole);
         let operation = value.operation();
-        let expected = b"{\"declaring_type\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"name\":\"tick\"}";
+        let expected = b"{\"declaring_type\":{\"original\":{\"node\":\"Type000\",\"package\":\"qsv-test\"},\"owner_effective_type\":null},\"name\":\"tick\"}";
         assert_eq!(
             to_vec(operation, limits(4096)).expect("operation"),
             expected
         );
-        let letter_digest = FairnessOperation::new(id(0xab), String::from("tick"));
-        let expected_lowercase = b"{\"declaring_type\":\"abababababababababababababababababababababababababababababababab\",\"name\":\"tick\"}";
+        let owned_type = FairnessOperation::new(
+            crate::test_identity::effective_child(id(0), 1),
+            String::from("tick"),
+        );
+        let expected_owned = b"{\"declaring_type\":{\"original\":{\"node\":\"Member001\",\"package\":\"qsv-test\"},\"owner_effective_type\":{\"original\":{\"node\":\"Type000\",\"package\":\"qsv-test\"},\"owner_effective_type\":null}},\"name\":\"tick\"}";
         assert_eq!(
-            to_vec(&letter_digest, limits(4096)).expect("lowercase digest"),
-            expected_lowercase
+            to_vec(&owned_type, limits(4096)).expect("structural owner chain"),
+            expected_owned
         );
         let complete = to_vec(&value, limits(4096)).expect("constraint");
         let length = u64::try_from(complete.len()).expect("test output length");

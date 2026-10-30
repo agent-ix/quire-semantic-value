@@ -737,7 +737,7 @@ impl TypeEnvironment {
                     MembershipEvent::DescriptorQuery,
                     query,
                 ))?;
-                let conforms = self.conforms(reference.object_type(), *declared);
+                let conforms = self.conforms_ref(reference.object_type(), declared);
                 on_boundary(MembershipBoundary::AfterHelper(
                     MembershipEvent::DescriptorQuery,
                     query,
@@ -751,7 +751,7 @@ impl TypeEnvironment {
                     MembershipEvent::DescriptorQuery,
                     query,
                 ))?;
-                let conforms = self.composite_conforms(composite.declaration(), *declared);
+                let conforms = self.composite_conforms_ref(composite.declaration(), declared);
                 on_boundary(MembershipBoundary::AfterHelper(
                     MembershipEvent::DescriptorQuery,
                     query,
@@ -779,11 +779,16 @@ impl TypeEnvironment {
                     MembershipEvent::DescriptorQuery,
                     query,
                 ))?;
-                let union_shape = matches!(self.shape(*declared), Some(CompositeShape::Union(_)));
-                let expected_handle = self.union_handle(*declared).unwrap_or(*declared);
-                let final_key = self.union_key(expected_handle);
+                let expected_handle = self.union_handles.get(declared).unwrap_or(declared);
+                let union_shape = matches!(
+                    self.composites
+                        .get(expected_handle)
+                        .map(|declaration| &declaration.shape),
+                    Some(CompositeShape::Union(_))
+                );
+                let final_key = self.union_keys.get(expected_handle);
                 let member = if final_key == Some(union.declaration()) {
-                    self.union_member(expected_handle, union.variant())
+                    self.union_member_ref(expected_handle, union.variant())
                         .map(|(_, member)| member)
                 } else {
                     None
@@ -957,9 +962,8 @@ mod tests {
     use ix_trace_rs::trace;
     use quire_exact::{
         from_admitted, Cancel, CancelCause, CollectionKind, CollectionType, Decimal, DecimalType,
-        EffectiveId, EnumMember, EnumShape, Identifier, Integer, IntegerInterval, NodeKey,
-        ObjectId, ObjectReference, OptionValue, Rational, RationalDomain, RoundingMode,
-        UnionMember, UnionValue, UniverseId, VariantId,
+        EnumMember, EnumShape, Identifier, Integer, IntegerInterval, ObjectId, ObjectReference,
+        OptionValue, Rational, RationalDomain, RoundingMode, UnionMember, UnionValue,
     };
 
     use super::*;
@@ -1014,14 +1018,14 @@ mod tests {
         reason = "the fixture supplies checked declaration identities without minting them in production"
     )]
     fn combined_declarations() -> (Vec<CompositeDeclaration>, Vec<ObjectTypeDeclaration>) {
-        let record = NodeKey::from_digest([1; 32]);
-        let tuple = NodeKey::from_digest([2; 32]);
-        let union = NodeKey::from_digest([3; 32]);
-        let object = EffectiveId::from_digest([4; 32]);
+        let record = crate::test_identity::node(1);
+        let tuple = crate::test_identity::node(2);
+        let union = crate::test_identity::node(3);
+        let object = crate::test_identity::effective(4);
         (
             vec![
                 CompositeDeclaration::new(
-                    record,
+                    record.clone(),
                     "Record",
                     CompositeShape::Record(vec![FieldDeclaration::new(
                         "flag",
@@ -1030,18 +1034,18 @@ mod tests {
                     )]),
                 ),
                 CompositeDeclaration::new(
-                    tuple,
+                    tuple.clone(),
                     "Tuple",
-                    CompositeShape::Tuple(vec![ValueType::Composite(record)]),
+                    CompositeShape::Tuple(vec![ValueType::Composite(record.clone())]),
                 ),
                 CompositeDeclaration::new(
-                    union,
+                    union.clone(),
                     "Union",
                     CompositeShape::Union(vec![
                         UnionMemberDeclaration::resolved(Identifier::new("Empty").unwrap(), vec![]),
                         UnionMemberDeclaration::resolved(
                             Identifier::new("Value").unwrap(),
-                            vec![ValueType::Composite(tuple)],
+                            vec![ValueType::Composite(tuple.clone())],
                         ),
                     ]),
                 ),
@@ -1051,7 +1055,7 @@ mod tests {
                 "Object",
                 vec![FieldDeclaration::new(
                     "value",
-                    ValueType::Composite(union),
+                    ValueType::Composite(union.clone()),
                     Presence::Required,
                 )],
             )],
@@ -1063,26 +1067,26 @@ mod tests {
         reason = "the fixture checks its authored identities without minting them in production"
     )]
     fn assert_combined_shapes(environment: &TypeEnvironment) {
-        let record = NodeKey::from_digest([1; 32]);
-        let tuple = NodeKey::from_digest([2; 32]);
-        let union = NodeKey::from_digest([3; 32]);
-        let object = EffectiveId::from_digest([4; 32]);
+        let record = crate::test_identity::node(1);
+        let tuple = crate::test_identity::node(2);
+        let union = crate::test_identity::node(3);
+        let object = crate::test_identity::effective(4);
         assert_eq!(
             environment
                 .composites()
                 .map(CompositeDeclaration::key)
                 .collect::<Vec<_>>(),
-            vec![record, tuple, union]
+            vec![record.clone(), tuple.clone(), union.clone()]
         );
         assert_eq!(
             environment
                 .object_types()
                 .map(ObjectTypeDeclaration::key)
                 .collect::<Vec<_>>(),
-            vec![object]
+            vec![object.clone()]
         );
         assert_eq!(
-            environment.composite(record).unwrap().shape(),
+            environment.composite(record.clone()).unwrap().shape(),
             &CompositeShape::Record(vec![FieldDeclaration::new(
                 "flag",
                 ValueType::Boolean,
@@ -1090,26 +1094,41 @@ mod tests {
             )])
         );
         assert_eq!(
-            environment.composite(tuple).unwrap().shape(),
-            &CompositeShape::Tuple(vec![ValueType::Composite(record)])
+            environment.composite(tuple.clone()).unwrap().shape(),
+            &CompositeShape::Tuple(vec![ValueType::Composite(record.clone())])
         );
         assert_eq!(
-            environment.object_type(object).unwrap().attributes(),
+            environment
+                .object_type(object.clone())
+                .unwrap()
+                .attributes(),
             &[FieldDeclaration::new(
                 "value",
-                ValueType::Composite(union),
+                ValueType::Composite(union.clone()),
                 Presence::Required,
             )]
         );
-        assert_eq!(environment.union_member_named(union, "Empty").unwrap().0, 0);
-        assert_eq!(environment.union_member_named(union, "Value").unwrap().0, 1);
         assert_eq!(
             environment
-                .attribute(object, "value")
+                .union_member_named(union.clone(), "Empty")
+                .unwrap()
+                .0,
+            0
+        );
+        assert_eq!(
+            environment
+                .union_member_named(union.clone(), "Value")
+                .unwrap()
+                .0,
+            1
+        );
+        assert_eq!(
+            environment
+                .attribute(object.clone(), "value")
                 .unwrap()
                 .field()
                 .value_type(),
-            &ValueType::Composite(union)
+            &ValueType::Composite(union.clone())
         );
     }
 
@@ -1125,7 +1144,10 @@ mod tests {
         }
 
         fn permit(&self, request: StorageRequest) -> bool {
-            if self.current.get() == Some(self.target) && self.denied.get().is_none() {
+            if self.current.get() == Some(self.target)
+                && request.unit() == StorageUnit::AdditionalElements
+                && self.denied.get().is_none()
+            {
                 self.denied.set(Some(request));
                 false
             } else {
@@ -1174,20 +1196,14 @@ mod tests {
             assert_combined_shapes(&retried);
         }
 
-        let handle = NodeKey::from_digest([3; 32]);
-        let final_key = NodeKey::from_digest([30; 32]);
+        let handle = crate::test_identity::node(3);
+        let final_key = crate::test_identity::node(30);
         let bindings = || {
             vec![
-                UnionMember::from_admitted(
-                    final_key,
-                    NodeKey::from_digest([31; 32]),
-                    Identifier::new("Empty").unwrap(),
-                ),
-                UnionMember::from_admitted(
-                    final_key,
-                    NodeKey::from_digest([32; 32]),
-                    Identifier::new("Value").unwrap(),
-                ),
+                UnionMember::from_admitted(final_key.clone(), "Empty")
+                    .expect("fixture union member"),
+                UnionMember::from_admitted(final_key.clone(), "Value")
+                    .expect("fixture union member"),
             ]
         };
         for target in [StoragePhase::Sealing, StoragePhase::KeyJoin] {
@@ -1198,8 +1214,12 @@ mod tests {
                 current: Cell::new(None),
                 denied: Cell::new(None),
             };
-            let denied =
-                environment.seal_union_with_reservations(handle, final_key, bindings(), &policy);
+            let denied = environment.seal_union_with_reservations(
+                handle.clone(),
+                final_key.clone(),
+                bindings(),
+                &policy,
+            );
             let request = policy
                 .denied
                 .get()
@@ -1208,23 +1228,30 @@ mod tests {
             assert_eq!(request.unit(), StorageUnit::AdditionalElements);
             assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
             assert_eq!(environment, before);
-            assert_eq!(environment.union_key(handle), None);
-            assert_eq!(environment.union_handle(final_key), None);
+            assert_eq!(environment.union_key(handle.clone()), None);
+            assert_eq!(environment.union_handle(final_key.clone()), None);
             environment
-                .seal_union_verified(handle, final_key, bindings())
+                .seal_union_verified(handle.clone(), final_key.clone(), bindings())
                 .expect("retry seals all members");
             let mut fresh = expected.clone();
             fresh
-                .seal_union_verified(handle, final_key, bindings())
+                .seal_union_verified(handle.clone(), final_key.clone(), bindings())
                 .expect("fresh seal succeeds");
             assert_eq!(environment, fresh);
             assert_combined_shapes(&environment);
-            assert_eq!(environment.union_key(handle), Some(final_key));
-            assert_eq!(environment.union_handle(final_key), Some(handle));
+            assert_eq!(
+                environment.union_key(handle.clone()),
+                Some(final_key.clone())
+            );
+            assert_eq!(
+                environment.union_handle(final_key.clone()),
+                Some(handle.clone())
+            );
             let expected_bindings = bindings();
             for (position, name) in [(0, "Empty"), (1, "Value")] {
-                let (actual_position, member) =
-                    environment.union_member_named(handle, name).unwrap();
+                let (actual_position, member) = environment
+                    .union_member_named(handle.clone(), name)
+                    .unwrap();
                 assert_eq!(actual_position, position);
                 assert_eq!(member.member(), Some(&expected_bindings[position]));
             }
@@ -1600,15 +1627,12 @@ mod tests {
     )]
     #[test]
     fn union_payload_worklist_denial_is_typed_and_retry_succeeds() {
-        let declaration = NodeKey::from_digest([41; 32]);
-        let binding = UnionMember::from_admitted(
-            declaration,
-            NodeKey::from_digest([42; 32]),
-            Identifier::new("Pair").expect("identifier"),
-        );
+        let declaration = crate::test_identity::node(41);
+        let binding =
+            UnionMember::from_admitted(declaration.clone(), "Pair").expect("fixture union member");
         let env = TypeEnvironment::new(
             [CompositeDeclaration::new(
-                declaration,
+                declaration.clone(),
                 "Pair",
                 CompositeShape::Union(vec![UnionMemberDeclaration::from_verified(
                     binding.clone(),
@@ -1618,7 +1642,7 @@ mod tests {
             [],
         )
         .expect("union declaration");
-        let expected = ValueType::Composite(declaration);
+        let expected = ValueType::Composite(declaration.clone());
         let value = UnionValue::from_admitted(binding, vec![integer(1), integer(2)]);
         let mut arena = MembershipPathArena::new().expect("arena");
         let at = MembershipLocus {
@@ -1748,14 +1772,14 @@ mod tests {
         reason = "the fixture supplies checked type identities without minting them in production"
     )]
     fn nested_reference() -> (TypeEnvironment, ValueType, Value) {
-        let object_type = EffectiveId::from_digest([1; 32]);
-        let universe = UniverseId::from_digest([2; 32]);
-        let reference_type = ValueType::Reference(object_type);
+        let object_type = crate::test_identity::effective(1);
+        let universe = crate::test_identity::universe(2);
+        let reference_type = ValueType::Reference(object_type.clone());
         let collection = sequence_of(reference_type.clone());
         let expected = ValueType::option(ValueType::collection(collection.clone()));
         let reference = Value::Reference(ObjectReference::new(
             universe,
-            object_type,
+            object_type.clone(),
             ObjectId::new("item").expect("nonempty fixture id"),
         ));
         let value = OptionValue::from_admitted(
@@ -1764,7 +1788,11 @@ mod tests {
         );
         let environment = TypeEnvironment::new(
             Vec::<CompositeDeclaration>::new(),
-            [ObjectTypeDeclaration::new(object_type, "Item", vec![])],
+            [ObjectTypeDeclaration::new(
+                object_type.clone(),
+                "Item",
+                vec![],
+            )],
         )
         .expect("fixture declaration admits");
         (environment, expected, value)
@@ -1932,8 +1960,8 @@ mod tests {
     )]
     #[test]
     fn supplied_api_reports_enum_member_failure() {
-        let admitted = VariantId::from_digest([1; 32]);
-        let missing = VariantId::from_digest([2; 32]);
+        let admitted = crate::test_identity::variant(1);
+        let missing = crate::test_identity::variant(2);
         let expected = ValueType::Enum(EnumShape::new(false, [admitted]));
         let value = Value::Enum(EnumMember::new(missing, 0));
         let mut arena = MembershipPathArena::new().expect("arena");
@@ -1978,10 +2006,10 @@ mod tests {
     )]
     #[test]
     fn supplied_enum_query_has_exact_two_event_boundary() {
-        let first = VariantId::from_digest([1; 32]);
-        let second = VariantId::from_digest([2; 32]);
-        let expected = ValueType::Enum(EnumShape::new(false, [first, second]));
-        let value = Value::Enum(EnumMember::new(second, 1));
+        let first = crate::test_identity::variant(1);
+        let second = crate::test_identity::variant(2);
+        let expected = ValueType::Enum(EnumShape::new(false, [first, second.clone()]));
+        let value = Value::Enum(EnumMember::new(second.clone(), 1));
         let cancel = Cancel::new();
         for ceiling in [0, 1, 2] {
             let mut arena = MembershipPathArena::new().expect("arena");
@@ -4006,14 +4034,9 @@ mod tests {
     )]
     #[test]
     fn supplied_api_refuses_union_without_a_union_declaration() {
-        let declaration = NodeKey::from_digest([10; 32]);
-        let member = NodeKey::from_digest([11; 32]);
+        let declaration = crate::test_identity::node(10);
         let value = UnionValue::from_admitted(
-            UnionMember::from_admitted(
-                declaration,
-                member,
-                Identifier::new("m").expect("identifier"),
-            ),
+            UnionMember::from_admitted(declaration.clone(), "m").expect("fixture union member"),
             vec![integer(1)],
         );
         let mut arena = MembershipPathArena::new().expect("arena");
@@ -4024,7 +4047,7 @@ mod tests {
         let mut budget = SuppliedMembershipBudget::new(2);
         assert_eq!(
             environment().admit_supplied::<InvalidMembershipCause>(
-                &ValueType::Composite(declaration),
+                &ValueType::Composite(declaration.clone()),
                 &value,
                 &mut arena,
                 at,

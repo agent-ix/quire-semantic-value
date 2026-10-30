@@ -34,11 +34,12 @@ pub enum QuantityUnit {
 
 impl QuantityUnit {
     /// The kernel [`UnitId`] a quantity in this unit carries: the declared
-    /// unit's node key or the compound unit's digest.
+    /// unit's node key or the compound unit's ordered root terms.
     ///
     /// # Errors
     ///
-    /// A compound unit's digest refuses as [`CompoundUnit::id`] does.
+    /// A compound unit's bounded structural encoding refuses as
+    /// [`CompoundUnit::id`] does.
     pub fn id(&self) -> Result<UnitId, IdentityRefusal> {
         match self {
             Self::Declared(unit) => Ok(unit.id()),
@@ -95,8 +96,8 @@ impl QuantityUnit {
 }
 
 /// A [`QuantityUnit`] with its kernel [`UnitId`], computed once. A compound
-/// unit's id is a SHA-256 over its RFC 8785 preimage, so a caller that has
-/// already computed it passes this along rather than recomputing it.
+/// unit's id is checked against the structural encoding bound once, then
+/// passed along without repeating the check.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IdentifiedUnit {
     id: UnitId,
@@ -118,7 +119,7 @@ impl IdentifiedUnit {
 
     /// The unit's kernel id.
     pub fn id(&self) -> UnitId {
-        self.id
+        self.id.clone()
     }
 
     /// The unit.
@@ -137,8 +138,8 @@ impl IdentifiedUnit {
 pub struct UnitTable {
     units: BTreeMap<UnitId, QuantityUnit>,
     /// Each admitted dimension and unit node as lowering builds it, by its
-    /// key's 32 digest bytes.
-    nominal: BTreeMap<[u8; 32], NominalUnitNode>,
+    /// structural key.
+    nominal: BTreeMap<quire_exact::NodeKey, NominalUnitNode>,
 }
 
 impl UnitTable {
@@ -154,7 +155,7 @@ impl UnitTable {
         };
         table.nominal = graph
             .nominal_nodes()
-            .map(|node| (*node.key.as_bytes(), node.clone()))
+            .map(|node| (node.key.clone(), node.clone()))
             .collect();
         table
     }
@@ -187,7 +188,7 @@ impl UnitTable {
     /// Record a unit whose id is already computed and return the id.
     fn insert_identified(&mut self, unit: IdentifiedUnit) -> UnitId {
         let IdentifiedUnit { id, unit } = unit;
-        self.units.entry(id).or_insert(unit);
+        self.units.entry(id.clone()).or_insert(unit);
         id
     }
 
@@ -196,21 +197,21 @@ impl UnitTable {
         self.units.get(&id)
     }
 
-    /// The admitted dimension or unit node whose key's digest bytes are
+    /// The admitted dimension or unit node named by the structural key
     /// `id`, as lowering builds it (QSL FR-094).
-    pub fn nominal_node(&self, id: &[u8; 32]) -> Option<&NominalUnitNode> {
+    pub fn nominal_node(&self, id: &quire_exact::NodeKey) -> Option<&NominalUnitNode> {
         self.nominal.get(id)
     }
 
     /// Every unit id in this table, ascending.
     pub fn ids(&self) -> impl Iterator<Item = UnitId> + '_ {
-        self.units.keys().copied()
+        self.units.keys().cloned()
     }
 
     /// `quantity` with its unit resolved, or `None` when this table has no
     /// unit with the quantity's id.
     pub fn resolve<'a>(&'a self, quantity: &'a Quantity) -> Option<UnitQuantity<'a>> {
-        self.get(quantity.unit())
+        self.get(quantity.unit().clone())
             .map(|unit| UnitQuantity { quantity, unit })
     }
 }
@@ -245,13 +246,13 @@ impl<'a> UnitScope<'a> {
 
     /// The unit with this id: the package's, then a stage-formed one.
     pub fn get(&self, id: UnitId) -> Option<&QuantityUnit> {
-        self.package.get(id).or_else(|| self.formed.get(id))
+        self.package.get(id.clone()).or_else(|| self.formed.get(id))
     }
 
     /// Record a unit this stage formed and return its id.
     pub fn form(&mut self, unit: IdentifiedUnit) -> UnitId {
         let id = unit.id();
-        if self.package.get(id).is_none() {
+        if self.package.get(id.clone()).is_none() {
             self.formed.insert_identified(unit);
         }
         id

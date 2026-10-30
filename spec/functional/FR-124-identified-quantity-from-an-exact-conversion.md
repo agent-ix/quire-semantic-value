@@ -138,7 +138,10 @@ pub enum HandoffRefusal {
 
 ## Status
 
-The existing handoff is implemented (IR-831; RT AD-004 step 4). The structural
-identity resource and cross-arm controls in FR-124-AC-4/5 are Planned under
-IR-1142. Updating RT AD-004's proposed `exact_quantity` signature to this one
-is a follow-up under IR-831. The RT cutover follows.
+The existing handoff is implemented (IR-831; RT AD-004 step 4). IR-1142 PR #73
+carries the structural identity resource and cross-arm controls in
+FR-124-AC-4/5; its focused tests pass, with independent review and the final
+gate pending. IR-1149 separately owns the preexisting infallible `Integer`
+clone and decimal formatting in compound identity construction under QSL
+FR-259 Behavior 6. Updating RT AD-004's proposed `exact_quantity` signature
+to this one is a follow-up under IR-831. The RT cutover follows.

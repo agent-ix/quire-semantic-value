@@ -23,7 +23,10 @@ executable tests; step 6 is the implementing PR's inspection and build gate.
 3. Sort obligations and records after reversing insertion order; compare `cmp`,
    `partial_cmp` and equality over all pairs (AC-3).
 4. Encode `Initial` and `Step` records, an obligation and the maximum row
-   position; compare with the literal bytes of Behavior 3; vary fields (AC-4).
+   position; compare with independently written literal JSON bytes using
+   the structural `NodeKey` display spelling and escaped text-path quotes of
+   Behavior 3 (quire-exact PR #101). Vary refinement, row, hypothesis order
+   and hypothesis count and compare the resulting bytes (AC-4).
 5. Encode at the exact length and one byte below (AC-5).
 6. Inspect the public module, `Cargo.toml` and `Cargo.lock` diff; run
    `make build-no-std`, `make lint` and `cargo build --locked` (AC-6).
@@ -32,7 +35,8 @@ executable tests; step 6 is the implementing PR's inspection and build gate.
 
 - Steps 1 to 3 retain values, distinguish every field and give the specified
   total order.
-- Step 4 gives the exact bytes; step 5 a typed limit error below the length.
+- Step 4 gives the exact structural-key bytes, including JSON escaping; step 5
+  gives a typed limit error below the length.
 - Step 6 finds only the new module and green gates.
 
 ## Status
