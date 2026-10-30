@@ -5,7 +5,7 @@
     reason = "each integration test uses a subset of shared identity fixtures"
 )]
 
-use std::{boxed::Box, format, vec};
+use std::{format, vec, vec::Vec};
 
 use quire_exact::{
     EffectiveId, NodeKey, OriginalDeclarationKey, PathSegment, UniverseId, VariantId,
@@ -46,10 +46,7 @@ pub fn nested_node() -> NodeKey {
     let inner = fixture_node("P", vec![PathSegment::Text("inner".into())], 1);
     fixture_node(
         "P",
-        vec![
-            PathSegment::Node(Box::new(inner)),
-            PathSegment::Text("outer".into()),
-        ],
+        vec![PathSegment::Node(inner), PathSegment::Text("outer".into())],
         2,
     )
 }

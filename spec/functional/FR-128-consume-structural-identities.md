@@ -54,3 +54,13 @@ no-minting boundary is [FR-060](./FR-060-the-crate-mints-no-identity.md).
 
 - `quire-exact` supplies the structural identity types and distinct `UnitId` arms.
 - The caller supplies identities already admitted by its checking or model stage.
+
+## Status
+
+IR-1142 PR #73 carries the structural consumer migration. Its compound-unit
+identity path classifies term-vector, encoder-stack and structural-node-copy
+reservation failures as typed `Allocation` with the requested bytes. The
+preexisting `Integer` clone and decimal formatting in that path still allocate
+infallibly; IR-1149 owns their fallible APIs and QSV consumption under QSL
+FR-259 Behavior 6. FR-128-AC-1 through AC-5 and the full FR-259 obligation
+retain their original scope.

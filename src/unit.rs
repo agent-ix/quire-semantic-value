@@ -27,7 +27,9 @@ use core::hash::{Hash, Hasher};
 
 use quire_canonical::{Encode, Error, Limits, Sink, Writer};
 
-use quire_exact::{Integer, NodeKey, PathSegment, Rational, UnitId};
+use quire_exact::{
+    Integer, InvalidNodeKey, NodeKey, NodeKeyView, PathSegmentView, Rational, UnitId,
+};
 
 use crate::semantic_node::{
     check_terms, IdentityRefusal, InvalidSemanticGraph, SemanticGraphCause, IDENTITY_LIMITS,
@@ -648,7 +650,10 @@ pub enum CompoundUnitCause {
 /// [`IdentityRefusal::InputBytes`] when the preimage's canonical bytes would
 /// exceed `limits` (QSL FR-259 Behavior 4): nothing bounds the number of
 /// terms or an exponent's size, so a large enough unit reaches any byte
-/// limit. [`IdentityRefusal::Allocation`] when a heap reservation fails.
+/// limit. [`IdentityRefusal::Allocation`] reports failed term-vector, encoder
+/// stack, and structural-node-copy reservations with the requested bytes.
+/// The existing infallible `Integer` clone and decimal formatting remain the
+/// separate IR-1149 allocation residual.
 pub fn compound_unit_id<'a>(
     terms: impl IntoIterator<Item = (&'a NodeKey, &'a Integer)>,
     limits: Limits,
@@ -675,7 +680,11 @@ pub fn compound_unit_id<'a>(
                 .saturating_mul(core::mem::size_of::<(NodeKey, Integer)>()),
         })?;
     for (unit, exponent) in retained {
-        owned.push((unit.clone(), exponent.clone()));
+        let unit = unit.try_clone().map_err(|error| match error {
+            InvalidNodeKey::Allocation { requested } => IdentityRefusal::Allocation { requested },
+            _ => IdentityRefusal::NonCanonical,
+        })?;
+        owned.push((unit, exponent.clone()));
     }
     Ok(UnitId::compound(owned))
 }
@@ -714,9 +723,9 @@ fn encode_node_id<S: Sink + ?Sized>(
     writer: &mut Writer<'_, S>,
     node: &NodeKey,
 ) -> Result<(), Error> {
-    enum Event {
-        Node(NodeKey),
-        Text(String),
+    enum Event<'a> {
+        Node(NodeKeyView<'a>),
+        Text(&'a str),
         EndArray,
         EndObject,
     }
@@ -724,7 +733,7 @@ fn encode_node_id<S: Sink + ?Sized>(
     events.try_reserve(1).map_err(|_| Error::Allocation {
         requested: core::mem::size_of::<Event>(),
     })?;
-    events.push(Event::Node(node.clone()));
+    events.push(Event::Node(node.view()));
     while let Some(event) = events.pop() {
         match event {
             Event::Node(node) => {
@@ -735,8 +744,7 @@ fn encode_node_id<S: Sink + ?Sized>(
                 writer.string(node.package())?;
                 writer.name("path")?;
                 writer.begin_array()?;
-                let path = node.path();
-                let additional = path.len().saturating_add(2);
+                let additional = node.path().count().saturating_add(2);
                 events
                     .try_reserve(additional)
                     .map_err(|_| Error::Allocation {
@@ -745,16 +753,18 @@ fn encode_node_id<S: Sink + ?Sized>(
                             .saturating_add(additional)
                             .saturating_mul(core::mem::size_of::<Event>()),
                     })?;
+                let path_start = events.len().saturating_add(2);
                 events.push(Event::EndObject);
                 events.push(Event::EndArray);
-                for segment in path.into_iter().rev() {
+                for segment in node.path() {
                     events.push(match segment {
-                        PathSegment::Text(text) => Event::Text(text),
-                        PathSegment::Node(node) => Event::Node(*node),
+                        PathSegmentView::Text(text) => Event::Text(text),
+                        PathSegmentView::Node(node) => Event::Node(node),
                     });
                 }
+                events[path_start..].reverse();
             }
-            Event::Text(text) => writer.string(&text)?,
+            Event::Text(text) => writer.string(text)?,
             Event::EndArray => writer.end_array()?,
             Event::EndObject => writer.end_object()?,
         }

@@ -111,10 +111,10 @@ pub enum IdentityRefusal {
         /// than `bound`.
         required: u64,
     },
-    /// A heap reservation for the canonical bytes failed.
-    #[error("allocation of {requested} bytes for an identity encoding failed")]
+    /// A heap reservation while carrying or encoding the structural identity failed.
+    #[error("allocation of {requested} bytes for a structural identity failed")]
     Allocation {
-        /// The size in bytes of the reservation that failed.
+        /// The additional bytes requested by the failed reservation.
         requested: usize,
     },
     /// The structural terms have no RFC 8785 encoding.
