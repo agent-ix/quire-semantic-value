@@ -1026,7 +1026,7 @@ mod tests {
 
     /// Large signed exponents retain their exact decimal spellings in the
     /// canonical preimage and the owned structural identity.
-    #[trace("TC-728", "FR-259-AC-2")]
+    #[trace("TC-928", "FR-129-AC-1", "FR-129-AC-2")]
     #[test]
     fn large_signed_exponent_preserves_canonical_bytes_and_byte_limit() {
         let root = id(1);
@@ -1090,7 +1090,7 @@ mod tests {
 
     /// A later exponent's byte-limit refusal includes every earlier term in
     /// the canonical prefix, even though its decimal text is not allocated.
-    #[trace("TC-728", "FR-259-AC-2")]
+    #[trace("TC-928", "FR-129-AC-1", "FR-129-AC-2")]
     #[test]
     fn later_exponent_limit_counts_the_prior_canonical_term() {
         let first = id(1);
@@ -1120,6 +1120,15 @@ mod tests {
             r#"{{"terms":[{{"exponent":"1","unit":{{"ordinal":0,"package":"qsv-test","path":["00000000000000000001"]}}}},{{"exponent":"{spelling}","unit":{{"ordinal":0,"package":"qsv-test","path":["00000000000000000002"]}}}}]}}"#
         );
         assert_eq!(canonical, expected.as_bytes());
+        let complete_len = u64::try_from(canonical.len()).unwrap();
+        assert!(compound_unit_id(terms, Limits::new(complete_len)).is_ok());
+        assert_eq!(
+            compound_unit_id(terms, Limits::new(complete_len - 1)),
+            Err(IdentityRefusal::InputBytes {
+                bound: complete_len - 1,
+                required: complete_len,
+            })
+        );
         let marker = b"\"exponent\":\"";
         let second_prefix = canonical
             .windows(marker.len())
@@ -1139,7 +1148,7 @@ mod tests {
 
     /// Typed failures substituted at the exact result boundaries travel
     /// through the same core and refusal projection as the public call.
-    #[trace("TC-728", "FR-259-AC-2")]
+    #[trace("TC-928", "FR-129-AC-3")]
     #[test]
     fn exponent_result_refusals_keep_the_requested_bytes() {
         let root = id(1);
