@@ -123,7 +123,6 @@ impl Encode for StepSimulationRecord {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
-    use std::string::String;
     use std::vec;
     use std::vec::Vec;
 
@@ -139,10 +138,6 @@ mod tests {
     )]
     fn key(byte: u8) -> NodeKey {
         crate::test_identity::node(u64::from(byte))
-    }
-
-    fn hex(byte: u8) -> String {
-        std::format!("{byte:02x}").repeat(32)
     }
 
     fn step(index: u32) -> StepObligation {
@@ -223,26 +218,11 @@ mod tests {
     fn canonical_bytes_are_exact_for_each_obligation() {
         let limits = Limits::new(4096);
         let initial = StepSimulationRecord::new(key(0), StepObligation::Initial, Vec::new());
-        let expected = std::format!(
-            "{{\"hypotheses\":[],\"obligation\":{{\"kind\":\"initial\"}},\"refinement\":\"{}\"}}",
-            hex(0)
-        );
-        assert_eq!(
-            to_vec(&initial, limits).expect("initial record"),
-            expected.as_bytes()
-        );
+        let expected = br#"{"hypotheses":[],"obligation":{"kind":"initial"},"refinement":"qsv-test:[Text(\"00000000000000000000\")]:0"}"#;
+        assert_eq!(to_vec(&initial, limits).expect("initial record"), expected);
         let stepped = StepSimulationRecord::new(key(0xab), step(6), vec![key(1), key(0xcd)]);
-        let expected = std::format!(
-            "{{\"hypotheses\":[\"{}\",\"{}\"],\"obligation\":{{\"kind\":\"step\",\"row\":6}},\
-             \"refinement\":\"{}\"}}",
-            hex(1),
-            hex(0xcd),
-            hex(0xab)
-        );
-        assert_eq!(
-            to_vec(&stepped, limits).expect("step record"),
-            expected.as_bytes()
-        );
+        let expected = br#"{"hypotheses":["qsv-test:[Text(\"00000000000000000001\")]:0","qsv-test:[Text(\"00000000000000000205\")]:0"],"obligation":{"kind":"step","row":6},"refinement":"qsv-test:[Text(\"00000000000000000171\")]:0"}"#;
+        assert_eq!(to_vec(&stepped, limits).expect("step record"), expected);
         assert_eq!(
             to_vec(&StepObligation::Initial, limits).expect("obligation"),
             b"{\"kind\":\"initial\"}"
