@@ -28,20 +28,22 @@ compound target, then into joules).
    U25 and RT FR-007-AC-23 (AC-2).
 3. Convert to a decimal target and to an integer target and call
    `identified_quantity` (AC-3).
-4. Build a compound target whose dimensions cancel and whose preimage exceeds the
-   16 MiB identity limit (200,000 roots over distinct dimension nodes that share
-   one base map, the first 100,000 by ascending key at exponent +1 and the
-   rest at -1, from a dimensionless source), convert, and call
-   `identified_quantity`. The encoder refuses at 16,777,240 bytes: `required`
-   is its running byte count at the write that crosses the bound, which
-   depends on the exponent order (the full preimage is 30,500,052 bytes in
-   every order).
+4. Build a compound target whose dimensions cancel and whose ordered structural
+   term encoding exceeds the 16 MiB handoff limit (200,000 roots over distinct
+   dimension nodes that share one base map, the first 100,000 by structural
+   key order at exponent +1 and the rest at -1, from a dimensionless source),
+   convert, and call `identified_quantity`. Check
+   `IdentityRefusal::InputBytes { bound: 16_777_216, required }` with
+   `required > bound`; neither the encoded byte count nor a digest of the
+   encoding is a fixed identity oracle.
    A target made large by a big exponent on one root has a different
    dimension from its source and is refused `IllTyped` before any `Conversion`
    exists, so it cannot reach the handoff. Check the caller's `UnitScope` holds
    no new unit (AC-4).
-5. Build a declared unit and a compound unit with equal digest bytes; compare
-   their unit ids and resolve the compound quantity (AC-5).
+5. Build a declared root unit with admitted node `r` and a compound unit whose
+   sole term is `(r, 1)`; compare `Declared(r)` with `Compound([(r, 1)])`,
+   assert declared-before-compound order, and resolve the compound quantity
+   (AC-5).
 6. Convert into the step-4 target with a decimal representation, which
    completes, and call `identified_quantity`: `NotExact`, not `Identity`,
    because exactness is checked first (AC-3, AC-4).
@@ -55,12 +57,15 @@ compound target, then into joules).
 - Step 2: the returned id equals the quantity's unit id, `resolve` returns the
   conversion's unit, the second conversion is exact `1`, and each conversion makes the U25 charges.
 - Step 3: `NotExact` for both, with no quantity.
-- Step 4: `Identity` with the originating refusal, no quantity or unit, and the
-  scope's formed table unchanged.
-- Step 5: distinct ids, and the compound unit resolved.
+- Step 4: `Identity(InputBytes { bound: 16_777_216, required })` with
+  `required > bound`, no quantity or unit, and the scope's formed table
+  unchanged.
+- Step 5: distinct ids in declared-before-compound order, and the compound
+  unit resolved.
 - Step 6: `NotExact`.
 - Step 7: only the new method and refusal type, and green gates.
 
 ## Status
 
-IMPLEMENTED (IR-831).
+The existing handoff is implemented (IR-831); the structural identity controls
+in steps 4 and 5 are Planned under IR-1142.
