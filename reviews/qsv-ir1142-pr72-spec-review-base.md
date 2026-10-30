@@ -34,3 +34,10 @@ Independent review of PR #72 head f958b04 against QSV main and quire-exact #101 
 | --- | --- | --- | --- |
 | FND-001 | high | FR-128 requires structural compound UnitId without digest derivation, but FR-124-AC-4 still requires a 16 MiB digest identity refusal; the exact structural UnitId API has no such fallible digest construction. Preserve the refusal boundary as an explicit independently owned control if still valid, or update the AC to the structural behavior. | spec/functional/FR-128-consume-structural-identities.md:49; spec/functional/FR-124-identified-quantity-from-an-exact-conversion.md:121 |
 | FND-002 | high | FR-128-AC-3 requires declared and compound structural arms, but FR-124-AC-5 still requires equal digest bytes and Behavior 6 orders domains before a digest; these oracles cannot be constructed with the exact structural identity API. Retain the cross-arm non-aliasing control using equal displayed components without digest bytes. | spec/functional/FR-128-consume-structural-identities.md:49; spec/functional/FR-124-identified-quantity-from-an-exact-conversion.md:107,122 |
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | PR #72 head 5c05157 retains the 16 MiB InputBytes refusal on bounded structural term encoding before UnitId construction. FR-124-AC-4 and TC-923 step 4 keep the no-quantity/no-unit and unchanged UnitScope controls; bytes are not retained as identity. |
+| FND-002 | fixed | FR-124-AC-5 and TC-923 step 5 compare Declared(r) with Compound([(r, 1)]), assert declared-before-compound ordering, and resolve the compound quantity to the compound unit. FR-128-AC-3 uses the same structural control. |
