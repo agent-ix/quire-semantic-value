@@ -2130,8 +2130,8 @@ impl Eq for TypeEnvironment {}
 
 /// One containment edge of the recursion rule.
 #[derive(Clone)]
-struct Edge {
-    target: NodeKey,
+struct Edge<'a> {
+    target: &'a NodeKey,
     named: bool,
     escapes: bool,
 }
@@ -2430,7 +2430,9 @@ impl TypeEnvironment {
         reserve.phase(StoragePhase::KeyJoin);
         reserve_elements(&mut environment.field_keys, table.fields.len(), reserve)?;
         for (owner, _, _, index) in &table.fields {
-            environment.field_keys.push((owner.clone(), *index));
+            environment
+                .field_keys
+                .push((EffectiveId::clone(*owner), *index));
         }
         Ok(PendingTypeEnvironment {
             environment,
@@ -2527,6 +2529,10 @@ impl TypeEnvironment {
     /// `sub` in the admitted supertypes graph. `false` for either key
     /// outside this environment's own admitted object types, never a panic.
     pub fn conforms(&self, sub: EffectiveId, sup: EffectiveId) -> bool {
+        self.conforms_ref(&sub, &sup)
+    }
+
+    fn conforms_ref(&self, sub: &EffectiveId, sup: &EffectiveId) -> bool {
         sub == sup || self.ancestry.is_ancestor(sub, sup)
     }
 
@@ -2535,18 +2541,26 @@ impl TypeEnvironment {
     /// Unknown unequal keys never conform, and a union declaration never conforms
     /// to or from anything.
     pub fn composite_conforms(&self, sub: NodeKey, sup: NodeKey) -> bool {
+        self.composite_conforms_ref(&sub, &sup)
+    }
+
+    fn composite_conforms_ref(&self, sub: &NodeKey, sup: &NodeKey) -> bool {
         // A union takes no part in composite generalization: no Record or Tuple
         // carrier conforms to a union type, by either its handle or its final key.
-        if matches!(self.shape(sub.clone()), Some(CompositeShape::Union(_)))
-            || matches!(self.shape(sup.clone()), Some(CompositeShape::Union(_)))
-        {
+        if matches!(
+            self.composites.get(sub).map(|d| &d.shape),
+            Some(CompositeShape::Union(_))
+        ) || matches!(
+            self.composites.get(sup).map(|d| &d.shape),
+            Some(CompositeShape::Union(_))
+        ) {
             return false;
         }
         sub == sup
             || self
                 .composite_ancestry
-                .get(&sub)
-                .is_some_and(|ancestors| ancestors.binary_search(&sup).is_ok())
+                .get(sub)
+                .is_some_and(|ancestors| ancestors.binary_search(sup).is_ok())
     }
 
     /// The settled canonical key explicitly attached to this internal union handle.
@@ -2608,7 +2622,7 @@ impl TypeEnvironment {
             return Err(refuse(DeclarationCause::Type(IllTypedCause::TypeMismatch))?);
         }
         reserve.phase(StoragePhase::Sealing);
-        let mut keys: OrderedIndex<VariantId, ()> = OrderedIndex::default();
+        let mut keys: OrderedIndex<&VariantId, ()> = OrderedIndex::default();
         for (member, binding) in members.iter().zip(&bindings) {
             if member.member().is_some()
                 || binding.declaration() != &final_key
@@ -2619,7 +2633,7 @@ impl TypeEnvironment {
             // A variant is `(final key, identifier)`; topology has already
             // refused duplicate identifiers. Keep the fallible index insert
             // for the admission reservation accounting.
-            let _ = keys.try_insert(binding.variant().clone(), (), reserve)?;
+            let _ = keys.try_insert(binding.variant(), (), reserve)?;
         }
         // All three destinations reserve their complete growth before a binding
         // is attached. Subsequent inserts fit these capacities and cannot deny a
@@ -2788,14 +2802,25 @@ impl TypeEnvironment {
         declaration: NodeKey,
         variant: VariantId,
     ) -> Option<(usize, &UnionMemberDeclaration)> {
-        let declaration = self
-            .union_handles
-            .get(&declaration)
-            .cloned()
-            .unwrap_or(declaration);
-        self.union_key(declaration.clone())?;
-        let position = *self.union_members.get(&(declaration.clone(), variant))?;
-        let CompositeShape::Union(members) = self.shape(declaration)? else {
+        self.union_member_ref(&declaration, &variant)
+    }
+
+    fn union_member_ref(
+        &self,
+        declaration: &NodeKey,
+        variant: &VariantId,
+    ) -> Option<(usize, &UnionMemberDeclaration)> {
+        let handle = self.union_handles.get(declaration).unwrap_or(declaration);
+        self.union_keys.get(handle)?;
+        let position = self
+            .union_members
+            .entries
+            .binary_search_by(|((key, member), _)| {
+                key.cmp(handle).then_with(|| member.cmp(variant))
+            })
+            .ok()?;
+        let position = self.union_members.entries.get(position)?.1;
+        let CompositeShape::Union(members) = &self.composites.get(handle)?.shape else {
             return None;
         };
         Some((position, members.get(position)?))
@@ -3027,11 +3052,12 @@ impl TypeEnvironment {
                 ValueType::Option(payload) => pending.push(payload),
                 ValueType::Collection(collection) => pending.push(collection.element()),
                 ValueType::Composite(key) => {
-                    if !visited.insert(key.clone()) {
+                    if !visited.insert(key) {
                         continue;
                     }
                     match self
-                        .composite(key.clone())
+                        .composites
+                        .get(key)
                         .map(|declaration| &declaration.shape)
                     {
                         Some(CompositeShape::Record(fields)) => {
@@ -3078,11 +3104,12 @@ impl TypeEnvironment {
                 ValueType::Collection(collection) => pending.push(collection.element()),
                 ValueType::Map(map) => pending.push(map.values()),
                 ValueType::Composite(key) => {
-                    if !visited.insert(key.clone()) {
+                    if !visited.insert(key) {
                         continue;
                     }
                     match self
-                        .composite(key.clone())
+                        .composites
+                        .get(key)
                         .map(|declaration| &declaration.shape)
                     {
                         Some(CompositeShape::Record(fields)) => {
@@ -3123,7 +3150,7 @@ impl TypeEnvironment {
         let mut pending = vec![value_type];
         while let Some(value_type) = pending.pop() {
             match value_type {
-                ValueType::Composite(key) if self.composite(key.clone()).is_none() => {
+                ValueType::Composite(key) if !self.composites.contains_key(key) => {
                     return Some(DeclarationCause::UnknownDeclaration(key.clone()));
                 }
                 // QSpec FR-143: `T` in `Reference<T>` must name a model object
@@ -3186,7 +3213,7 @@ impl TypeEnvironment {
         charge: &mut impl FnMut(usize) -> Admission<()>,
         reserve: &R,
     ) -> Admission<bool> {
-        let mut visited: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
+        let mut visited: OrderedIndex<&NodeKey, ()> = OrderedIndex::default();
         charge(1)?;
         let mut pending = Vec::new();
         try_push(&mut pending, value_type, reserve)?;
@@ -3204,10 +3231,10 @@ impl TypeEnvironment {
                 }
                 ValueType::Map(map) => try_push(&mut pending, map.values(), reserve)?,
                 ValueType::Composite(key) => {
-                    if visited.contains_key(key) {
+                    if visited.contains_key(&key) {
                         continue;
                     }
-                    visited.try_insert(key.clone(), (), reserve)?;
+                    visited.try_insert(key, (), reserve)?;
                     match self
                         .composites
                         .get(key)
@@ -3387,11 +3414,11 @@ impl TypeEnvironment {
     }
 
     /// The recursion-rule edges leaving one declaration.
-    fn edges<R: ReservationPolicy>(
-        declaration: &CompositeDeclaration,
+    fn edges<'a, R: ReservationPolicy>(
+        declaration: &'a CompositeDeclaration,
         budget: &mut WorkBudget,
         reserve: &R,
-    ) -> Admission<Vec<Edge>> {
+    ) -> Admission<Vec<Edge<'a>>> {
         let mut members: Vec<(&ValueType, bool, bool)> = Vec::new();
         match &declaration.shape {
             CompositeShape::Record(fields) => {
@@ -3442,7 +3469,7 @@ impl TypeEnvironment {
                     ValueType::Composite(target) => try_push(
                         &mut edges,
                         Edge {
-                            target: target.clone(),
+                            target,
                             named,
                             escapes,
                         },
@@ -3494,7 +3521,7 @@ impl TypeEnvironment {
         budget: &mut WorkBudget,
         reserve: &R,
     ) -> Admission<()> {
-        let mut graph: OrderedIndex<NodeKey, Vec<NodeKey>> = OrderedIndex::default();
+        let mut graph: OrderedIndex<&NodeKey, Vec<&NodeKey>> = OrderedIndex::default();
         for declaration in self.composites.values() {
             if matches!(declaration.shape, CompositeShape::Union(_)) {
                 budget.charge(1).map_err(EnvironmentFailure::Limit)?;
@@ -3509,39 +3536,52 @@ impl TypeEnvironment {
                     try_push(&mut targets, edge.target, reserve)?;
                 }
             }
-            graph.try_insert(declaration.key.clone(), targets, reserve)?;
+            graph.try_insert(&declaration.key, targets, reserve)?;
         }
         let name = |key: &NodeKey| {
             self.composites
                 .get(key)
                 .map_or("", |declaration| declaration.name.as_str())
         };
-        let mut finished: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
-        let mut active: OrderedIndex<NodeKey, usize> = OrderedIndex::default();
+        let mut finished: OrderedIndex<&NodeKey, ()> = OrderedIndex::default();
+        let mut active: OrderedIndex<&NodeKey, usize> = OrderedIndex::default();
         for root in graph.keys() {
-            if matches!(self.shape(root.clone()), Some(CompositeShape::Union(_))) {
+            if matches!(
+                self.composites.get(*root).map(|d| &d.shape),
+                Some(CompositeShape::Union(_))
+            ) {
                 budget.charge(1).map_err(EnvironmentFailure::Limit)?;
             }
             if finished.contains_key(root) {
                 continue;
             }
-            let mut path: Vec<(NodeKey, usize)> = Vec::new();
-            try_push(&mut path, (root.clone(), 0), reserve)?;
-            active.try_insert(root.clone(), 0, reserve)?;
+            let mut path: Vec<(&NodeKey, usize)> = Vec::new();
+            try_push(&mut path, (*root, 0), reserve)?;
+            active.try_insert(*root, 0, reserve)?;
             while let Some((node, next)) = path.last_mut() {
-                if matches!(self.shape(node.clone()), Some(CompositeShape::Union(_))) {
+                if matches!(
+                    self.composites.get(*node).map(|d| &d.shape),
+                    Some(CompositeShape::Union(_))
+                ) {
                     budget.charge(1).map_err(EnvironmentFailure::Limit)?;
                 }
-                let node = node.clone();
-                let Some(target) = graph.get(&node).and_then(|targets| targets.get(*next)) else {
-                    finished.try_insert(node.clone(), (), reserve)?;
+                let node = *node;
+                let Some(target) = graph
+                    .get(&node)
+                    .and_then(|targets| targets.get(*next))
+                    .copied()
+                else {
+                    finished.try_insert(node, (), reserve)?;
                     active.remove(&node);
                     path.pop();
                     continue;
                 };
                 *next += 1;
-                if let Some(&start) = active.get(target) {
-                    if matches!(self.shape(target.clone()), Some(CompositeShape::Union(_))) {
+                if let Some(&start) = active.get(&target) {
+                    if matches!(
+                        self.composites.get(target).map(|d| &d.shape),
+                        Some(CompositeShape::Union(_))
+                    ) {
                         budget
                             .charge(path.len() - start + 1)
                             .map_err(EnvironmentFailure::Limit)?;
@@ -3559,9 +3599,9 @@ impl TypeEnvironment {
                         },
                     }));
                 }
-                if !finished.contains_key(target) {
-                    active.try_insert(target.clone(), path.len(), reserve)?;
-                    try_push(&mut path, (target.clone(), 0), reserve)?;
+                if !finished.contains_key(&target) {
+                    active.try_insert(target, path.len(), reserve)?;
+                    try_push(&mut path, (target, 0), reserve)?;
                 }
             }
         }
@@ -3601,33 +3641,33 @@ impl TypeEnvironment {
                 }
             }
         }
-        let mut finished: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
-        let mut on_path: OrderedIndex<NodeKey, ()> = OrderedIndex::default();
+        let mut finished: OrderedIndex<&NodeKey, ()> = OrderedIndex::default();
+        let mut on_path: OrderedIndex<&NodeKey, ()> = OrderedIndex::default();
         for root in self.composites.keys() {
-            if finished.contains_key(root) {
+            if finished.contains_key(&root) {
                 continue;
             }
-            let mut path: Vec<(NodeKey, usize)> = Vec::new();
-            try_push(&mut path, (root.clone(), 0), reserve)?;
-            on_path.try_insert(root.clone(), (), reserve)?;
+            let mut path: Vec<(&NodeKey, usize)> = Vec::new();
+            try_push(&mut path, (root, 0), reserve)?;
+            on_path.try_insert(root, (), reserve)?;
             while let Some((node, next)) = path.last_mut() {
-                let node = node.clone();
+                let node = *node;
                 let Some(target) = self
                     .composites
-                    .get(&node)
+                    .get(node)
                     .and_then(|declaration| declaration.supertypes.get(*next))
                 else {
-                    finished.try_insert(node.clone(), (), reserve)?;
+                    finished.try_insert(node, (), reserve)?;
                     on_path.remove(&node);
                     path.pop();
                     continue;
                 };
                 *next += 1;
                 budget.charge(1).map_err(EnvironmentFailure::Limit)?;
-                if on_path.contains_key(target) {
+                if on_path.contains_key(&target) {
                     let start = path
                         .iter()
-                        .position(|(on_path, _)| on_path == target)
+                        .position(|(on_path, _)| *on_path == target)
                         .unwrap_or_default();
                     let mut cycle = Vec::new();
                     for (key, _) in path.iter().skip(start) {
@@ -3639,9 +3679,9 @@ impl TypeEnvironment {
                         cause: DeclarationCause::CompositeGeneralizationCycle { cycle },
                     }));
                 }
-                if !finished.contains_key(target) {
-                    on_path.try_insert(target.clone(), (), reserve)?;
-                    try_push(&mut path, (target.clone(), 0), reserve)?;
+                if !finished.contains_key(&target) {
+                    on_path.try_insert(target, (), reserve)?;
+                    try_push(&mut path, (target, 0), reserve)?;
                 }
             }
         }
@@ -3661,15 +3701,15 @@ impl TypeEnvironment {
             if ancestry.contains_key(root) {
                 continue;
             }
-            let mut path: Vec<(NodeKey, usize)> = Vec::new();
-            try_push(&mut path, (root.clone(), 0), reserve)?;
+            let mut path: Vec<(&NodeKey, usize)> = Vec::new();
+            try_push(&mut path, (root, 0), reserve)?;
             while let Some((node, next)) = path.last_mut() {
-                let node = node.clone();
-                let declaration = self.composites.get(&node).expect("validated composite key");
+                let node = *node;
+                let declaration = self.composites.get(node).expect("validated composite key");
                 if let Some(target) = declaration.supertypes.get(*next) {
                     *next += 1;
                     if !ancestry.contains_key(target) {
-                        try_push(&mut path, (target.clone(), 0), reserve)?;
+                        try_push(&mut path, (target, 0), reserve)?;
                     }
                     continue;
                 }
@@ -3694,7 +3734,7 @@ impl TypeEnvironment {
                     ancestors.sort_unstable();
                     ancestors.dedup();
                 }
-                ancestry.try_insert(node, ancestors, reserve)?;
+                ancestry.try_insert((*node).clone(), ancestors, reserve)?;
             }
         }
         Ok(ancestry)
@@ -3758,34 +3798,34 @@ impl TypeEnvironment {
                 }
             }
         }
-        let mut finished: OrderedIndex<EffectiveId, ()> = OrderedIndex::default();
-        let mut on_path: OrderedIndex<EffectiveId, ()> = OrderedIndex::default();
+        let mut finished: OrderedIndex<&EffectiveId, ()> = OrderedIndex::default();
+        let mut on_path: OrderedIndex<&EffectiveId, ()> = OrderedIndex::default();
         for root in self.object_types.keys() {
-            if finished.contains_key(root) {
+            if finished.contains_key(&root) {
                 continue;
             }
-            let mut path: Vec<(EffectiveId, usize)> = Vec::new();
-            try_push(&mut path, (root.clone(), 0), reserve)?;
-            on_path.try_insert(root.clone(), (), reserve)?;
+            let mut path: Vec<(&EffectiveId, usize)> = Vec::new();
+            try_push(&mut path, (root, 0), reserve)?;
+            on_path.try_insert(root, (), reserve)?;
             while let Some((node, next)) = path.last_mut() {
-                let node = node.clone();
+                let node = *node;
                 let Some(target) = self
                     .object_types
-                    .get(&node)
+                    .get(node)
                     .and_then(|declaration| declaration.supertypes.get(*next))
                 else {
-                    finished.try_insert(node.clone(), (), reserve)?;
+                    finished.try_insert(node, (), reserve)?;
                     on_path.remove(&node);
                     path.pop();
                     continue;
                 };
                 *next += 1;
                 budget.charge(1).map_err(EnvironmentFailure::Limit)?;
-                if on_path.contains_key(target) {
+                if on_path.contains_key(&target) {
                     // Found once, on the refusal path only.
                     let start = path
                         .iter()
-                        .position(|(on_path, _)| on_path == target)
+                        .position(|(on_path, _)| *on_path == target)
                         .unwrap_or_default();
                     let mut cycle = Vec::new();
                     for (key, _) in path.iter().skip(start) {
@@ -3797,9 +3837,9 @@ impl TypeEnvironment {
                         cause: DeclarationCause::GeneralizationCycle { cycle },
                     }));
                 }
-                if !finished.contains_key(target) {
-                    on_path.try_insert(target.clone(), (), reserve)?;
-                    try_push(&mut path, (target.clone(), 0), reserve)?;
+                if !finished.contains_key(&target) {
+                    on_path.try_insert(target, (), reserve)?;
+                    try_push(&mut path, (target, 0), reserve)?;
                 }
             }
         }
@@ -3962,7 +4002,7 @@ impl TypeEnvironment {
                 .unwrap_or(0);
             let followed = self
                 .ancestry
-                .of(declaration.key.clone())
+                .of(&declaration.key)
                 .unwrap_or_default()
                 .iter()
                 .filter_map(|position| edges(*position))
@@ -3992,9 +4032,7 @@ impl TypeEnvironment {
                 .iter()
                 .filter_map(FieldDeclaration::redefines)
             {
-                let inherited = self
-                    .ancestry
-                    .is_ancestor(declaration.key.clone(), target.owner.clone())
+                let inherited = self.ancestry.is_ancestor(&declaration.key, &target.owner)
                     && table.position(target).is_some();
                 if !inherited {
                     return Err(EnvironmentFailure::Refused(InvalidDeclaration {
@@ -4051,9 +4089,7 @@ impl TypeEnvironment {
             (ValueType::Int(inner), ValueType::Int(outer)) => {
                 outer.contains(inner.lower()) && outer.contains(inner.upper())
             }
-            (ValueType::Reference(sub), ValueType::Reference(sup)) => {
-                self.conforms(sub.clone(), sup.clone())
-            }
+            (ValueType::Reference(sub), ValueType::Reference(sup)) => self.conforms_ref(sub, sup),
             _ => false,
         }
     }
@@ -4241,10 +4277,10 @@ impl TypeEnvironment {
                 candidates
                     .get(index)
                     .and_then(|slot| slots.get(*slot))
-                    .map(|slot| slot.owner.clone())
+                    .map(|slot| &slot.owner)
             };
             let properly = |sub: usize, sup: usize| match (owner(sub), owner(sup)) {
-                (Some(sub), Some(sup)) => sub != sup && self.conforms(sub, sup),
+                (Some(sub), Some(sup)) => sub != sup && self.conforms_ref(sub, sup),
                 _ => false,
             };
             let mut best = members.first().copied().unwrap_or(*root);
@@ -4561,14 +4597,14 @@ struct Ancestry {
 }
 
 impl Ancestry {
-    fn of(&self, key: EffectiveId) -> Option<&[u32]> {
-        let position = self.positions.get(&key)?;
+    fn of(&self, key: &EffectiveId) -> Option<&[u32]> {
+        let position = self.positions.get(key)?;
         self.ancestors.get(*position as usize).map(Vec::as_slice)
     }
 
     /// Whether `ancestor` is a proper ancestor of `key`.
-    fn is_ancestor(&self, key: EffectiveId, ancestor: EffectiveId) -> bool {
-        match (self.of(key), self.positions.get(&ancestor)) {
+    fn is_ancestor(&self, key: &EffectiveId, ancestor: &EffectiveId) -> bool {
+        match (self.of(key), self.positions.get(ancestor)) {
             (Some(ancestors), Some(position)) => ancestors.binary_search(position).is_ok(),
             _ => false,
         }
@@ -4588,7 +4624,7 @@ fn own_attribute<R: ReservationPolicy>(
     slots: &mut Vec<AttributeSlot>,
     reserve: &R,
 ) -> Result<usize, Stopped> {
-    let identity = match table.position_parts(owner.clone(), field.name()) {
+    let identity = match table.position_parts(&owner, field.name()) {
         Some(identity) => identity,
         None => {
             return Err(DeclarationCause::RedefinitionTarget(FieldRef {
@@ -4677,7 +4713,7 @@ fn merge<R: ReservationPolicy>(
 /// duplicate-member check.
 struct FieldTable<'e> {
     /// By position: the owner, the declaration and the name's number.
-    fields: Vec<(EffectiveId, &'e FieldDeclaration, usize, usize)>,
+    fields: Vec<(&'e EffectiveId, &'e FieldDeclaration, usize, usize)>,
     names: usize,
 }
 
@@ -4691,7 +4727,7 @@ impl<'e> FieldTable<'e> {
             for (field_index, field) in declaration.attributes.iter().enumerate() {
                 try_push(
                     &mut fields,
-                    (declaration.key.clone(), field, 0, field_index),
+                    (&declaration.key, field, 0, field_index),
                     reserve,
                 )?;
             }
@@ -4726,13 +4762,13 @@ impl<'e> FieldTable<'e> {
     }
 
     fn position(&self, field: &FieldRef) -> Option<usize> {
-        self.position_parts(field.owner.clone(), field.name.as_str())
+        self.position_parts(&field.owner, field.name.as_str())
     }
 
-    fn position_parts(&self, owner: EffectiveId, name: &str) -> Option<usize> {
+    fn position_parts(&self, owner: &EffectiveId, name: &str) -> Option<usize> {
         self.fields
             .binary_search_by(|(stored_owner, declared, _, _)| {
-                (stored_owner, declared.name()).cmp(&(&owner, name))
+                (*stored_owner, declared.name()).cmp(&(owner, name))
             })
             .ok()
     }
@@ -4754,7 +4790,7 @@ impl<'e> FieldTable<'e> {
             .get(position)
             .map(|(owner, field, _, _)| {
                 Ok(FieldRef {
-                    owner: owner.clone(),
+                    owner: EffectiveId::clone(*owner),
                     name: try_clone_str(field.name(), reserve)?,
                 })
             })

@@ -737,7 +737,7 @@ impl TypeEnvironment {
                     MembershipEvent::DescriptorQuery,
                     query,
                 ))?;
-                let conforms = self.conforms(reference.object_type().clone(), declared.clone());
+                let conforms = self.conforms_ref(reference.object_type(), declared);
                 on_boundary(MembershipBoundary::AfterHelper(
                     MembershipEvent::DescriptorQuery,
                     query,
@@ -751,8 +751,7 @@ impl TypeEnvironment {
                     MembershipEvent::DescriptorQuery,
                     query,
                 ))?;
-                let conforms =
-                    self.composite_conforms(composite.declaration().clone(), declared.clone());
+                let conforms = self.composite_conforms_ref(composite.declaration(), declared);
                 on_boundary(MembershipBoundary::AfterHelper(
                     MembershipEvent::DescriptorQuery,
                     query,
@@ -780,14 +779,16 @@ impl TypeEnvironment {
                     MembershipEvent::DescriptorQuery,
                     query,
                 ))?;
-                let union_shape =
-                    matches!(self.shape(declared.clone()), Some(CompositeShape::Union(_)));
-                let expected_handle = self
-                    .union_handle(declared.clone())
-                    .unwrap_or_else(|| declared.clone());
-                let final_key = self.union_key(expected_handle.clone());
-                let member = if final_key.as_ref() == Some(union.declaration()) {
-                    self.union_member(expected_handle, union.variant().clone())
+                let union_shape = matches!(
+                    self.composites
+                        .get(declared)
+                        .map(|declaration| &declaration.shape),
+                    Some(CompositeShape::Union(_))
+                );
+                let expected_handle = self.union_handles.get(declared).unwrap_or(declared);
+                let final_key = self.union_keys.get(expected_handle);
+                let member = if final_key == Some(union.declaration()) {
+                    self.union_member_ref(expected_handle, union.variant())
                         .map(|(_, member)| member)
                 } else {
                     None
