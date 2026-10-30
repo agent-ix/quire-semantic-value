@@ -33,3 +33,7 @@ The changed file is `clippy.toml` only. The new `NodeKey::new`, `EffectiveId::ne
 ## Verdict
 
 Not mergeable at this head. Keep the former bans effective until the locked exact revision removes those methods and the QSV consumer migration replaces all calls; then verify the new constructor bans with the final all-targets Clippy gate. This is a review of the static guard slice, not an acceptance verdict for all of IR-1142.
+
+## Dispositions
+
+- **FND-001 — fixed.** PR #73 now pins quire-exact `ea8669d592e5ee6a3eb759a4ec74bdd8c0727a31`, whose structural API has removed the retired digest constructors. QSV's current `clippy.toml` forbids the active `NodeKey::new`, `EffectiveId::new`, and `PopulationId::new` constructors in production; the shared test fixture is the documented exception. Focused `cargo clippy --locked --lib --tests -- -D warnings` passed at `8e3dce6`. The original finding and verdict above describe the earlier `480cb277` review head.
