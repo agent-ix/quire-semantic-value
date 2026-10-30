@@ -7,12 +7,14 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+mod common;
+
 use ix_trace_rs::trace;
 use quire_exact::{
     from_admitted, BoundedQuantityType, Cancel, CancelCause, CardinalityBound, CollectionKind,
-    CollectionType, EffectiveId, FieldValue, FloatType, Identifier, IeeeWidth, IllTypedCause,
-    Integer, IntegerInterval, MapType, Meter, NodeKey, OptionValue, Outcome, Presence, Quantity,
-    Rational, ScalarLimits, UnionMember, UnitId, Value, ValueType, VariantId,
+    CollectionType, FieldValue, FloatType, Identifier, IeeeWidth, IllTypedCause, Integer,
+    IntegerInterval, MapType, Meter, NodeKey, OptionValue, Outcome, Presence, Quantity, Rational,
+    ScalarLimits, UnionMember, UnitId, Value, ValueType, VariantId,
 };
 use quire_semantic_value::declaration::{
     admits_equality_conversion, CompositeDeclaration, CompositeShape, DeclarationCause,
@@ -29,18 +31,12 @@ use quire_semantic_value::supplied_membership::{
 };
 use quire_semantic_value::unit::{DimensionNode, NominalDeclaration, UnitGraph, UnitNode};
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "fixture supplies producer identities; production mints none"
-)]
 fn key(n: u64) -> NodeKey {
-    let mut bytes = [0; 32];
-    bytes[..8].copy_from_slice(&n.to_be_bytes());
-    NodeKey::from_digest(bytes)
+    common::node(n)
 }
 
 fn variant(n: u64) -> VariantId {
-    VariantId::from_digest(*key(n).as_bytes())
+    common::variant(n)
 }
 
 /// Unit `U`, and `V`, a distinct unit of the same dimension, and `W`, a unit
@@ -71,8 +67,8 @@ fn unit_table() -> UnitTable {
     ]);
     let node = |dimension: u64, target: Option<u64>, scale: i64| {
         UnitNode::checked(
-            *key(dimension).as_bytes(),
-            target.map(|target| *key(target).as_bytes()),
+            key(dimension),
+            target.map(key),
             Rational::from_integer(Integer::from(scale)),
             Rational::from_integer(Integer::zero()),
             NominalDeclaration::default(),
@@ -100,8 +96,8 @@ fn quantity(n: i64, unit: UnitId) -> Quantity {
 fn bounded(unit: UnitId, min: Option<i64>, max: Option<i64>) -> ValueType {
     ValueType::bounded_quantity(
         BoundedQuantityType::new(
-            unit,
-            min.map(|n| quantity(n, unit)),
+            unit.clone(),
+            min.map(|n| quantity(n, unit.clone())),
             max.map(|n| quantity(n, unit)),
         )
         .unwrap(),
@@ -300,13 +296,9 @@ fn map_over_floats_is_admitted_and_set_of_such_a_map_is_refused() {
 /// A map's value type receives every refusal an `Option` payload or a
 /// collection element does, and the plain and metered walks agree.
 #[trace("TC-927", "FR-127-AC-3")]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "fixture supplies a producer identity; production mints none"
-)]
 #[test]
 fn map_value_type_is_refused_as_inside_option_and_collection() {
-    let object_free = EffectiveId::from_digest([9; 32]);
+    let object_free = common::effective(9);
     let cases = [
         (
             ValueType::Population(Some(2)),
@@ -370,7 +362,7 @@ fn sealed_union_with_position(position: ValueType) -> CompositeDeclaration {
         key(50),
         "U",
         CompositeShape::Union(vec![UnionMemberDeclaration::from_verified(
-            UnionMember::from_admitted(key(50), key(51), Identifier::new("M").unwrap()),
+            UnionMember::from_admitted(key(50), "M").expect("fixture union member"),
             vec![position],
         )]),
     )
@@ -513,7 +505,7 @@ fn recursion_through_a_map_escapes_only_when_it_can_be_empty() {
                 key(1),
                 "A",
                 CompositeShape::Union(vec![UnionMemberDeclaration::from_verified(
-                    UnionMember::from_admitted(key(1), key(2), Identifier::new("Next").unwrap()),
+                    UnionMember::from_admitted(key(1), "Next").expect("fixture union member"),
                     positions,
                 )]),
             )],
@@ -1029,7 +1021,10 @@ fn bounded_quantity_conversion_follows_the_quantity_row() {
     for source in &sources {
         assert!(to(source, &ValueType::Quantity(unit_u())));
         for target in [unit_v(), unit_w(), unit_x()] {
-            let expected = to(&ValueType::Quantity(unit_u()), &ValueType::Quantity(target));
+            let expected = to(
+                &ValueType::Quantity(unit_u()),
+                &ValueType::Quantity(target.clone()),
+            );
             assert_eq!(to(source, &ValueType::Quantity(target)), expected);
         }
         assert!(to(source, source));
@@ -1392,11 +1387,7 @@ fn sealed_environment(positions: Vec<ValueType>) -> TypeEnvironment {
         .seal_union_verified(
             key(1),
             key(40),
-            vec![UnionMember::from_admitted(
-                key(40),
-                key(41),
-                Identifier::new("Only").unwrap(),
-            )],
+            vec![UnionMember::from_admitted(key(40), "Only").expect("fixture union member")],
         )
         .unwrap();
     environment

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Public admission, read, and resolution checks for FR-119.
 
+mod common;
+
 use ix_trace_rs::trace;
 use quire_exact::{
     EffectiveId, FieldValue, FloatType, IeeeValue, IeeeWidth, ObjectId, ObjectReference, Presence,
-    UniverseId, Value, ValueType,
+    Value, ValueType,
 };
 use quire_semantic_value::declaration::{FieldDeclaration, ObjectTypeDeclaration, TypeEnvironment};
 use quire_semantic_value::object_closure::ObjectClosure;
@@ -20,7 +22,7 @@ use quire_semantic_value::relationship_extent::{
     reason = "fixture supplies identities; QSV mints none"
 )]
 fn ty(byte: u8) -> EffectiveId {
-    EffectiveId::from_digest([byte; 32])
+    common::effective(u64::from(byte))
 }
 
 const SYS: u8 = 1;
@@ -42,7 +44,7 @@ fn types() -> TypeEnvironment {
 
 fn reference(universe: u8, object_type: u8, object: &str) -> ObjectReference {
     ObjectReference::new(
-        UniverseId::from_digest([universe; 32]),
+        common::universe(u64::from(universe)),
         ty(object_type),
         ObjectId::new(object).expect("fixture object id"),
     )

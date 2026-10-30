@@ -3,6 +3,8 @@
 
 use std::cell::{Cell, RefCell};
 
+mod common;
+
 use ix_trace_rs::trace;
 use quire_exact::{Integer, NodeKey, OptionValue, Value, ValueType};
 use quire_semantic_value::declaration::{
@@ -15,7 +17,7 @@ use quire_semantic_value::declaration::{
     reason = "the fixture supplies a checked declaration key without minting one in production"
 )]
 fn key() -> NodeKey {
-    NodeKey::from_digest([17; 32])
+    common::node(17)
 }
 
 fn declaration() -> CompositeDeclaration {

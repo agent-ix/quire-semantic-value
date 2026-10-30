@@ -5,7 +5,7 @@
 //! It holds the runtime semantic values that a compiler, an evaluator and a
 //! backend share, so the code exists once. Its dependencies are the
 //! `quire-exact` kernel, the one RFC 8785 encoder (`quire-canonical`, built
-//! without `std`), `serde` and `thiserror`. It uses only `core` and `alloc`.
+//! without `std`) and `thiserror`. It uses only `core` and `alloc`.
 #![no_std]
 
 extern crate alloc;
@@ -32,3 +32,7 @@ pub mod stop;
 pub mod supplied_membership;
 pub mod supplied_stop;
 pub mod unit;
+
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+pub(crate) mod test_identity;

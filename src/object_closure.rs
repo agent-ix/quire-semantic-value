@@ -69,7 +69,7 @@ impl ObjectClosure {
         if self.contains(reference) {
             return Resolution::Present;
         }
-        if manifest.closed_coverage(types, reference.object_type()) {
+        if manifest.closed_coverage(types, reference.object_type().clone()) {
             Resolution::Dangling
         } else {
             Resolution::Undecidable
@@ -96,7 +96,7 @@ impl ObjectClosure {
                 object: Box::new(reference.clone()),
                 cause,
             };
-            let Some(declared) = types.attributes(reference.object_type()) else {
+            let Some(declared) = types.attributes(reference.object_type().clone()) else {
                 return Err(refuse(ObjectClosureCause::UnknownObjectType));
             };
             let slots = fill_slots(types, declared, attributes)
@@ -124,7 +124,7 @@ impl ObjectClosure {
     /// ambiguity).
     pub fn find(&self, universe: UniverseId, object: &str) -> Option<&ObjectReference> {
         let mut found = self.objects.keys().filter(|reference| {
-            reference.universe() == universe && reference.object().as_str() == object
+            reference.universe() == &universe && reference.object().as_str() == object
         });
         let first = found.next()?;
         match found.next() {
@@ -150,7 +150,7 @@ impl ObjectClosure {
         field: &FieldRef,
     ) -> Option<&FieldValue> {
         let position = types
-            .attributes(reference.object_type())?
+            .attributes(reference.object_type().clone())?
             .iter()
             .position(|attribute| attribute.stands_for(field))?;
         self.objects.get(reference)?.get(position)
@@ -355,7 +355,7 @@ mod tests {
         reason = "a test fixture needs an EffectiveId; production code mints none"
     )]
     fn object_type(byte: u8) -> EffectiveId {
-        EffectiveId::from_digest([byte; 32])
+        crate::test_identity::effective(u64::from(byte))
     }
 
     const A: u8 = 1;
@@ -382,7 +382,7 @@ mod tests {
 
     fn reference(type_byte: u8, key: &str) -> ObjectReference {
         ObjectReference::new(
-            UniverseId::from_digest([9; 32]),
+            crate::test_identity::universe(9),
             object_type(type_byte),
             ObjectId::new(key).expect("non-empty key"),
         )
@@ -430,15 +430,15 @@ mod tests {
     #[trace("TC-904", "FR-106-AC-10")]
     #[test]
     fn find_returns_none_for_an_ambiguous_key() {
-        let universe = UniverseId::from_digest([9; 32]);
+        let universe = crate::test_identity::universe(9);
         let a = reference(A, "k");
         let single = ObjectClosure::new(&types(), [object(&a)], &[]).unwrap();
-        assert_eq!(single.find(universe, "k"), Some(&a));
+        assert_eq!(single.find(universe.clone(), "k"), Some(&a));
 
         let b = reference(B, "k");
         let both = ObjectClosure::new(&types(), [object(&a), object(&b)], &[]).unwrap();
         assert!(both.contains(&a) && both.contains(&b));
-        assert_eq!(both.find(universe, "k"), None);
+        assert_eq!(both.find(universe.clone(), "k"), None);
     }
 
     /// Native leaves are admitted as their own attribute kinds and do not
@@ -450,7 +450,7 @@ mod tests {
         let types = TypeEnvironment::new(
             [],
             [ObjectTypeDeclaration::new(
-                native_type,
+                native_type.clone(),
                 "Native",
                 vec![
                     FieldDeclaration::new("u", ValueType::Uuid, Presence::Required),
@@ -473,11 +473,11 @@ mod tests {
         )
         .expect("native leaves close without referenced objects");
         assert!(matches!(
-            closure.attribute(&types, &owner, &FieldRef::new(native_type, "u")),
+            closure.attribute(&types, &owner, &FieldRef::new(native_type.clone(), "u")),
             Some(FieldValue::Present(Value::Uuid(actual))) if *actual == expected_uuid
         ));
         assert!(matches!(
-            closure.attribute(&types, &owner, &FieldRef::new(native_type, "t")),
+            closure.attribute(&types, &owner, &FieldRef::new(native_type.clone(), "t")),
             Some(FieldValue::Present(Value::Timestamp(actual))) if *actual == expected_timestamp
         ));
 
@@ -506,7 +506,7 @@ mod tests {
         reason = "a test fixture needs a NodeKey; production code mints none"
     )]
     fn node_key(byte: u8) -> quire_exact::NodeKey {
-        quire_exact::NodeKey::from_digest([byte; 32])
+        crate::test_identity::node(u64::from(byte))
     }
 
     /// A union value's payload is traversed like a composite's slots: a
@@ -515,17 +515,13 @@ mod tests {
     #[trace("TC-904", "FR-106-AC-11")]
     #[test]
     fn union_payload_references_are_closed_over() {
-        use quire_exact::{Identifier, UnionMember, UnionValue};
+        use quire_exact::{UnionMember, UnionValue};
         let types = types();
         let present_ref = reference(A, "present");
         let missing = reference(B, "missing");
         let closure =
             ObjectClosure::new(&types, [object(&present_ref)], &[]).expect("one object closes");
-        let member = UnionMember::from_admitted(
-            node_key(7),
-            node_key(8),
-            Identifier::new("m").expect("identifier"),
-        );
+        let member = UnionMember::from_admitted(node_key(7), "m").expect("fixture union member");
         let union = |payload| UnionValue::from_admitted(member.clone(), payload);
         let slots = |value| vec![FieldValue::Present(value)];
         let owner = reference(A, "owner");

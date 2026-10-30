@@ -21,7 +21,7 @@ pub enum EndSide {
 }
 
 /// The authenticated type and uniqueness flag supplied for one end.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RelationshipEnd {
     /// The declared effective object type.
     pub object_type: EffectiveId,
@@ -94,12 +94,12 @@ impl<K: Ord + Clone> NavigationRelationshipTable<K> {
             if entries.contains_key(&key) {
                 return Err(TableRefusal::DuplicateRelationshipKey(key));
             }
-            for (side, end) in [(EndSide::Source, source), (EndSide::Target, target)] {
-                if types.object_type(end.object_type).is_none() {
+            for (side, end) in [(EndSide::Source, &source), (EndSide::Target, &target)] {
+                if types.object_type(end.object_type.clone()).is_none() {
                     return Err(TableRefusal::UnknownEndType {
                         relationship: key,
                         side,
-                        object_type: end.object_type,
+                        object_type: end.object_type.clone(),
                     });
                 }
             }
@@ -112,7 +112,7 @@ impl<K: Ord + Clone> NavigationRelationshipTable<K> {
 
     /// The source and target declarations for `key`.
     pub fn ends(&self, key: &K) -> Option<(RelationshipEnd, RelationshipEnd)> {
-        self.entries.get(key).copied()
+        self.entries.get(key).cloned()
     }
 }
 
@@ -253,15 +253,17 @@ impl<K: Ord + Clone> RelationshipExtentStore<K> {
                     (
                         EndSide::Source,
                         source.object_type(),
-                        source_end.object_type,
+                        source_end.object_type.clone(),
                     ),
                     (
                         EndSide::Target,
                         target.object_type(),
-                        target_end.object_type,
+                        target_end.object_type.clone(),
                     ),
                 ] {
-                    if types.object_type(actual).is_none() || !types.conforms(actual, declared) {
+                    if types.object_type(actual.clone()).is_none()
+                        || !types.conforms(actual.clone(), declared.clone())
+                    {
                         first_mismatch = Some((
                             instance_index,
                             ExtentRefusal::EndTypeMismatch {
@@ -269,7 +271,7 @@ impl<K: Ord + Clone> RelationshipExtentStore<K> {
                                 extent_index,
                                 instance_index,
                                 side,
-                                actual_type: actual,
+                                actual_type: actual.clone(),
                                 declared_type: declared,
                             },
                         ));
@@ -431,7 +433,7 @@ pub struct PopulationEntry<P: Ord> {
 }
 
 /// Why a population entry could not be constructed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum PopulationEntryFailure {
     /// No covered type was supplied.
     #[error("population entry has no covered types")]
@@ -650,10 +652,10 @@ impl<'t, P: Ord + Clone> ClosedPopulationManifest<'t, P> {
                         Err(position) => position,
                     };
                     for covered_type in &row.covered_types {
-                        if types.object_type(*covered_type).is_none() {
+                        if types.object_type(covered_type.clone()).is_none() {
                             return Err(ManifestFailure::UnknownCoveredType {
                                 population: row.population,
-                                covered_type: *covered_type,
+                                covered_type: covered_type.clone(),
                             });
                         }
                     }
@@ -686,7 +688,7 @@ fn build_coverage<P: Ord, R: ReservationPolicy>(
             if row
                 .covered_types
                 .iter()
-                .any(|member| types.conforms(actual, *member))
+                .any(|member| types.conforms(actual.clone(), member.clone()))
             {
                 any = true;
                 all_complete &= row.complete;
@@ -697,7 +699,7 @@ fn build_coverage<P: Ord, R: ReservationPolicy>(
             coverage.push((actual, all_complete));
         }
     }
-    coverage.sort_unstable_by_key(|(object_type, _)| *object_type);
+    coverage.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
     Ok(coverage)
 }
 
@@ -772,12 +774,12 @@ impl<'t, P: Ord + Clone, E> ManifestOutcome<'t, P, E> {
         let OutcomeState::Closed(closed) = &self.state else {
             return false;
         };
-        if !ptr::eq(closed.types, types) || types.object_type(actual).is_none() {
+        if !ptr::eq(closed.types, types) || types.object_type(actual.clone()).is_none() {
             return false;
         }
         closed
             .coverage
-            .binary_search_by_key(&actual, |(object_type, _)| *object_type)
+            .binary_search_by_key(&actual, |(object_type, _)| object_type.clone())
             .ok()
             .and_then(|position| closed.coverage.get(position))
             .is_some_and(|(_, complete)| *complete)
@@ -831,7 +833,7 @@ mod tests {
     use alloc::vec;
     use core::cell::Cell;
     use ix_trace_rs::trace;
-    use quire_exact::{ObjectId, UniverseId};
+    use quire_exact::ObjectId;
 
     struct CapacityPolicy;
 
@@ -849,7 +851,7 @@ mod tests {
         reason = "fixture supplies identities; production mints none"
     )]
     fn ty(byte: u8) -> EffectiveId {
-        EffectiveId::from_digest([byte; 32])
+        crate::test_identity::effective(u64::from(byte))
     }
 
     fn types() -> TypeEnvironment {
@@ -865,7 +867,7 @@ mod tests {
 
     fn reference(object_type: u8) -> ObjectReference {
         ObjectReference::new(
-            UniverseId::from_digest([9; 32]),
+            crate::test_identity::universe(9),
             ty(object_type),
             ObjectId::new("x").expect("fixture id"),
         )

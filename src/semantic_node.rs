@@ -3,18 +3,12 @@
 //! `invalid_semantic_graph` refusal, its typed causes, and the structural term
 //! check every dimension and compound unit applies.
 //!
-//! The preimage side (owner projection, RFC 8785 encoding and the SHA-256
-//! node-key digest) stays with the caller; this module holds only what a backend
-//! that is handed already-admitted node keys raises as well.
+//! The checked-package admission of structural node identities stays with the
+//! caller; this module holds only what a backend handed admitted keys raises.
 
 use alloc::collections::BTreeSet;
-use alloc::string::{String, ToString};
-use core::fmt;
-
-use quire_canonical::{FixedShape, Limits};
-use serde::Serialize;
-
-use quire_exact::{Integer, NodeKey, NODE_KEY_DOMAIN};
+use quire_canonical::Limits;
+use quire_exact::Integer;
 
 /// The strict reader's `refused { code: invalid_semantic_graph }`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, thiserror::Error)]
@@ -40,7 +34,7 @@ pub enum SemanticGraphCause {
     UnsortedUnorderedMembers,
     /// The owner does not join the lock selection.
     OwnerNotSelected,
-    /// The retained key is not the digest of the admitted content.
+    /// The retained structural key does not match the admitted content.
     StaleKey,
     /// A member node references a different declaration node.
     ForeignDeclaration,
@@ -92,27 +86,14 @@ pub fn check_terms<K: Ord>(terms: &[(K, Integer)]) -> Result<(), SemanticGraphCa
     Ok(())
 }
 
-/// The limits every identity preimage encodes under.
+/// The default byte limit for measuring a compound unit's structural terms.
 ///
-/// One RFC 8785 JCS implementation produces every RFC 8785 encoding: every
-/// normalized identity -- checked node keys,
-/// nominal and unit preimages, `EffectiveId`, `UniverseId`, `PopulationId`,
-/// `package_id` and the domain-package `sha256-jcs` digest -- is encoded by
-/// the `quire-canonical` crate, called directly at each identity site. This
-/// constant is no encoder: it fixes only the limits those calls share, so the
-/// bound is stated once. It lives here, in the lowest identity-preimage
-/// module, so every identity site above it may name it, and this
-/// crate's compound-unit id encodes under it.
-///
-/// The encoder bounds bytes only; depth is not a limit.
-/// This is the published default of QSL's `identity.input_bytes` setting,
-/// 16777216 bytes (FR-259 B3). Every preimage is built from values an
-/// earlier stage already bounded (the intake limit, the check stage's limits,
-/// a package reader's artifact byte limit), and a caller with a tighter byte
-/// budget of its own passes its own [`Limits`] instead (the v2 reader does).
+/// The canonical encoder checks the ordered FR-201 `terms` arm under this
+/// limit, but its output is never retained or hashed as an identity. A caller
+/// with a tighter byte budget can pass its own [`Limits`] instead.
 pub const IDENTITY_LIMITS: Limits = Limits::new(16_777_216);
 
-/// Why an identity preimage has no digest.
+/// Why a structural identity's bounded encoding was refused.
 ///
 /// QSL FR-259 Behavior 4: a byte limit reached while encoding is the
 /// calling stage's input-bytes limit (QSL's `identity.input_bytes`), never a
@@ -120,9 +101,9 @@ pub const IDENTITY_LIMITS: Limits = Limits::new(16_777_216);
 /// outcome, naming no bound.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, thiserror::Error)]
 pub enum IdentityRefusal {
-    /// The preimage's canonical bytes would exceed the byte limit it was
+    /// The structural terms' canonical bytes would exceed the byte limit they were
     /// encoded under.
-    #[error("identity preimage needs {required} bytes, over the bound of {bound}")]
+    #[error("identity encoding needs {required} bytes, over the bound of {bound}")]
     InputBytes {
         /// The byte limit the preimage was encoded under.
         bound: u64,
@@ -131,13 +112,13 @@ pub enum IdentityRefusal {
         required: u64,
     },
     /// A heap reservation for the canonical bytes failed.
-    #[error("allocation of {requested} bytes for an identity preimage failed")]
+    #[error("allocation of {requested} bytes for an identity encoding failed")]
     Allocation {
         /// The size in bytes of the reservation that failed.
         requested: usize,
     },
-    /// The preimage has no RFC 8785 encoding.
-    #[error("the identity preimage has no RFC 8785 encoding")]
+    /// The structural terms have no RFC 8785 encoding.
+    #[error("the identity has no RFC 8785 encoding")]
     NonCanonical,
 }
 
@@ -151,47 +132,6 @@ impl From<quire_canonical::Error> for IdentityRefusal {
             quire_canonical::Error::Allocation { requested } => Self::Allocation { requested },
             _ => Self::NonCanonical,
         }
-    }
-}
-
-/// The `node-identity-preimage.schema.json` node-id member every node-key
-/// and compound-unit preimage embeds: a node key's digest as 64 lowercase
-/// hexadecimal digits under the `quire.checked-semantic-node/v1` domain. The
-/// one definition of that JCS shape, so node keys and compound-unit ids
-/// encode a node id the same way.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, FixedShape)]
-pub struct CanonicalNodeId {
-    // RFC 8785 JCS: `quire-canonical` orders members itself, so field
-    // declaration order carries no meaning.
-    digest: String,
-    domain: &'static str,
-}
-
-impl From<[u8; 32]> for CanonicalNodeId {
-    /// The node id of these 32 digest bytes, as read or as retained.
-    fn from(digest: [u8; 32]) -> Self {
-        Self {
-            digest: DigestHex(digest).to_string(),
-            domain: NODE_KEY_DOMAIN,
-        }
-    }
-}
-
-impl From<NodeKey> for CanonicalNodeId {
-    fn from(key: NodeKey) -> Self {
-        Self::from(*key.as_bytes())
-    }
-}
-
-/// 32 digest bytes as 64 lowercase hexadecimal digits, the spelling
-/// `NodeKey`'s `Display` uses.
-struct DigestHex([u8; 32]);
-
-impl fmt::Display for DigestHex {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0
-            .iter()
-            .try_for_each(|byte| write!(formatter, "{byte:02x}"))
     }
 }
 

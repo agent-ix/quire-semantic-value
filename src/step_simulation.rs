@@ -138,7 +138,7 @@ mod tests {
         reason = "a test fixture supplies NodeKey; production code mints none"
     )]
     fn key(byte: u8) -> NodeKey {
-        NodeKey::from_digest([byte; 32])
+        crate::test_identity::node(u64::from(byte))
     }
 
     fn hex(byte: u8) -> String {

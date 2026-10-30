@@ -2,11 +2,13 @@
 //! Resolved topology and verified sealing through the real shared registry.
 //! Fixture keys are producer-supplied identities, not a digest-minting oracle.
 
+mod common;
+
 use ix_trace_rs::trace;
 use quire_exact::{
-    CollectionKind, CollectionType, EffectiveId, FieldValue, FloatType, Identifier, IeeeWidth,
-    IllTypedCause, Integer, Meter, NodeKey, ObjectId, ObjectReference, OptionValue, Outcome,
-    Presence, ScalarLimits, UnionMember, UnionValue, UniverseId, Value, ValueType, VariantId,
+    CollectionKind, CollectionType, FieldValue, FloatType, Identifier, IeeeWidth, IllTypedCause,
+    Integer, Meter, NodeKey, ObjectId, ObjectReference, OptionValue, Outcome, Presence,
+    ScalarLimits, UnionMember, UnionValue, Value, ValueType, VariantId,
 };
 use quire_semantic_value::declaration::{
     CompositeDeclaration, CompositeShape, DeclarationCause, EnvironmentFailure, EqualityOperand,
@@ -25,21 +27,19 @@ use quire_semantic_value::supplied_membership::{
     reason = "fixture supplies producer identities; production mints none"
 )]
 fn key(n: u64) -> NodeKey {
-    let mut bytes = [0; 32];
-    bytes[..8].copy_from_slice(&n.to_be_bytes());
-    NodeKey::from_digest(bytes)
+    common::node(n)
 }
 
-fn variant(n: u64) -> VariantId {
-    VariantId::from_digest(*key(n).as_bytes())
+fn variant(owner: NodeKey, name: &str) -> VariantId {
+    VariantId::new(owner, name).expect("fixture variant")
 }
 
 fn resolved(name: &str, positions: Vec<ValueType>) -> UnionMemberDeclaration {
     UnionMemberDeclaration::resolved(Identifier::new(name).unwrap(), positions)
 }
 
-fn binding(final_key: NodeKey, n: u64, name: &str) -> UnionMember {
-    UnionMember::from_admitted(final_key, key(n), Identifier::new(name).unwrap())
+fn binding(final_key: NodeKey, name: &str) -> UnionMember {
+    UnionMember::from_admitted(final_key, name).expect("fixture union member")
 }
 
 fn shape() -> CompositeDeclaration {
@@ -55,8 +55,8 @@ fn shape() -> CompositeDeclaration {
 
 fn bindings(final_key: NodeKey) -> Vec<UnionMember> {
     vec![
-        binding(final_key, 10, "Empty"),
-        binding(final_key, 11, "Rect"),
+        binding(final_key.clone(), "Empty"),
+        binding(final_key, "Rect"),
     ]
 }
 
@@ -86,12 +86,14 @@ fn resolved_topology_is_visible_and_unsealed_union_grants_nothing() {
     let env = TypeEnvironment::new([shape()], []).unwrap();
     let (position, rect) = env.union_member_named(key(1), "Rect").unwrap();
     assert_eq!(position, 1);
-    assert_eq!(rect.identifier().as_str(), "Rect");
+    assert_eq!(rect.identifier(), "Rect");
     assert_eq!(rect.positions(), &[ValueType::Integer, ValueType::Integer]);
     assert!(rect.member().is_none());
     assert_eq!(env.union_key(key(1)), None);
     assert_eq!(env.runtime_type(&ValueType::Composite(key(1))), None);
-    assert!(env.union_member(key(1), variant(10)).is_none());
+    assert!(env
+        .union_member(key(1), variant(key(40), "Empty"))
+        .is_none());
     assert_eq!(
         env.check_equality(
             EqualityOperator::Equal,
@@ -103,8 +105,10 @@ fn resolved_topology_is_visible_and_unsealed_union_grants_nothing() {
         .cause,
         IllTypedCause::TypeMismatch
     );
-    assert!(env.union(key(1), variant(10), vec![]).is_err());
-    let supplied = UnionValue::from_admitted(binding(key(40), 10, "Empty"), vec![]);
+    assert!(env
+        .union(key(1), variant(key(40), "Empty"), vec![])
+        .is_err());
+    let supplied = UnionValue::from_admitted(binding(key(40), "Empty"), vec![]);
     assert!(!env
         .admits(&ValueType::Composite(key(1)), &supplied)
         .unwrap());
@@ -112,7 +116,7 @@ fn resolved_topology_is_visible_and_unsealed_union_grants_nothing() {
     assert!(env
         .evaluate_union(
             key(1),
-            variant(11),
+            variant(key(40), "Rect"),
             vec![
                 Box::new(|_| {
                     calls.set(calls.get() + 1);
@@ -141,12 +145,17 @@ fn sealed_union_final_key_never_admits_a_record_or_tuple_carrier() {
         .unwrap();
     for declaration in [key(1), key(40)] {
         for slots in [vec![], vec![FieldValue::Present(integer(1))]] {
-            let carrier = quire_exact::from_admitted_slots(declaration, slots.into_boxed_slice());
+            let carrier =
+                quire_exact::from_admitted_slots(declaration.clone(), slots.into_boxed_slice());
             for ty in [key(1), key(40)] {
-                assert!(!env.admits(&ValueType::Composite(ty), &carrier).unwrap());
-                let wrapped =
-                    OptionValue::present(ValueType::Composite(declaration), carrier.clone())
-                        .unwrap();
+                assert!(!env
+                    .admits(&ValueType::Composite(ty.clone()), &carrier)
+                    .unwrap());
+                let wrapped = OptionValue::present(
+                    ValueType::Composite(declaration.clone()),
+                    carrier.clone(),
+                )
+                .unwrap();
                 assert!(!env
                     .admits(&ValueType::option(ValueType::Composite(ty)), &wrapped)
                     .unwrap());
@@ -161,16 +170,16 @@ fn sealed_union_final_key_never_admits_a_record_or_tuple_carrier() {
 #[test]
 fn sealed_union_carrier_is_admitted_by_handle_and_final_key() {
     let mut env = TypeEnvironment::new([shape()], []).unwrap();
-    let supplied = UnionValue::from_admitted(binding(key(40), 10, "Empty"), vec![]);
+    let supplied = UnionValue::from_admitted(binding(key(40), "Empty"), vec![]);
     env.seal_union_verified(key(1), key(40), bindings(key(40)))
         .unwrap();
     assert_eq!(env.union_key(key(1)), Some(key(40)));
     assert_eq!(env.union_handle(key(40)), Some(key(1)));
     assert_eq!(env.composite(key(40)).unwrap().key(), key(1));
-    let (position, rect) = env.union_member(key(40), variant(11)).unwrap();
+    let (position, rect) = env.union_member(key(40), variant(key(40), "Rect")).unwrap();
     assert_eq!(position, 1);
-    assert_eq!(rect.member().unwrap().declaration(), key(40));
-    assert_eq!(rect.member().unwrap().variant(), variant(11));
+    assert_eq!(rect.member().unwrap().declaration(), &key(40));
+    assert_eq!(rect.member().unwrap().variant(), &variant(key(40), "Rect"));
     assert!(env
         .admits(&ValueType::Composite(key(1)), &supplied)
         .unwrap());
@@ -178,14 +187,18 @@ fn sealed_union_carrier_is_admitted_by_handle_and_final_key() {
         .admits(&ValueType::Composite(key(40)), &supplied)
         .unwrap());
     let value = env
-        .union(key(1), variant(11), vec![integer(2), integer(3)])
+        .union(
+            key(1),
+            variant(key(40), "Rect"),
+            vec![integer(2), integer(3)],
+        )
         .unwrap();
     let Value::Union(value) = value else {
         panic!("sealed union carrier required");
     };
-    assert_eq!(value.declaration(), key(40));
+    assert_eq!(value.declaration(), &key(40));
     assert_eq!(value.payload().len(), 2);
-    let wrong_handle_value = UnionValue::from_admitted(binding(key(1), 10, "Empty"), vec![]);
+    let wrong_handle_value = UnionValue::from_admitted(binding(key(1), "Empty"), vec![]);
     assert!(!env
         .admits(&ValueType::Composite(key(1)), &wrong_handle_value)
         .unwrap());
@@ -201,8 +214,7 @@ fn sealed_union_payload_uses_one_rooted_supplied_budget() {
     let mut env = TypeEnvironment::new([shape()], []).unwrap();
     env.seal_union_verified(key(1), key(40), bindings(key(40)))
         .unwrap();
-    let value =
-        UnionValue::from_admitted(binding(key(40), 11, "Rect"), vec![integer(2), integer(3)]);
+    let value = UnionValue::from_admitted(binding(key(40), "Rect"), vec![integer(2), integer(3)]);
     let expected = ValueType::Composite(key(1));
     let cancel = quire_exact::Cancel::new();
     for ceiling in [0, 5, 6] {
@@ -263,8 +275,7 @@ fn public_supplied_reservation_denial_retains_request_and_locus() {
     let mut env = TypeEnvironment::new([shape()], []).unwrap();
     env.seal_union_verified(key(1), key(40), bindings(key(40)))
         .unwrap();
-    let value =
-        UnionValue::from_admitted(binding(key(40), 11, "Rect"), vec![integer(2), integer(3)]);
+    let value = UnionValue::from_admitted(binding(key(40), "Rect"), vec![integer(2), integer(3)]);
     let expected = ValueType::Composite(key(1));
     let cancel = quire_exact::Cancel::new();
     let mut arena = MembershipPathArena::new().unwrap();
@@ -334,21 +345,21 @@ fn invalid_union_member_and_payload_keep_distinct_rooted_causes() {
         .unwrap();
     let cases = [
         (
-            UnionValue::from_admitted(binding(key(40), 99, "Rect"), vec![integer(2), integer(3)]),
+            UnionValue::from_admitted(binding(key(41), "Rect"), vec![integer(2), integer(3)]),
             InvalidMembershipCause::Member,
             MembershipPart::Descriptor(0),
             None,
             2,
         ),
         (
-            UnionValue::from_admitted(binding(key(40), 11, "Spoof"), vec![integer(2), integer(3)]),
+            UnionValue::from_admitted(binding(key(40), "Spoof"), vec![integer(2), integer(3)]),
             InvalidMembershipCause::Member,
             MembershipPart::Descriptor(0),
             None,
             2,
         ),
         (
-            UnionValue::from_admitted(binding(key(40), 11, "Rect"), vec![integer(2)]),
+            UnionValue::from_admitted(binding(key(40), "Rect"), vec![integer(2)]),
             InvalidMembershipCause::Payload,
             MembershipPart::Descriptor(0),
             None,
@@ -356,7 +367,7 @@ fn invalid_union_member_and_payload_keep_distinct_rooted_causes() {
         ),
         (
             UnionValue::from_admitted(
-                binding(key(40), 11, "Rect"),
+                binding(key(40), "Rect"),
                 vec![integer(2), Value::Boolean(true)],
             ),
             InvalidMembershipCause::Kind,
@@ -403,20 +414,16 @@ fn invalid_seals_leave_every_descriptor_and_join_unchanged() {
     let original = TypeEnvironment::new([shape()], []).unwrap();
     for (members, cause) in [
         (
-            vec![binding(key(40), 10, "Empty")],
+            vec![binding(key(40), "Empty")],
             DeclarationCause::Type(IllTypedCause::TypeMismatch),
         ),
         (
-            vec![binding(key(40), 10, "Rect"), binding(key(40), 11, "Empty")],
+            vec![binding(key(40), "Rect"), binding(key(40), "Empty")],
             DeclarationCause::Type(IllTypedCause::TypeMismatch),
         ),
         (
-            vec![binding(key(40), 10, "Empty"), binding(key(41), 11, "Rect")],
+            vec![binding(key(40), "Empty"), binding(key(41), "Rect")],
             DeclarationCause::Type(IllTypedCause::TypeMismatch),
-        ),
-        (
-            vec![binding(key(40), 10, "Empty"), binding(key(40), 10, "Rect")],
-            DeclarationCause::DuplicateKey,
         ),
     ] {
         let mut env = original.clone();
@@ -471,7 +478,7 @@ fn final_key_collisions_cannot_alias_records_or_another_union() {
         .unwrap();
     let sealed = env.clone();
     let Err(EnvironmentFailure::Refused(actual)) =
-        env.seal_union_verified(key(2), key(41), vec![binding(key(41), 20, "Empty")])
+        env.seal_union_verified(key(2), key(41), vec![binding(key(41), "Empty")])
     else {
         panic!("another union cannot acquire the same final key");
     };
@@ -566,7 +573,7 @@ fn recursive_handle_final_key_joins_admit_payloads_and_checked_equality() {
     env.seal_union_verified(
         key(1),
         key(40),
-        vec![binding(key(40), 10, "End"), binding(key(40), 11, "Next")],
+        vec![binding(key(40), "End"), binding(key(40), "Next")],
     )
     .unwrap();
     assert_eq!(
@@ -576,12 +583,14 @@ fn recursive_handle_final_key_joins_admit_payloads_and_checked_equality() {
     env.seal_union_verified(
         key(2),
         key(41),
-        vec![binding(key(41), 20, "End"), binding(key(41), 21, "Next")],
+        vec![binding(key(41), "End"), binding(key(41), "Next")],
     )
     .unwrap();
-    let end = env.union(key(2), variant(20), vec![]).unwrap();
+    let end = env.union(key(2), variant(key(41), "End"), vec![]).unwrap();
     let child = OptionValue::present(ValueType::Composite(key(41)), end).unwrap();
-    let value = env.union(key(1), variant(11), vec![child]).unwrap();
+    let value = env
+        .union(key(1), variant(key(40), "Next"), vec![child])
+        .unwrap();
     assert!(env.admits(&ValueType::Composite(key(1)), &value).unwrap());
     assert!(env.admits(&ValueType::Composite(key(40)), &value).unwrap());
     assert_eq!(
@@ -596,11 +605,11 @@ fn recursive_handle_final_key_joins_admit_payloads_and_checked_equality() {
             &EnumMemberIndex::default(),
         )
         .unwrap();
-    let independent_end = env.union(key(41), variant(20), vec![]).unwrap();
+    let independent_end = env.union(key(41), variant(key(41), "End"), vec![]).unwrap();
     let independent = env
         .union(
             key(40),
-            variant(11),
+            variant(key(40), "Next"),
             vec![OptionValue::present(ValueType::Composite(key(41)), independent_end).unwrap()],
         )
         .unwrap();
@@ -626,7 +635,7 @@ fn recursive_handle_final_key_joins_admit_payloads_and_checked_equality() {
     let collection = quire_exact::from_admitted(actual_collection, vec![contained]);
     assert!(env.admits(&expected_collection, &collection).unwrap());
     let wrong = UnionValue::from_admitted(
-        binding(key(1), 11, "Next"),
+        binding(key(1), "Next"),
         vec![OptionValue::none(ValueType::Composite(key(2)))],
     );
     assert!(!env.admits(&ValueType::Composite(key(1)), &wrong).unwrap());
@@ -700,18 +709,18 @@ fn sealed_tree_10k_supplied_fixture() -> (TypeEnvironment, ValueType, impl Fn() 
     env.seal_union_verified(
         key(1),
         key(40),
-        vec![binding(key(40), 10, "End"), binding(key(40), 11, "Next")],
+        vec![binding(key(40), "End"), binding(key(40), "Next")],
     )
     .unwrap();
     let end = env
-        .union_member(key(1), variant(10))
+        .union_member(key(1), variant(key(40), "End"))
         .unwrap()
         .1
         .member()
         .unwrap()
         .clone();
     let next = env
-        .union_member(key(40), variant(11))
+        .union_member(key(40), variant(key(40), "Next"))
         .unwrap()
         .1
         .member()
@@ -823,18 +832,18 @@ fn sealed_tree_10k_budgeted_admission_denies_last_event_on_small_stack() {
 )]
 #[test]
 fn sealed_reference_positions_validate_conformance_and_closure() {
-    let object_type = EffectiveId::from_digest([1; 32]);
+    let object_type = common::effective(1);
     let mut env = TypeEnvironment::new(
         [CompositeDeclaration::new(
             key(1),
             "Holder",
             CompositeShape::Union(vec![resolved(
                 "Some",
-                vec![ValueType::Reference(object_type)],
+                vec![ValueType::Reference(object_type.clone())],
             )]),
         )],
         [ObjectTypeDeclaration::new(
-            object_type,
+            object_type.clone(),
             "Object",
             vec![FieldDeclaration::new(
                 "holder",
@@ -844,22 +853,30 @@ fn sealed_reference_positions_validate_conformance_and_closure() {
         )],
     )
     .unwrap();
-    env.seal_union_verified(key(1), key(40), vec![binding(key(40), 10, "Some")])
+    env.seal_union_verified(key(1), key(40), vec![binding(key(40), "Some")])
         .unwrap();
     let reference = |name| {
         ObjectReference::new(
-            UniverseId::from_digest([9; 32]),
-            object_type,
+            common::universe(9),
+            object_type.clone(),
             ObjectId::new(name).unwrap(),
         )
     };
     let owner = reference("owner");
     let target = reference("target");
     let owner_value = env
-        .union(key(1), variant(10), vec![Value::Reference(target.clone())])
+        .union(
+            key(1),
+            variant(key(40), "Some"),
+            vec![Value::Reference(target.clone())],
+        )
         .unwrap();
     let target_value = env
-        .union(key(40), variant(10), vec![Value::Reference(owner.clone())])
+        .union(
+            key(40),
+            variant(key(40), "Some"),
+            vec![Value::Reference(owner.clone())],
+        )
         .unwrap();
     let closure = ObjectClosure::new(
         &env,
@@ -893,7 +910,7 @@ fn sealed_reference_positions_validate_conformance_and_closure() {
         ObjectClosureCause::DanglingReference(Box::new(target))
     );
     assert!(env
-        .union(key(1), variant(10), vec![Value::Boolean(true)])
+        .union(key(1), variant(key(40), "Some"), vec![Value::Boolean(true)])
         .is_err());
 }
 
@@ -938,7 +955,6 @@ fn full_size_resolved_registry_can_be_sealed_without_replacing_topology() {
                     .map(|i| {
                         binding(
                             key(40),
-                            i + 100,
                             if i == 4_999 {
                                 "Deep".to_owned()
                             } else {
@@ -951,7 +967,12 @@ fn full_size_resolved_registry_can_be_sealed_without_replacing_topology() {
             };
             env.seal_union_verified(key(1), key(40), bindings())
                 .unwrap();
-            assert_eq!(env.union_member(key(40), variant(5_099)).unwrap().0, 4_999);
+            assert_eq!(
+                env.union_member(key(40), variant(key(40), "Deep"))
+                    .unwrap()
+                    .0,
+                4_999
+            );
             assert_eq!(
                 env.union_member_named(key(1), "Deep")
                     .unwrap()

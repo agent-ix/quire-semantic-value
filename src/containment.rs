@@ -192,14 +192,14 @@ impl TypeEnvironment {
                 .collect::<Result<Vec<_>, _>>()
         };
         let union_variant = match node {
-            GraphNode::Union { variant, .. } => Some(*variant),
+            GraphNode::Union { variant, .. } => Some(variant.clone()),
             GraphNode::Record { .. } | GraphNode::Tuple { .. } => None,
         };
         let constructed = match node {
             GraphNode::Record {
                 declaration,
                 fields: supplied,
-            } => self.record(*declaration, fields(supplied)?),
+            } => self.record(declaration.clone(), fields(supplied)?),
             GraphNode::Tuple {
                 declaration,
                 positions,
@@ -224,8 +224,8 @@ impl TypeEnvironment {
                     }));
                 }
                 match union_variant {
-                    Some(variant) => self.union(*declaration, variant, values),
-                    None => self.tuple(*declaration, values),
+                    Some(variant) => self.union(declaration.clone(), variant, values),
+                    None => self.tuple(declaration.clone(), values),
                 }
             }
         };

@@ -5,6 +5,8 @@
     reason = "the fixtures supply checked unit identities without minting them in production"
 )]
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;
 
@@ -46,21 +48,21 @@ fn rational(n: i64) -> Rational {
 }
 
 fn key(n: u8) -> NodeKey {
-    NodeKey::from_digest([n; 32])
+    common::node(u64::from(n))
 }
 
 fn dimension(terms: &[(u8, i64)]) -> DimensionNode {
     let terms = terms
         .iter()
-        .map(|(base, e)| ([*base; 32], int(*e)))
+        .map(|(base, e)| (key(*base), int(*e)))
         .collect();
     DimensionNode::checked(terms, NominalDeclaration::default()).unwrap()
 }
 
 fn unit(dimension: u8, target: Option<u8>, scale: Rational) -> UnitNode {
     UnitNode::checked(
-        [dimension; 32],
-        target.map(|t| [t; 32]),
+        key(dimension),
+        target.map(key),
         scale,
         rational(0),
         NominalDeclaration::default(),
@@ -82,9 +84,9 @@ const MILLIJOULE: u8 = 15;
 fn si_energy(graph: &UnitGraph) -> CompoundUnit {
     graph
         .compound_unit(&[
-            ([KILOGRAM; 32], int(1)),
-            ([METRE; 32], int(2)),
-            ([SECOND; 32], int(-2)),
+            (key(KILOGRAM), int(1)),
+            (key(METRE), int(2)),
+            (key(SECOND), int(-2)),
         ])
         .unwrap()
 }
@@ -92,7 +94,7 @@ fn si_energy(graph: &UnitGraph) -> CompoundUnit {
 /// QSpec TC-187 U25's units: joule (root of energy = M L^2 T^-2), the
 /// millijoule, and, when `twin` is given, a declared unit of energy under the
 /// joule whose key bytes are `twin`.
-fn energy_graph(twin: Option<[u8; 32]>) -> UnitGraph {
+fn energy_graph() -> UnitGraph {
     let dimensions = BTreeMap::from([
         (key(MASS), dimension(&[])),
         (key(LENGTH), dimension(&[])),
@@ -102,7 +104,7 @@ fn energy_graph(twin: Option<[u8; 32]>) -> UnitGraph {
             dimension(&[(MASS, 1), (LENGTH, 2), (TIME, -2)]),
         ),
     ]);
-    let mut units = BTreeMap::from([
+    let units = BTreeMap::from([
         (key(KILOGRAM), unit(MASS, None, rational(1))),
         (key(METRE), unit(LENGTH, None, rational(1))),
         (key(SECOND), unit(TIME, None, rational(1))),
@@ -116,24 +118,11 @@ fn energy_graph(twin: Option<[u8; 32]>) -> UnitGraph {
             ),
         ),
     ]);
-    if let Some(twin) = twin {
-        units.insert(
-            NodeKey::from_digest(twin),
-            unit(ENERGY, Some(JOULE), rational(1)),
-        );
-    }
     UnitGraph::from_checked_nodes(&dimensions, &units).unwrap()
 }
 
 fn declared(table: &UnitTable, node: u8) -> QuantityUnit {
-    declared_bytes(table, [node; 32])
-}
-
-fn declared_bytes(table: &UnitTable, bytes: [u8; 32]) -> QuantityUnit {
-    table
-        .get(UnitId::declared(NodeKey::from_digest(bytes)))
-        .unwrap()
-        .clone()
+    table.get(UnitId::declared(key(node))).unwrap().clone()
 }
 
 fn exact(
@@ -154,16 +143,11 @@ fn exact(
     conversion
 }
 
-/// The compound twin's digest is the declared twin's key bytes.
-fn twin_digest() -> [u8; 32] {
-    *si_energy(&energy_graph(None)).id().unwrap().as_bytes()
-}
-
 /// Trace: FR-124-AC-1
 #[trace("TC-923", "FR-124-AC-1")]
 #[test]
 fn an_exact_conversion_hands_over_its_quantity_and_identified_unit() {
-    let graph = energy_graph(None);
+    let graph = energy_graph();
     let table = UnitTable::declared(&graph);
     let joule = Quantity::new(rational(1), UnitId::declared(key(JOULE)));
     let compound = QuantityUnit::Compound(si_energy(&graph));
@@ -172,7 +156,7 @@ fn an_exact_conversion_hands_over_its_quantity_and_identified_unit() {
         let conversion = exact(&table, &joule, &target, &mut meter());
         let (quantity, identified) = conversion.identified_quantity().unwrap();
         assert_eq!(quantity.magnitude(), &rational(expected));
-        assert_eq!(quantity.unit(), identified.id());
+        assert_eq!(quantity.unit(), &identified.id());
         assert_eq!(identified.id(), target.id().unwrap());
         assert_eq!(identified.unit(), conversion.unit());
     }
@@ -182,10 +166,10 @@ fn an_exact_conversion_hands_over_its_quantity_and_identified_unit() {
 #[trace("TC-923", "FR-124-AC-2")]
 #[test]
 fn the_handed_over_quantity_resolves_and_converts_on_to_joules() {
-    let graph = energy_graph(None);
+    let graph = energy_graph();
     let table = UnitTable::declared(&graph);
     let joule_id = UnitId::declared(key(JOULE));
-    let start = Quantity::new(rational(1), joule_id);
+    let start = Quantity::new(rational(1), joule_id.clone());
     let compound = QuantityUnit::Compound(si_energy(&graph));
 
     let mut first = meter();
@@ -193,7 +177,7 @@ fn the_handed_over_quantity_resolves_and_converts_on_to_joules() {
     let (quantity, identified) = conversion.identified_quantity().unwrap();
 
     let mut scope = UnitScope::new(&table);
-    assert_eq!(scope.form(identified), quantity.unit());
+    assert_eq!(scope.form(identified), quantity.unit().clone());
     let resolved = scope.resolve(&quantity).unwrap();
     assert_eq!(resolved.unit(), conversion.unit());
 
@@ -209,7 +193,7 @@ fn the_handed_over_quantity_resolves_and_converts_on_to_joules() {
     };
     let (joules, _) = back.identified_quantity().unwrap();
     assert_eq!(joules.magnitude(), &rational(1));
-    assert_eq!(joules.unit(), joule_id);
+    assert_eq!(joules.unit(), &joule_id);
 
     // One identity read, one target domain and one result retain per
     // conversion, and no edge: the source and target are roots.
@@ -297,7 +281,7 @@ fn convert_denying(
 #[trace("TC-923", "FR-124-AC-3")]
 #[test]
 fn a_decimal_or_integer_conversion_is_not_a_quantity() {
-    let graph = energy_graph(None);
+    let graph = energy_graph();
     let table = UnitTable::declared(&graph);
     let joule = Quantity::new(rational(1), UnitId::declared(key(JOULE)));
     let target = declared(&table, MILLIJOULE);
@@ -327,26 +311,22 @@ fn a_decimal_or_integer_conversion_is_not_a_quantity() {
 /// roots: the first half with exponent +1, the second with -1, over distinct dimension
 /// nodes that share one base map.
 fn cancelling(roots: u32) -> (UnitGraph, CompoundUnit) {
-    let base = [3_u8; 32];
-    let id = |tag: u8, n: u32| {
-        let mut bytes = [0_u8; 32];
-        bytes[0] = tag;
-        bytes[28..].copy_from_slice(&n.to_be_bytes());
-        bytes
-    };
+    let base = common::node(3_000_000);
+    let id = |tag: u8, n: u32| common::node(u64::from(tag) * 1_000_000 + u64::from(n));
     let mut dimensions = BTreeMap::from([(
-        NodeKey::from_digest(base),
+        base.clone(),
         DimensionNode::checked(vec![], NominalDeclaration::default()).unwrap(),
     )]);
     let mut units = BTreeMap::new();
     let mut terms = Vec::new();
     for n in 0..roots {
         dimensions.insert(
-            NodeKey::from_digest(id(1, n)),
-            DimensionNode::checked(vec![(base, int(1))], NominalDeclaration::default()).unwrap(),
+            id(1, n),
+            DimensionNode::checked(vec![(base.clone(), int(1))], NominalDeclaration::default())
+                .unwrap(),
         );
         units.insert(
-            NodeKey::from_digest(id(2, n)),
+            id(2, n),
             UnitNode::checked(
                 id(1, n),
                 None,
@@ -378,10 +358,11 @@ fn an_unidentifiable_target_is_refused_with_the_identity_refusal() {
     let source = Quantity::new(rational(1), source_id);
     let conversion = exact(&table, &source, &target, &mut meter());
 
-    let refusal = IdentityRefusal::InputBytes {
-        bound: 16_777_216,
-        required: 16_777_240,
+    let Err(refusal @ IdentityRefusal::InputBytes { bound, required }) = target.id() else {
+        panic!("the structural term encoding exceeds its input bound");
     };
+    assert_eq!(bound, 16_777_216);
+    assert!(required > bound);
     assert_eq!(target.id(), Err(refusal));
     assert_eq!(
         conversion.identified_quantity(),
@@ -395,13 +376,12 @@ fn an_unidentifiable_target_is_refused_with_the_identity_refusal() {
 /// Trace: FR-124-AC-5
 #[trace("TC-923", "FR-124-AC-5")]
 #[test]
-fn a_declared_and_a_compound_unit_with_equal_digest_bytes_keep_distinct_ids() {
-    let digest = twin_digest();
-    let graph = energy_graph(Some(digest));
+fn a_declared_root_and_a_single_root_compound_keep_distinct_ids() {
+    let graph = energy_graph();
     let table = UnitTable::declared(&graph);
     let joule = Quantity::new(rational(1), UnitId::declared(key(JOULE)));
-    let compound = QuantityUnit::Compound(si_energy(&graph));
-    let twin = declared_bytes(&table, digest);
+    let compound = QuantityUnit::Compound(graph.compound_unit(&[(key(JOULE), int(1))]).unwrap());
+    let twin = declared(&table, JOULE);
 
     let (declared_quantity, declared_unit) = exact(&table, &joule, &twin, &mut meter())
         .identified_quantity()
@@ -409,7 +389,11 @@ fn a_declared_and_a_compound_unit_with_equal_digest_bytes_keep_distinct_ids() {
     let (compound_quantity, compound_unit) = exact(&table, &joule, &compound, &mut meter())
         .identified_quantity()
         .unwrap();
-    assert_eq!(declared_unit.id().as_bytes(), compound_unit.id().as_bytes());
+    assert_eq!(declared_unit.id().declared_key(), Some(&key(JOULE)));
+    assert_eq!(
+        compound_unit.id().compound_terms(),
+        Some(&[(key(JOULE), int(1))][..])
+    );
     assert_eq!(declared_unit.id().domain(), UnitDomain::Declared);
     assert_eq!(compound_unit.id().domain(), UnitDomain::Compound);
     assert_ne!(declared_unit.id(), compound_unit.id());
@@ -418,7 +402,7 @@ fn a_declared_and_a_compound_unit_with_equal_digest_bytes_keep_distinct_ids() {
     scope.form(compound_unit);
     assert_eq!(scope.resolve(&compound_quantity).unwrap().unit(), &compound);
     assert_ne!(scope.resolve(&compound_quantity).unwrap().unit(), &twin);
-    assert_eq!(declared_quantity.unit(), declared_unit.id());
+    assert_eq!(declared_quantity.unit(), &declared_unit.id());
 }
 
 /// Trace: FR-124-AC-3

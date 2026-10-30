@@ -111,12 +111,13 @@ under an old module path.
    QSL FR-123 and FR-129 own first-occurrence deduplication and source order.
 3. `Hash` SHALL agree with equality. `Ord` SHALL be a total order consistent
    with equality and independent of insertion or source order: enum variants
-   order as listed above; `FairnessOperation` compares declaring-type digest
-   bytes and then operation-name UTF-8 bytes; `FairnessConstraint` compares
+   order as listed above; `FairnessOperation` compares the supplied structural
+   `EffectiveId` and then operation-name UTF-8 bytes; `FairnessConstraint` compares
    kind, operation and granularity in that order. This order is for maps and
    sets, not the QSL fairness list's source order.
 4. `Encode` of a `FairnessOperation` SHALL produce RFC 8785 bytes of
-   `{"declaring_type":"<lowercase 64-hex digest>","name":"<name>"}`.
+   `{"declaring_type":<EffectiveId>,"name":"<name>"}`, where the
+   `EffectiveId` uses FR-201's `owner_effective_type` and `original` members.
    `Encode` of a `FairnessConstraint` SHALL produce RFC 8785 bytes of an
    object with `granularity`, `kind` and `operation` members in that order;
    `granularity` is `"whole"` or `"each"`, `kind` is `"weak"` or `"strong"`,
@@ -139,10 +140,10 @@ under an old module path.
 | --- | --- | --- |
 | FR-121-AC-1 | Public construction and access through `quire_semantic_value::fairness` round-trip `ReachableInvariant`, `BoundedMltl`, `Safety`, `Liveness`, `Refinement { liveness: false }` and `Refinement { liveness: true }`, both `FairnessKind` variants, both `FairnessGranularity` variants and all four kind/granularity pairs; an operation retains its supplied declaring-type `EffectiveId` and name. | Test (TC-921) |
 | FR-121-AC-2 | Two `FairnessOperation` values with the same name and different declaring-type IDs are unequal, while equal IDs and names are equal; two `FairnessConstraint` values are equal exactly when kind, operation pair and granularity all match. Equal values have equal hashes, and unequal variants or fields remain distinct in a `HashSet`. | Test (TC-921) |
-| FR-121-AC-3 | `Ord` and `PartialOrd` agree with `Eq`: property forms order `ReachableInvariant < BoundedMltl < Safety < Liveness < Refinement { liveness: false } < Refinement { liveness: true }`, kinds `Weak < Strong`, granularities `Whole < Each`; operations order by declaring-type digest bytes then name bytes, and constraints by kind, operation, granularity. A sort of fixtures in reverse insertion order produces the same order and retains both same-named operations of different declaring types. | Test (TC-921) |
-| FR-121-AC-4 | Under a limit that admits the output, `quire_canonical::to_vec` of a weak-whole constraint on operation `tick` with an all-zero declaring-type digest equals the RFC 8785 bytes of `{"granularity":"whole","kind":"weak","operation":{"declaring_type":"0000000000000000000000000000000000000000000000000000000000000000","name":"tick"}}`; changing kind, granularity, declaring type or name changes those bytes, and a name containing a quote is escaped canonically. | Test (TC-921) |
-| FR-121-AC-5 | `quire_canonical::to_vec` of each fieldless `PropertyForm` yields its specified JSON string spelling, and `Refinement { liveness: false }` and `Refinement { liveness: true }` yield `{"refinement":{"liveness":false}}` and `{"refinement":{"liveness":true}}`; encoding a `FairnessOperation` embeds its lower-case declaring-type digest and name, and an output limit one byte below the required bytes returns a `quire_canonical::Error::Limit` rather than a truncated successful value. | Test (TC-921) |
-| FR-121-AC-6 | The implementing change adds no normal dependency, adds only the specified `PropertyForm::Refinement { liveness }` variant and its encoding, changes no other public item or re-export, calls no `EffectiveId::from_digest` in production, and passes `make build-no-std`, `make lint` and `cargo build --locked` with the existing dependency set. | Inspection and Analysis (TC-921) |
+| FR-121-AC-3 | `Ord` and `PartialOrd` agree with `Eq`: property forms order `ReachableInvariant < BoundedMltl < Safety < Liveness < Refinement { liveness: false } < Refinement { liveness: true }`, kinds `Weak < Strong`, granularities `Whole < Each`; operations order by structural declaring-type identity then name bytes, and constraints by kind, operation, granularity. A sort of fixtures in reverse insertion order produces the same order and retains both same-named operations of different declaring types. | Test (TC-921) |
+| FR-121-AC-4 | Under a limit that admits the output, `quire_canonical::to_vec` of a weak-whole constraint on operation `tick` with root declaring type `{owner_effective_type: null, original: {package: "qsv-test", node: "Type000"}}` equals the RFC 8785 bytes of `{"granularity":"whole","kind":"weak","operation":{"declaring_type":{"original":{"node":"Type000","package":"qsv-test"},"owner_effective_type":null},"name":"tick"}}`; changing kind, granularity, declaring type or name changes those bytes, and a name containing a quote is escaped canonically. | Test (TC-921) |
+| FR-121-AC-5 | `quire_canonical::to_vec` of each fieldless `PropertyForm` yields its specified JSON string spelling, and `Refinement { liveness: false }` and `Refinement { liveness: true }` yield `{"refinement":{"liveness":false}}` and `{"refinement":{"liveness":true}}`; encoding a `FairnessOperation` embeds its structural declaring-type components and name, including a non-null owner chain, and an output limit one byte below the required bytes returns a `quire_canonical::Error::Limit` rather than a truncated successful value. | Test (TC-921) |
+| FR-121-AC-6 | The implementing change adds no normal dependency, adds only the specified `PropertyForm::Refinement { liveness }` variant and its encoding, changes no other public item or re-export, calls no identity constructor in production, and passes `make build-no-std`, `make lint` and `cargo build --locked` with the existing dependency set. | Inspection and Analysis (TC-921) |
 
 ## Dependencies
 
