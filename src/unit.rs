@@ -676,6 +676,20 @@ pub fn compound_unit_id<'a>(
     terms: impl IntoIterator<Item = (&'a NodeKey, &'a Integer)>,
     limits: Limits,
 ) -> Result<UnitId, IdentityRefusal> {
+    compound_unit_id_with(
+        terms,
+        limits,
+        Integer::try_clone,
+        Integer::try_to_decimal_string,
+    )
+}
+
+fn compound_unit_id_with<'a>(
+    terms: impl IntoIterator<Item = (&'a NodeKey, &'a Integer)>,
+    limits: Limits,
+    copy_exponent: impl Fn(&Integer) -> Result<Integer, IntegerCopyError>,
+    render_exponent: impl Fn(&Integer, usize) -> Result<String, IntegerDecimalError>,
+) -> Result<UnitId, IdentityRefusal> {
     let mut retained = Vec::new();
     for term in terms {
         reserve_identity(&mut retained, 1, &mut |_| Ok(()), |requested| {
@@ -685,7 +699,7 @@ pub fn compound_unit_id<'a>(
     }
     quire_canonical::encode(
         &mut CountingSink::default(),
-        &StructuralTerms::new(&retained, limits.max_bytes()),
+        &StructuralTerms::new(&retained, limits.max_bytes(), &render_exponent),
         limits,
     )?;
     let mut owned = Vec::new();
@@ -697,7 +711,7 @@ pub fn compound_unit_id<'a>(
             InvalidNodeKey::Allocation { requested } => IdentityRefusal::Allocation { requested },
             _ => IdentityRefusal::NonCanonical,
         })?;
-        let exponent = exponent.try_clone().map_err(integer_copy_refusal)?;
+        let exponent = copy_exponent(exponent).map_err(integer_copy_refusal)?;
         owned.push((unit, exponent));
     }
     Ok(UnitId::compound(owned))
@@ -743,14 +757,20 @@ struct StructuralTerms<'a> {
     terms: &'a [(&'a NodeKey, &'a Integer)],
     bound: u64,
     prefix_probe: Option<usize>,
+    render_exponent: &'a dyn Fn(&Integer, usize) -> Result<String, IntegerDecimalError>,
 }
 
 impl<'a> StructuralTerms<'a> {
-    fn new(terms: &'a [(&'a NodeKey, &'a Integer)], bound: u64) -> Self {
+    fn new(
+        terms: &'a [(&'a NodeKey, &'a Integer)],
+        bound: u64,
+        render_exponent: &'a dyn Fn(&Integer, usize) -> Result<String, IntegerDecimalError>,
+    ) -> Self {
         Self {
             terms,
             bound,
             prefix_probe: None,
+            render_exponent,
         }
     }
 
@@ -762,6 +782,7 @@ impl<'a> StructuralTerms<'a> {
                 terms: self.terms,
                 bound: self.bound,
                 prefix_probe: Some(term_index),
+                render_exponent: self.render_exponent,
             },
             Limits::new(u64::MAX),
         )?;
@@ -788,9 +809,10 @@ impl Encode for StructuralTerms<'_> {
             }
             // The writer measures the complete canonical preimage; the
             // decimal bound avoids reserving more text than it can admit.
-            let decimal = match exponent
-                .try_to_decimal_string(usize::try_from(self.bound).unwrap_or(usize::MAX))
-            {
+            let decimal = match (self.render_exponent)(
+                exponent,
+                usize::try_from(self.bound).unwrap_or(usize::MAX),
+            ) {
                 Ok(decimal) => decimal,
                 Err(IntegerDecimalError::ByteLimit { required, .. }) => {
                     let prefix = self.prefix_before_decimal(index)?;
@@ -1022,7 +1044,11 @@ mod tests {
             let exponent: Integer = spelling.parse().unwrap();
             let terms = [(&root, &exponent)];
             let canonical = quire_canonical::to_vec(
-                &StructuralTerms::new(&terms, IDENTITY_LIMITS.max_bytes()),
+                &StructuralTerms::new(
+                    &terms,
+                    IDENTITY_LIMITS.max_bytes(),
+                    &Integer::try_to_decimal_string,
+                ),
                 IDENTITY_LIMITS,
             )
             .unwrap();
@@ -1082,7 +1108,11 @@ mod tests {
             ]))
         );
         let canonical = quire_canonical::to_vec(
-            &StructuralTerms::new(&terms, IDENTITY_LIMITS.max_bytes()),
+            &StructuralTerms::new(
+                &terms,
+                IDENTITY_LIMITS.max_bytes(),
+                &Integer::try_to_decimal_string,
+            ),
             IDENTITY_LIMITS,
         )
         .unwrap();
@@ -1103,21 +1133,28 @@ mod tests {
         );
     }
 
-    /// The exact kernel's typed reservation amounts survive the same
-    /// projections used by the compound identity encoder and copy path.
+    /// Typed failures substituted at the exact result boundaries travel
+    /// through the same core and refusal projection as the public call.
     #[trace("TC-728", "FR-259-AC-2")]
     #[test]
-    fn integer_reservation_refusals_keep_the_requested_bytes() {
-        let requested = 48;
+    fn exponent_result_refusals_keep_the_requested_bytes() {
+        let root = id(1);
+        let exponent = Integer::one();
+        let terms = [(&root, &exponent)];
         assert_eq!(
-            integer_copy_refusal(IntegerCopyError::Allocation { requested }),
-            IdentityRefusal::Allocation { requested }
+            compound_unit_id_with(
+                terms,
+                IDENTITY_LIMITS,
+                |_| Err(IntegerCopyError::Allocation { requested: 4096 }),
+                Integer::try_to_decimal_string,
+            ),
+            Err(IdentityRefusal::Allocation { requested: 4096 })
         );
         assert_eq!(
-            IdentityRefusal::from(integer_decimal_encoder_error(
-                IntegerDecimalError::Allocation { requested }
-            )),
-            IdentityRefusal::Allocation { requested }
+            compound_unit_id_with(terms, IDENTITY_LIMITS, Integer::try_clone, |_, _| Err(
+                IntegerDecimalError::Allocation { requested: 8192 }
+            ),),
+            Err(IdentityRefusal::Allocation { requested: 8192 })
         );
     }
 
