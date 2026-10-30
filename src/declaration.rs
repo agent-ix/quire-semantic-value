@@ -76,6 +76,7 @@ use core::fmt;
 use quire_exact::CollectionKind;
 use quire_exact::EffectiveId;
 use quire_exact::EnumShape;
+use quire_exact::IdentityCopyError;
 use quire_exact::NodeKey;
 use quire_exact::{compare_text, evaluate_decimal, Identifier, UnionMember, UnionValue, VariantId};
 
@@ -102,14 +103,18 @@ mod storage_reservation_tests {
     use core::cell::Cell;
     use ix_trace_rs::trace;
 
-    struct DenyFirst {
+    struct DenyFirstElement {
         seen: Cell<Option<StorageRequest>>,
     }
 
-    impl ReservationPolicy for DenyFirst {
+    impl ReservationPolicy for DenyFirstElement {
         fn permit(&self, request: StorageRequest) -> bool {
-            self.seen.set(Some(request));
-            false
+            if request.unit() == StorageUnit::AdditionalElements {
+                self.seen.set(Some(request));
+                false
+            } else {
+                true
+            }
         }
     }
 
@@ -128,7 +133,7 @@ mod storage_reservation_tests {
                 CompositeShape::Tuple(Vec::new()),
             )]
         };
-        let deny = DenyFirst {
+        let deny = DenyFirstElement {
             seen: Cell::new(None),
         };
         let denied = TypeEnvironment::bounded_with_reservations(
@@ -174,6 +179,42 @@ mod storage_reservation_tests {
             } else {
                 true
             }
+        }
+    }
+
+    struct DenyByteAmount {
+        amount: usize,
+        seen: Cell<Option<StorageRequest>>,
+    }
+
+    impl ReservationPolicy for DenyByteAmount {
+        fn permit(&self, request: StorageRequest) -> bool {
+            if request.unit() == StorageUnit::Bytes && request.amount() == self.amount {
+                self.seen.set(Some(request));
+                false
+            } else {
+                true
+            }
+        }
+    }
+
+    struct NthByteRequest {
+        deny_at: Option<usize>,
+        count: Cell<usize>,
+        denied: Cell<Option<StorageRequest>>,
+    }
+
+    impl ReservationPolicy for NthByteRequest {
+        fn permit(&self, request: StorageRequest) -> bool {
+            if request.unit() == StorageUnit::Bytes {
+                let count = self.count.get() + 1;
+                self.count.set(count);
+                if self.deny_at == Some(count) {
+                    self.denied.set(Some(request));
+                    return false;
+                }
+            }
+            true
         }
     }
 
@@ -378,7 +419,8 @@ mod storage_reservation_tests {
                 ),
             ]
         };
-        let deny = DenyBytes {
+        let deny = DenyByteAmount {
+            amount: 6,
             seen: Cell::new(None),
         };
         assert_eq!(
@@ -405,6 +447,91 @@ mod storage_reservation_tests {
                 cause: DeclarationCause::DuplicateKey,
             }))
         );
+    }
+
+    /// Trace: FR-391-AC-4, FR-108-AC-5, FR-115-AC-3.
+    #[trace("TC-907", "TC-915", "FR-391-AC-4", "FR-108-AC-5", "FR-115-AC-3")]
+    #[test]
+    fn structural_copy_requests_keep_byte_units_and_seal_is_atomic_on_denial() {
+        let key = union_key(1);
+        let denial = DenyBytes {
+            seen: Cell::new(None),
+        };
+        let denied = try_clone_node(&key, &denial);
+        let request = denial.seen.get().expect("structural copy requested bytes");
+        assert!(request.amount() > 0);
+        assert_eq!(request.unit(), StorageUnit::Bytes);
+        assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+
+        let effective = crate::test_identity::effective(1);
+        let denial = DenyBytes {
+            seen: Cell::new(None),
+        };
+        let denied = try_clone_effective(&effective, &denial);
+        let request = denial.seen.get().expect("effective copy requested bytes");
+        assert!(request.amount() > 0);
+        assert_eq!(request.unit(), StorageUnit::Bytes);
+        assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+
+        let requested = 17;
+        let bytes = StorageRequest::new(requested, StorageUnit::Bytes);
+        assert_eq!(
+            identity_copy_failure(IdentityCopyError::Policy(StorageFailure::Capacity(bytes))),
+            EnvironmentFailure::Capacity(bytes)
+        );
+        assert_eq!(
+            identity_copy_failure(IdentityCopyError::Allocation { requested }),
+            EnvironmentFailure::Allocation(bytes)
+        );
+        assert_eq!(
+            identity_copy_failure(IdentityCopyError::Capacity { requested }),
+            EnvironmentFailure::Capacity(bytes)
+        );
+
+        let mut environment = TypeEnvironment::new([union_topology()], []).unwrap();
+        let before = environment.clone();
+        let denial = DenyBytes {
+            seen: Cell::new(None),
+        };
+        let denied = environment.seal_union_with_reservations(
+            union_key(1),
+            union_key(40),
+            union_bindings(),
+            &denial,
+        );
+        let request = denial.seen.get().expect("seal copied a structural key");
+        assert!(request.amount() > 0);
+        assert_eq!(request.unit(), StorageUnit::Bytes);
+        assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+        assert_eq!(environment, before);
+
+        let count = NthByteRequest {
+            deny_at: None,
+            count: Cell::new(0),
+            denied: Cell::new(None),
+        };
+        let mut admitted = before.clone();
+        admitted
+            .seal_union_with_reservations(union_key(1), union_key(40), union_bindings(), &count)
+            .expect("same seal admits when reservations succeed");
+        assert!(count.count.get() > 1);
+
+        let last = NthByteRequest {
+            deny_at: Some(count.count.get()),
+            count: Cell::new(0),
+            denied: Cell::new(None),
+        };
+        let mut environment = before.clone();
+        let denied = environment.seal_union_with_reservations(
+            union_key(1),
+            union_key(40),
+            union_bindings(),
+            &last,
+        );
+        let request = last.denied.get().expect("last structural copy was reached");
+        assert_eq!(request.unit(), StorageUnit::Bytes);
+        assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+        assert_eq!(environment, before);
     }
 
     /// Trace: FR-108-AC-4
@@ -1895,9 +2022,47 @@ fn try_clone_str<R: ReservationPolicy>(value: &str, policy: &R) -> Admission<Str
     Ok(owned)
 }
 
+fn identity_copy_failure(error: IdentityCopyError<StorageFailure>) -> EnvironmentFailure {
+    match error {
+        IdentityCopyError::Policy(failure) => failure.into(),
+        IdentityCopyError::Allocation { requested } => {
+            EnvironmentFailure::Allocation(StorageRequest::new(requested, StorageUnit::Bytes))
+        }
+        IdentityCopyError::Capacity { requested } => {
+            EnvironmentFailure::Capacity(StorageRequest::new(requested, StorageUnit::Bytes))
+        }
+    }
+}
+
+fn try_clone_node<R: ReservationPolicy>(key: &NodeKey, policy: &R) -> Admission<NodeKey> {
+    key.try_clone_with(&mut |requested| {
+        policy.check_request(StorageRequest::new(requested, StorageUnit::Bytes))
+    })
+    .map_err(identity_copy_failure)
+}
+
+fn try_clone_effective<R: ReservationPolicy>(
+    key: &EffectiveId,
+    policy: &R,
+) -> Admission<EffectiveId> {
+    key.try_clone_with(&mut |requested| {
+        policy.check_request(StorageRequest::new(requested, StorageUnit::Bytes))
+    })
+    .map_err(identity_copy_failure)
+}
+
+fn try_clone_variant<R: ReservationPolicy>(
+    variant: &VariantId,
+    policy: &R,
+) -> Admission<VariantId> {
+    let owner = try_clone_node(variant.owner(), policy)?;
+    let case = try_clone_str(variant.case(), policy)?;
+    Ok(VariantId::new(owner, case).expect("admitted variant case is nonempty"))
+}
+
 fn try_clone_field_ref<R: ReservationPolicy>(value: &FieldRef, policy: &R) -> Admission<FieldRef> {
     Ok(FieldRef {
-        owner: value.owner.clone(),
+        owner: try_clone_effective(&value.owner, policy)?,
         name: try_clone_str(&value.name, policy)?,
     })
 }
@@ -2328,7 +2493,10 @@ impl TypeEnvironment {
                         if environment
                             .union_members
                             .try_insert(
-                                (declaration.key.clone(), binding.variant().clone()),
+                                (
+                                    try_clone_node(&declaration.key, reserve)?,
+                                    try_clone_variant(binding.variant(), reserve)?,
+                                ),
                                 position,
                                 reserve,
                             )?
@@ -2367,13 +2535,13 @@ impl TypeEnvironment {
                 }
                 if sealed {
                     environment.union_keys.try_insert(
-                        declaration.key.clone(),
-                        declaration.key.clone(),
+                        try_clone_node(&declaration.key, reserve)?,
+                        try_clone_node(&declaration.key, reserve)?,
                         reserve,
                     )?;
                     environment.union_handles.try_insert(
-                        declaration.key.clone(),
-                        declaration.key.clone(),
+                        try_clone_node(&declaration.key, reserve)?,
+                        try_clone_node(&declaration.key, reserve)?,
                         reserve,
                     )?;
                 }
@@ -2381,9 +2549,11 @@ impl TypeEnvironment {
             if environment.composites.contains_key(&declaration.key) {
                 return Err(refuse(DeclarationCause::DuplicateKey)?);
             }
-            environment
-                .composites
-                .try_insert(declaration.key.clone(), declaration, reserve)?;
+            environment.composites.try_insert(
+                try_clone_node(&declaration.key, reserve)?,
+                declaration,
+                reserve,
+            )?;
         }
         for declaration in object_types {
             let refuse = |cause| -> Admission<EnvironmentFailure> {
@@ -2400,9 +2570,11 @@ impl TypeEnvironment {
             if environment.object_types.contains_key(&declaration.key) {
                 return Err(refuse(DeclarationCause::DuplicateKey)?);
             }
-            environment
-                .object_types
-                .try_insert(declaration.key.clone(), declaration, reserve)?;
+            environment.object_types.try_insert(
+                try_clone_effective(&declaration.key, reserve)?,
+                declaration,
+                reserve,
+            )?;
         }
         reserve.phase(StoragePhase::MemberTypes);
         environment.check_member_types(&mut budget, reserve)?;
@@ -2432,7 +2604,7 @@ impl TypeEnvironment {
         for (owner, _, _, index) in &table.fields {
             environment
                 .field_keys
-                .push((EffectiveId::clone(*owner), *index));
+                .push((try_clone_effective(owner, reserve)?, *index));
         }
         Ok(PendingTypeEnvironment {
             environment,
@@ -2642,6 +2814,16 @@ impl TypeEnvironment {
         reserve_elements(&mut self.union_members.entries, bindings.len(), reserve)?;
         reserve_elements(&mut self.union_keys.entries, 1, reserve)?;
         reserve_elements(&mut self.union_handles.entries, 1, reserve)?;
+        let mut member_keys = Vec::new();
+        reserve_elements(&mut member_keys, bindings.len(), reserve)?;
+        for binding in &bindings {
+            member_keys.push((
+                try_clone_node(&handle, reserve)?,
+                try_clone_variant(binding.variant(), reserve)?,
+            ));
+        }
+        let handle_for_union_key = try_clone_node(&handle, reserve)?;
+        let final_for_union_key = try_clone_node(&final_key, reserve)?;
         // Validation completes before the first mutation. The exact same
         // declaration remains in this registry; only its verified attachment changes.
         let Some(declaration) = self.composites.get_mut(&handle) else {
@@ -2656,16 +2838,17 @@ impl TypeEnvironment {
                 cause: DeclarationCause::Type(IllTypedCause::TypeMismatch),
             }));
         };
-        for (position, (member, binding)) in members.iter_mut().zip(bindings).enumerate() {
-            self.union_members.try_insert(
-                (handle.clone(), binding.variant().clone()),
-                position,
-                reserve,
-            )?;
+        for (position, ((member, binding), key)) in members
+            .iter_mut()
+            .zip(bindings)
+            .zip(member_keys)
+            .enumerate()
+        {
+            self.union_members.try_insert(key, position, reserve)?;
             member.identity = UnionMemberIdentity::Verified(binding);
         }
         self.union_keys
-            .try_insert(handle.clone(), final_key.clone(), reserve)?;
+            .try_insert(handle_for_union_key, final_for_union_key, reserve)?;
         self.union_handles.try_insert(final_key, handle, reserve)?;
         Ok(())
     }
@@ -3298,7 +3481,9 @@ impl TypeEnvironment {
             first = false;
             match value_type {
                 ValueType::Composite(key) if !self.composites.contains_key(key) => {
-                    return Ok(Some(DeclarationCause::UnknownDeclaration(key.clone())));
+                    return Ok(Some(DeclarationCause::UnknownDeclaration(try_clone_node(
+                        key, reserve,
+                    )?)));
                 }
                 ValueType::Reference(key) if !self.object_types.contains_key(key) => {
                     return Ok(Some(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
@@ -3628,7 +3813,9 @@ impl TypeEnvironment {
                 let Some(target) = self.composites.get(supertype) else {
                     return Err(EnvironmentFailure::Refused(InvalidDeclaration {
                         declaration: try_clone_str(&declaration.name, reserve)?,
-                        cause: DeclarationCause::UnknownDeclaration(supertype.clone()),
+                        cause: DeclarationCause::UnknownDeclaration(try_clone_node(
+                            supertype, reserve,
+                        )?),
                     }));
                 };
                 // FR-115: a union takes no part in composite generalization,
@@ -3720,8 +3907,11 @@ impl TypeEnvironment {
                     budget
                         .charge(further.len().saturating_add(1))
                         .map_err(EnvironmentFailure::Limit)?;
-                    try_push(&mut ancestors, supertype.clone(), reserve)?;
-                    try_extend_clone(&mut ancestors, further, reserve)?;
+                    try_push(&mut ancestors, try_clone_node(supertype, reserve)?, reserve)?;
+                    reserve_elements(&mut ancestors, further.len(), reserve)?;
+                    for ancestor in further {
+                        ancestors.push(try_clone_node(ancestor, reserve)?);
+                    }
                 }
                 if !ancestors.is_empty() {
                     let gathered = ancestors.len();
@@ -3734,7 +3924,7 @@ impl TypeEnvironment {
                     ancestors.sort_unstable();
                     ancestors.dedup();
                 }
-                ancestry.try_insert((*node).clone(), ancestors, reserve)?;
+                ancestry.try_insert(try_clone_node(node, reserve)?, ancestors, reserve)?;
             }
         }
         Ok(ancestry)
@@ -3793,7 +3983,9 @@ impl TypeEnvironment {
                 if !self.object_types.contains_key(supertype) {
                     return Err(EnvironmentFailure::Refused(InvalidDeclaration {
                         declaration: try_clone_str(&declaration.name, reserve)?,
-                        cause: DeclarationCause::UnknownObjectType(supertype.clone()),
+                        cause: DeclarationCause::UnknownObjectType(try_clone_effective(
+                            supertype, reserve,
+                        )?),
                     }));
                 }
             }
@@ -3877,7 +4069,7 @@ impl TypeEnvironment {
         }
         let mut positions = OrderedIndex::default();
         for (key, position) in self.object_types.keys().zip(0_u32..) {
-            positions.try_insert(key.clone(), position, reserve)?;
+            positions.try_insert(try_clone_effective(key, reserve)?, position, reserve)?;
         }
         let mut ancestors: Vec<Option<Vec<u32>>> = Vec::new();
         reserve_elements(&mut ancestors, self.object_types.len(), reserve)?;
@@ -4153,7 +4345,11 @@ impl TypeEnvironment {
                     Ok(attributes) => attributes,
                     Err(stopped) => return Err(stopped.at(&node.name, reserve)?),
                 };
-                effective.try_insert(node.key.clone(), attributes, reserve)?;
+                effective.try_insert(
+                    try_clone_effective(&node.key, reserve)?,
+                    attributes,
+                    reserve,
+                )?;
             }
         }
         Ok(EffectiveStorage {
@@ -4186,7 +4382,7 @@ impl TypeEnvironment {
         let mut fresh: Vec<bool> = Vec::new();
         for (field_index, field) in declaration.attributes.iter().enumerate() {
             let attribute = own_attribute(
-                declaration.key.clone(),
+                &declaration.key,
                 field_index,
                 field,
                 table,
@@ -4616,7 +4812,7 @@ impl Ancestry {
 /// has admitted every link, and each one moves to a proper ancestor of an
 /// acyclic graph; `budget` is charged each link all the same.
 fn own_attribute<R: ReservationPolicy>(
-    owner: EffectiveId,
+    owner: &EffectiveId,
     field_index: usize,
     field: &FieldDeclaration,
     table: &FieldTable<'_>,
@@ -4624,11 +4820,11 @@ fn own_attribute<R: ReservationPolicy>(
     slots: &mut Vec<AttributeSlot>,
     reserve: &R,
 ) -> Result<usize, Stopped> {
-    let identity = match table.position_parts(&owner, field.name()) {
+    let identity = match table.position_parts(owner, field.name()) {
         Some(identity) => identity,
         None => {
             return Err(DeclarationCause::RedefinitionTarget(FieldRef {
-                owner,
+                owner: try_clone_effective(owner, reserve)?,
                 name: try_clone_str(field.name(), reserve)?,
             })
             .into())
@@ -4657,7 +4853,7 @@ fn own_attribute<R: ReservationPolicy>(
     try_push(
         slots,
         AttributeSlot {
-            owner,
+            owner: try_clone_effective(owner, reserve)?,
             field_index,
             members,
             identity,
@@ -4697,7 +4893,7 @@ fn merge<R: ReservationPolicy>(
     try_push(
         slots,
         AttributeSlot {
-            owner: winner_slot.owner.clone(),
+            owner: try_clone_effective(&winner_slot.owner, reserve)?,
             field_index: winner_slot.field_index,
             members,
             identity: winner_slot.identity,
@@ -4790,7 +4986,7 @@ impl<'e> FieldTable<'e> {
             .get(position)
             .map(|(owner, field, _, _)| {
                 Ok(FieldRef {
-                    owner: EffectiveId::clone(*owner),
+                    owner: try_clone_effective(owner, reserve)?,
                     name: try_clone_str(field.name(), reserve)?,
                 })
             })

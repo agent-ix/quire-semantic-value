@@ -1144,7 +1144,10 @@ mod tests {
         }
 
         fn permit(&self, request: StorageRequest) -> bool {
-            if self.current.get() == Some(self.target) && self.denied.get().is_none() {
+            if self.current.get() == Some(self.target)
+                && request.unit() == StorageUnit::AdditionalElements
+                && self.denied.get().is_none()
+            {
                 self.denied.set(Some(request));
                 false
             } else {
