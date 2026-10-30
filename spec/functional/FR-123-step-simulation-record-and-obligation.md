@@ -102,9 +102,16 @@ identity-bearing values is `Encode` (FR-121).
    `Encode` of a `StepObligation` SHALL write `{"kind":"initial"}` or
    `{"kind":"step","row":<position>}`.
    `Encode` of a `StepSimulationRecord` SHALL write an object with
-   `hypotheses` (array of lowercase 64-hex node keys, in order), `obligation`
-   and `refinement` (lowercase 64-hex node key) members, in RFC 8785 member
-   order.
+   `hypotheses` (array of structural `NodeKey` display strings, in supplied
+   order), `obligation` and `refinement` (one structural `NodeKey` display
+   string) members, in RFC 8785 member order. Each display string is encoded
+   as a JSON string, including escaping its path-segment quotes. The structural
+   identity replaces the digest-shaped key from before quire-exact PR #101;
+   this obligation's exact encoding oracle remains. For the
+   TC-922 fixture `NodeKey` with package `qsv-test`, one text path segment
+   `00000000000000000000` and ordinal `0`, the display text is
+   `qsv-test:[Text("00000000000000000000")]:0`; the JSON string contains
+   `Text(\"00000000000000000000\")`.
    Each `Encode` SHALL bound the whole output by the caller's `Limits` and
    report an excess through `quire-canonical`'s typed error path.
 4. The module SHALL use only `core`, `alloc` and the crate's existing
@@ -117,7 +124,7 @@ identity-bearing values is `Encode` (FR-121).
 | FR-123-AC-1 | Construction retains the refinement, both obligation forms, row position and hypotheses in supplied order (including a repeated key and an empty list). | Test (TC-922) |
 | FR-123-AC-2 | Records differing in refinement, obligation form, row position or any hypothesis are unequal; equal records hash equally; all distinct fixtures stay distinct in a `HashSet`. | Test (TC-922) |
 | FR-123-AC-3 | `Ord` agrees with `Eq`; `Initial` orders before `Step`, steps by position; a reversed fixture list sorts to the specified order. | Test (TC-922) |
-| FR-123-AC-4 | `quire_canonical::to_vec` yields the exact bytes of Behavior 3 for an `Initial` record with no hypotheses, a `Step` record with two hypotheses, an obligation alone and the maximum row position; changing refinement, row or hypothesis order or count changes the bytes. | Test (TC-922) |
+| FR-123-AC-4 | `quire_canonical::to_vec` yields the exact structural-key JSON bytes of Behavior 3 for an `Initial` record with no hypotheses, a `Step` record with two hypotheses, an obligation alone and the maximum row position; changing refinement, row or hypothesis order or count changes the bytes. | Test (TC-922) |
 | FR-123-AC-5 | A limit one byte below the encoding returns `quire_canonical::Error::Limit`; the exact length succeeds. | Test (TC-922) |
 | FR-123-AC-6 | The change adds no normal dependency, changes no existing public item, calls no `NodeKey::from_digest` in production, and passes `make build-no-std`, `make lint` and `cargo build --locked`. | Inspection and Analysis (TC-922) |
 
