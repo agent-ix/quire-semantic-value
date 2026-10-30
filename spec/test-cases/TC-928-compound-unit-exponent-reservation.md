@@ -28,15 +28,15 @@ controlled reservation refusals without fixing a digest as an oracle.
    and compare the refusal's `required` with the canonical encoder's reached
    output count, including the structural prefix. The earlier refusal need
    not report `n` (AC-2).
-3. In a QSV unit test, install a safe caller-scoped test hook at the exact API
-   result boundary, then call public `compound_unit_id`. Substitute
-   `IntegerCopyError::Allocation { requested: 4096 }` at exponent copy and
-   `IntegerDecimalError::Allocation { requested: 8192 }` at decimal emission,
-   one at a time. Restore the caller-scoped hook before another test runs;
-   concurrent tests must not observe it. Assert each public result and no
-   partial id. Confirm the production path uses the same mappings. Use exact's
-   FR-390-AC-1/4 controlled-denial test as the independent oracle that real
-   exact API failures report actual additional reservation bytes (AC-3).
+3. In QSV unit tests, call the private construction core with copy and render
+   closures. Substitute `IntegerCopyError::Allocation { requested: 4096 }`
+   at exponent copy and `IntegerDecimalError::Allocation { requested: 8192 }`
+   at decimal emission, one at a time. Assert each core result and no partial
+   id. Inspect that public `compound_unit_id` delegates to this core with
+   the real exact APIs, so the tested projections serve the public production
+   path. Use exact's FR-390-AC-1/4 controlled-denial test as the independent
+   oracle that real exact API failures report actual additional reservation
+   bytes (AC-3).
 4. Inspect the implementation path for the exact fallible calls, error
    mapping, structural id output, and absence of infallible exponent copies,
    formatting, digest conversion, or a second integer implementation (AC-4).
@@ -49,8 +49,9 @@ controlled reservation refusals without fixing a digest as an oracle.
   `InputBytes { bound: n - 1, required: n }` with no id. The earlier refusal
   reports the canonical encoder's reached count including the prefix, not
   only the exponent length or an assumed complete preimage length.
-- Step 3 returns `Allocation { requested: 4096 }` and
+- Step 3's private core returns `Allocation { requested: 4096 }` and
   `Allocation { requested: 8192 }` respectively, with no id, limit outcome,
-  or malformed outcome. The exact test confirms the upstream requested-byte
-  provenance; QSV's production mapping passes the value through unchanged.
+  or malformed outcome. The public function delegates with the real exact
+  APIs; the exact test confirms upstream requested-byte provenance, and
+  QSV's shared production mapping passes each value through unchanged.
 - Step 4 confirms the specified calls and mappings and no prohibited path.

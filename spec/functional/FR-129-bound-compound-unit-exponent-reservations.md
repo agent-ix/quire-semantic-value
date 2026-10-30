@@ -56,15 +56,15 @@ governs the upstream encoder's allocation classification.
    `Integer::try_to_decimal_string` at this boundary. It SHALL NOT use
    `Integer::clone` or `Integer::to_string` for these two operations, or add a
    second integer implementation.
-5. For controlled verification, the public `compound_unit_id` path SHALL
-   admit a safe, test-only, caller-scoped hook at the two fallible exact API
-   result boundaries. The QSV test harness SHALL restore the hook when the
-   calling test scope ends so concurrent tests cannot observe it. A unit test SHALL invoke the
-   public function with the hook active, substituting typed
-   `IntegerCopyError::Allocation` and
-   `IntegerDecimalError::Allocation` results. Production SHALL call the exact
-   APIs through the same mapping path. The hook adds no public API, unsafe
-   allocator override, or alternate production identity behavior.
+5. For controlled verification, QSV SHALL put exponent copying, decimal
+   emission, their error projections, and structural-id construction in one
+   private core parameterized by the two fallible call sites. The public
+   `compound_unit_id` SHALL delegate to that core with the real
+   `Integer::try_clone` and `Integer::try_to_decimal_string` functions.
+   Unit tests SHALL call the same core with closures returning typed
+   `IntegerCopyError::Allocation` and `IntegerDecimalError::Allocation`.
+   This seam adds no public API, test-only branch in the public function,
+   global hook, unsafe allocator override, or alternate identity behavior.
 
 ## Acceptance Criteria
 
@@ -72,7 +72,7 @@ governs the upstream encoder's allocation classification.
 | --- | --- | --- |
 | FR-129-AC-1 | For ordered roots with one inline positive exponent and one large negative exponent, `compound_unit_id` returns the same structural `UnitId::Compound` terms, roots, signs and mathematical exponents supplied; its bounded RFC 8785 term encoding contains the full canonical decimal exponent strings in the same term order and no digest or encoded byte array is the returned id. | Test |
 | FR-129-AC-2 | For the same term preimage, a limit equal to its complete canonical byte length succeeds and a limit one byte shorter returns `InputBytes { bound: length - 1, required: length }`, with no id. With an earlier limit crossed while writing an exponent, `required` equals the canonical encoder's reached output count including preceding structural bytes, and exceeds `bound`; it is not just that exponent's decimal length or necessarily the complete final preimage length. | Test |
-| FR-129-AC-3 | With a safe test-only hook active at each exact API result boundary, calls to public `compound_unit_id` substituting distinct typed `IntegerCopyError::Allocation { requested }` and `IntegerDecimalError::Allocation { requested }` failures each return `IdentityRefusal::Allocation` with the unchanged requested value, no id, and no `InputBytes` or `NonCanonical`; production uses the same mappings, while exact's independently controlled reservation tests establish that each upstream requested value is the actual additional reservation bytes. | Test |
+| FR-129-AC-3 | In the private core serving public `compound_unit_id`, injected `IntegerCopyError::Allocation { requested }` and `IntegerDecimalError::Allocation { requested }` from the two fallible call sites each return `IdentityRefusal::Allocation` with the unchanged requested value, no id, and no `InputBytes` or `NonCanonical`. Inspection confirms the public function delegates to that core with the real exact APIs, so the public production path has the same behavior; exact's independently controlled reservation tests establish that each upstream requested value is the actual additional reservation bytes. | Test and Inspection |
 | FR-129-AC-4 | Inspection of the compound identity construction and encoding path finds `Integer::try_clone` and `Integer::try_to_decimal_string`, maps their allocation errors to `IdentityRefusal::Allocation { requested }`, retains the structural `UnitId` output, and finds no infallible exponent `clone`/`to_string`, digest conversion or duplicate integer implementation on that path. | Inspection |
 
 ## Dependencies
