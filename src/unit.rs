@@ -1116,6 +1116,10 @@ mod tests {
             IDENTITY_LIMITS,
         )
         .unwrap();
+        let expected = alloc::format!(
+            r#"{{"terms":[{{"exponent":"1","unit":{{"ordinal":0,"package":"qsv-test","path":["00000000000000000001"]}}}},{{"exponent":"{spelling}","unit":{{"ordinal":0,"package":"qsv-test","path":["00000000000000000002"]}}}}]}}"#
+        );
+        assert_eq!(canonical, expected.as_bytes());
         let marker = b"\"exponent\":\"";
         let second_prefix = canonical
             .windows(marker.len())
