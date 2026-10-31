@@ -9,6 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::catalog::CatalogCode;
+use crate::catalog::InternalFault;
 use quire_exact::ConstructionCause;
 
 /// A step from a checked value to a nested value, ordered outermost first.
@@ -40,14 +41,38 @@ pub struct AdmissionRecord {
     pub kernel: Option<ConstructionCause>,
 }
 
+/// The result of admitting an observation, retaining its original diagnostic
+/// or invariant fault when no checked authority was admitted (FR-130).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ObservationAdmission<T> {
+    /// The admitted observation authority.
+    Admitted(T),
+    /// The observation input was refused.
+    Refused(AdmissionRecord),
+    /// Admission lacked evidence needed to decide the observation.
+    Incomplete(AdmissionRecord),
+    /// An admission invariant failed.
+    Fault(InternalFault),
+}
+
+impl<T> ObservationAdmission<T> {
+    /// Return the admitted authority, or the original non-admitted result.
+    pub fn authority(&self) -> Result<&T, &Self> {
+        match self {
+            Self::Admitted(authority) => Ok(authority),
+            Self::Refused(_) | Self::Incomplete(_) | Self::Fault(_) => Err(self),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::collections::BTreeMap;
     use alloc::string::String;
     use alloc::vec;
 
-    use super::{AdmissionRecord, PathStep};
-    use crate::catalog::CatalogCode;
+    use super::{AdmissionRecord, ObservationAdmission, PathStep};
+    use crate::catalog::{CatalogCode, InternalFault};
     use quire_exact::ConstructionCause;
 
     /// Trace: FR-130-AC-1.
@@ -83,5 +108,37 @@ mod tests {
         );
         assert_ne!(record.path[0], PathStep::Index(0));
         assert_eq!(record.kernel, Some(ConstructionCause::TypeMismatch));
+    }
+
+    /// Trace: FR-130-AC-4, FR-130-AC-5.
+    #[test]
+    fn observation_authority_query_preserves_each_original_result() {
+        let record = AdmissionRecord {
+            catalog: CatalogCode::new("invalid_runtime_input", "invalid-value"),
+            fields: BTreeMap::from([("field", String::from("address"))]),
+            path: vec![PathStep::Field(String::from("0")), PathStep::Index(2)],
+            kernel: Some(ConstructionCause::TypeMismatch),
+        };
+        let admitted = ObservationAdmission::Admitted(17_u8);
+        assert_eq!(admitted.authority(), Ok(&17));
+
+        let refused: ObservationAdmission<u8> = ObservationAdmission::Refused(record.clone());
+        assert!(
+            matches!(refused.authority(), Err(ObservationAdmission::Refused(original))
+            if original == &record)
+        );
+
+        let incomplete: ObservationAdmission<u8> = ObservationAdmission::Incomplete(record.clone());
+        assert!(
+            matches!(incomplete.authority(), Err(ObservationAdmission::Incomplete(original))
+            if original == &record)
+        );
+
+        let fault = InternalFault::new("admission", "missing-observation-authority");
+        let failed: ObservationAdmission<u8> = ObservationAdmission::Fault(fault.clone());
+        assert!(
+            matches!(failed.authority(), Err(ObservationAdmission::Fault(original))
+            if original == &fault)
+        );
     }
 }
