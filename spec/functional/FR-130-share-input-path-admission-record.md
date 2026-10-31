@@ -13,11 +13,12 @@ relationships:
 ## Description
 
 `quire-semantic-value` SHALL hold the one shared input-path admission record
-that QSL and `quire-eval` can both name without either depending on the other.
-This record describes the
-diagnostic; QSL [FR-106](ix://agent-ix/quire-spec-language/FR-106) continues to
-own observation admission, its check order, and the decision to admit, refuse,
-or return incomplete.
+and the canonical generic observation-admission result that QSL and
+`quire-eval` can both name without either depending on the other. The record
+describes the diagnostic; the result preserves its admission disposition. QSL
+[FR-106](ix://agent-ix/quire-spec-language/FR-106) continues to own observation
+admission, its check order, and the decision to admit, refuse, or return
+incomplete.
 
 ## Outputs
 
@@ -31,6 +32,11 @@ or return incomplete.
   parameter, or result to the nested value. An empty path names that checked
   value itself. A field called `"0"` remains `Field("0")`, distinct from
   `Index(0)`.
+- A public, `no_std`-compatible, generic `ObservationAdmission` with
+  `Admitted`, `Refused`, `Incomplete`, and `Fault` arms. It is generic over the
+  admitted authority; any fault payload that cannot be expressed using QSV's
+  own `InternalFault` SHALL be a type parameter, never a dependency on
+  `quire-eval`.
 
 ## Behavior
 
@@ -50,17 +56,21 @@ or return incomplete.
    own `quire-eval` admission decision site. Passing either result through
    another layer SHALL retain the original record and failure kind, without
    reconstructing it from a rendered message or a catalog code alone.
-4. An observation API reporting admission SHALL return a typed result with
+4. An observation API reporting admission SHALL return QSV's typed result with
    `Admitted`, `Refused`, `Incomplete`, and `Fault` arms. `Admitted` SHALL
    carry the admitted authority. `Refused` and `Incomplete` SHALL each carry
    the original input-path admission record and remain distinct. The `Fault`
    arm SHALL carry the original `InternalFault` and remain distinct from both
    input-failure arms. A query for a missing successful authority SHALL
    return the original refusal, incomplete result, or internal fault rather
-   than only `None`.
-5. QSV SHALL own only the shared record and path vocabulary. QSV SHALL NOT
-   depend on QSL or implement QSL FR-106 admission behavior. `quire-eval` SHALL
-   NOT depend on QSL to carry the record.
+   than only `None`. `quire-eval` SHALL use and publicly re-export this QSV
+   result without redefining a parallel result or changing its existing
+   consumer-facing arm shapes.
+5. QSV SHALL own only the shared record, path, and result vocabulary. QSV SHALL
+   NOT depend on QSL or `quire-eval`. QSV SHALL NOT implement QSL FR-106 admission
+   behavior. `quire-eval` SHALL NOT depend on QSL to carry the record or result.
+   QSL's layer-4 `qsl-package` SHALL import the QSV result without depending on
+   `quire-eval`.
 
 ## Acceptance Criteria
 
@@ -70,6 +80,7 @@ or return incomplete.
 | FR-130-AC-2 | QSL and `quire-eval` both compile against QSV's one public record and path types; QSV and `quire-eval` have no dependency on QSL, and `quire-eval` defines no parallel input-path record fields. | Inspection |
 | FR-130-AC-3 | For a population-level admission defect, `CallAdmissionLocus` names the population and the call failure retains the original QSV record. Existing node, member and binder loci still identify their respective nodes. | Test |
 | FR-130-AC-4 | An observation refused at a nested value returns a typed `Refused` arm with its original code/cause, named input fields, typed path and kernel cause. An incomplete observation returns a distinct `Incomplete` arm retaining its record; an admission invariant failure returns a distinct `Fault` arm retaining the original `InternalFault`. A successful observation returns an `Admitted` arm with its authority. The missing-authority query exposes each original non-admitted arm rather than only `None`. | Test |
+| FR-130-AC-5 | `ObservationAdmission` is one public generic QSV type with the four arms in AC-4. `quire-eval` uses and publicly re-exports that type without a second enum or changed consumer-facing arm shapes. QSV has no QSL or `quire-eval` dependency, and QSL layer-4 `qsl-package` can use the type without a `quire-eval` dependency. | Inspection |
 
 ## Dependencies
 
