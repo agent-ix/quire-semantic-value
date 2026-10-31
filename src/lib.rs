@@ -12,6 +12,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod absence;
 pub mod admission;
 pub mod call;
 pub mod catalog;
