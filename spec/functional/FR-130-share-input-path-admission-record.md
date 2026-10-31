@@ -50,11 +50,14 @@ or return incomplete.
    own `quire-eval` admission decision site. Passing either result through
    another layer SHALL retain the original record and failure kind, without
    reconstructing it from a rendered message or a catalog code alone.
-4. An observation API reporting admission SHALL return a typed admitted-or-
-   refused result. Its refused arm SHALL carry the original record and
-   distinguish `Refused` from `Incomplete`; a successful arm SHALL carry the
-   admitted authority. A query for a missing successful authority SHALL
-   return the original refusal rather than only `None`.
+4. An observation API reporting admission SHALL return a typed result with
+   `Admitted`, `Refused`, `Incomplete`, and `Fault` arms. `Admitted` SHALL
+   carry the admitted authority. `Refused` and `Incomplete` SHALL each carry
+   the original input-path admission record and remain distinct. The `Fault`
+   arm SHALL carry the original `InternalFault` and remain distinct from both
+   input-failure arms. A query for a missing successful authority SHALL
+   return the original refusal, incomplete result, or internal fault rather
+   than only `None`.
 5. QSV SHALL own only the shared record and path vocabulary. QSV SHALL NOT
    depend on QSL or implement QSL FR-106 admission behavior. `quire-eval` SHALL
    NOT depend on QSL to carry the record.
@@ -66,7 +69,7 @@ or return incomplete.
 | FR-130-AC-1 | A shared record built with `invalid_runtime_input`/`invalid-value`, fields for document, population, object and field, path `[Field("0"), OptionValue, Index(2)]`, and `Some(ConstructionCause::TypeMismatch)` reads back the same code, cause, fields, path and kernel variant. `Field("0")` remains distinct from `Index(0)`. | Test |
 | FR-130-AC-2 | QSL and `quire-eval` both compile against QSV's one public record and path types; QSV and `quire-eval` have no dependency on QSL, and `quire-eval` defines no parallel input-path record fields. | Inspection |
 | FR-130-AC-3 | For a population-level admission defect, `CallAdmissionLocus` names the population and the call failure retains the original QSV record. Existing node, member and binder loci still identify their respective nodes. | Test |
-| FR-130-AC-4 | An observation refused at a nested value returns a typed refusal with its original code/cause, named input fields, typed path and kernel cause; an incomplete observation retains its distinct failure kind. A successful observation returns its admitted authority. The missing-authority query exposes the original refusal rather than only `None`. | Test |
+| FR-130-AC-4 | An observation refused at a nested value returns a typed `Refused` arm with its original code/cause, named input fields, typed path and kernel cause. An incomplete observation returns a distinct `Incomplete` arm retaining its record; an admission invariant failure returns a distinct `Fault` arm retaining the original `InternalFault`. A successful observation returns an `Admitted` arm with its authority. The missing-authority query exposes each original non-admitted arm rather than only `None`. | Test |
 
 ## Dependencies
 
