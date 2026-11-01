@@ -2130,6 +2130,11 @@ impl<K: Ord, V> OrderedIndex<K, V> {
         value: V,
         reserve: &R,
     ) -> Result<Option<V>, StorageFailure> {
+        if self.entries.last().is_none_or(|(last, _)| last < &key) {
+            reserve_elements(&mut self.entries, 1, reserve)?;
+            self.entries.push((key, value));
+            return Ok(None);
+        }
         match self.entries.binary_search_by(|(item, _)| item.cmp(&key)) {
             Ok(at) => Ok(Some(core::mem::replace(&mut self.entries[at].1, value))),
             Err(at) => {
@@ -3741,6 +3746,7 @@ impl TypeEnvironment {
         };
         let mut finished: OrderedIndex<&NodeKey, ()> = OrderedIndex::default();
         let mut active: OrderedIndex<&NodeKey, usize> = OrderedIndex::default();
+        let mut path: Vec<(&NodeKey, usize)> = Vec::new();
         for root in graph.keys() {
             if matches!(
                 self.composites.get(*root).map(|d| &d.shape),
@@ -3751,7 +3757,6 @@ impl TypeEnvironment {
             if finished.contains_key(root) {
                 continue;
             }
-            let mut path: Vec<(&NodeKey, usize)> = Vec::new();
             try_push(&mut path, (*root, 0), reserve)?;
             active.try_insert(*root, 0, reserve)?;
             while let Some((node, next)) = path.last_mut() {
@@ -3841,11 +3846,11 @@ impl TypeEnvironment {
         }
         let mut finished: OrderedIndex<&NodeKey, ()> = OrderedIndex::default();
         let mut on_path: OrderedIndex<&NodeKey, ()> = OrderedIndex::default();
+        let mut path: Vec<(&NodeKey, usize)> = Vec::new();
         for root in self.composites.keys() {
             if finished.contains_key(&root) {
                 continue;
             }
-            let mut path: Vec<(&NodeKey, usize)> = Vec::new();
             try_push(&mut path, (root, 0), reserve)?;
             on_path.try_insert(root, (), reserve)?;
             while let Some((node, next)) = path.last_mut() {
@@ -3895,11 +3900,11 @@ impl TypeEnvironment {
         reserve: &R,
     ) -> Admission<OrderedIndex<NodeKey, Vec<NodeKey>>> {
         let mut ancestry = OrderedIndex::default();
+        let mut path: Vec<(&NodeKey, usize)> = Vec::new();
         for root in self.composites.keys() {
             if ancestry.contains_key(root) {
                 continue;
             }
-            let mut path: Vec<(&NodeKey, usize)> = Vec::new();
             try_push(&mut path, (root, 0), reserve)?;
             while let Some((node, next)) = path.last_mut() {
                 let node = *node;
@@ -4003,11 +4008,11 @@ impl TypeEnvironment {
         }
         let mut finished: OrderedIndex<&EffectiveId, ()> = OrderedIndex::default();
         let mut on_path: OrderedIndex<&EffectiveId, ()> = OrderedIndex::default();
+        let mut path: Vec<(&EffectiveId, usize)> = Vec::new();
         for root in self.object_types.keys() {
             if finished.contains_key(&root) {
                 continue;
             }
-            let mut path: Vec<(&EffectiveId, usize)> = Vec::new();
             try_push(&mut path, (root, 0), reserve)?;
             on_path.try_insert(root, (), reserve)?;
             while let Some((node, next)) = path.last_mut() {
@@ -4091,11 +4096,11 @@ impl TypeEnvironment {
                 .and_then(|position| ancestors.get(*position as usize))
                 .is_some_and(Option::is_some)
         };
+        let mut path: Vec<(&ObjectTypeDeclaration, usize)> = Vec::new();
         for root in self.object_types.values() {
             if finished(&ancestors, &root.key) {
                 continue;
             }
-            let mut path: Vec<(&ObjectTypeDeclaration, usize)> = Vec::new();
             try_push(&mut path, (root, 0), reserve)?;
             while let Some((node, next)) = path.last_mut() {
                 let node = *node;
@@ -8699,5 +8704,65 @@ mod nested_conformance_tests {
             Some(InvalidMembershipCause::UnsupportedUnion)
         );
         assert_eq!(part, MembershipPart::Value);
+    }
+}
+
+#[cfg(test)]
+mod index_scaling_tests {
+    use super::{GlobalReservations, OrderedIndex};
+    use core::cell::Cell;
+    use core::cmp::Ordering;
+    use ix_trace_rs::trace;
+
+    struct Counted<'a>(usize, &'a Cell<usize>);
+
+    impl PartialEq for Counted<'_> {
+        fn eq(&self, other: &Self) -> bool {
+            self.0 == other.0
+        }
+    }
+    impl Eq for Counted<'_> {}
+    impl PartialOrd for Counted<'_> {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+    impl Ord for Counted<'_> {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.1.set(self.1.get() + 1);
+            self.0.cmp(&other.0)
+        }
+    }
+
+    #[trace("FR-108-AC-1")]
+    #[test]
+    fn ascending_registry_insertion_uses_linear_key_comparisons() {
+        for count in [128, 512, 2_048] {
+            let compared = Cell::new(0);
+            let mut index = OrderedIndex::default();
+            for n in 0..count {
+                assert_eq!(
+                    index.try_insert(Counted(n, &compared), n, &GlobalReservations),
+                    Ok(None)
+                );
+            }
+            assert!(
+                compared.get() < count * 2,
+                "{} key comparisons for {count} ascending insertions",
+                compared.get()
+            );
+            assert_eq!(
+                index
+                    .keys()
+                    .map(|key| key.0)
+                    .collect::<alloc::vec::Vec<_>>(),
+                (0..count).collect::<alloc::vec::Vec<_>>()
+            );
+            assert_eq!(
+                index.try_insert(Counted(0, &compared), count, &GlobalReservations),
+                Ok(Some(0))
+            );
+            assert_eq!(index.get(&Counted(0, &compared)), Some(&count));
+        }
     }
 }
