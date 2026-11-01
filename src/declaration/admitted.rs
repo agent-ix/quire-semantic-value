@@ -24,33 +24,27 @@ pub struct EqualityUnitEdgeDescriptor {
 /// Producer-retained facts of a resolved unit; these descriptors grant no admission.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EqualityUnitForm {
-    /// A declared unit with its already selected conversion path.
+    /// A declared unit with its already selected conversion path. Its key comes
+    /// from the admitted UnitId; its root is the last target, or that key for an empty path.
     Declared {
-        /// Original unit node identity.
-        key: NodeKey,
         /// Original dimension declaration.
         dimension_node: NodeKey,
         /// Original normalized base-dimension powers.
         dimension_terms: Vec<(NodeKey, Integer)>,
-        /// Original canonical root identity.
-        root: NodeKey,
         /// Original conversion edges, including their target identities.
         path: Vec<EqualityUnitEdgeDescriptor>,
     },
-    /// A compound unit with its already normalized dimensions and root powers.
+    /// A compound unit with its already normalized dimensions. Original root
+    /// powers are carried by the admitted UnitId, without recomputing its identity.
     Compound {
         /// Original normalized base-dimension powers.
         dimension_terms: Vec<(NodeKey, Integer)>,
-        /// Original ordered canonical root powers.
-        terms: Vec<(NodeKey, Integer)>,
     },
 }
 
 /// One original resolved-unit row used by the equality.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EqualityUnitDescriptor {
-    /// Original quantity type node.
-    pub quantity_type: NodeKey,
     /// Original producer-issued identity; materialization never recomputes it.
     pub id: UnitId,
     /// Already-admitted declared or compound facts.

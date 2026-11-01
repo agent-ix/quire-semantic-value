@@ -96,15 +96,18 @@ pub enum EqualityMaterializationCode {
     Allocation,
     /// A native allocation/count could not be represented.
     Capacity,
+    /// Descriptor form cannot be represented by the supplied UnitId arm.
+    IdentityForm,
 }
 
 impl EqualityMaterializationCode {
     /// Complete stable materialization-failure catalog.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Resource,
         Self::Arithmetic,
         Self::Allocation,
         Self::Capacity,
+        Self::IdentityForm,
     ];
 
     /// Stable machine-readable spelling.
@@ -114,6 +117,7 @@ impl EqualityMaterializationCode {
             Self::Arithmetic => "arithmetic",
             Self::Allocation => "allocation",
             Self::Capacity => "capacity",
+            Self::IdentityForm => "identity_form",
         }
     }
 
@@ -127,6 +131,13 @@ impl EqualityMaterializationCode {
 /// read meter retains its admitted prefix and original first denied charge.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum EqualityMaterializationError {
+    /// The trusted descriptor's representation arm disagrees with its original ID.
+    /// No semantic membership, algebra or identity recomputation is performed.
+    #[error("equality materialization identity arm mismatch at {locus:?}")]
+    IdentityForm {
+        /// Original descriptor position.
+        locus: EqualityMaterializationLocus,
+    },
     /// Original typed meter denial, without a manufactured semantic refusal.
     #[error("equality materialization exhausted at {locus:?}: {cause:?}")]
     Resource {
@@ -165,6 +176,7 @@ impl EqualityMaterializationError {
     /// Stable machine-readable classification.
     pub fn code(&self) -> EqualityMaterializationCode {
         match self {
+            Self::IdentityForm { .. } => EqualityMaterializationCode::IdentityForm,
             Self::Resource { .. } => EqualityMaterializationCode::Resource,
             Self::Arithmetic { .. } => EqualityMaterializationCode::Arithmetic,
             Self::Allocation { .. } => EqualityMaterializationCode::Allocation,
@@ -286,12 +298,15 @@ fn unit(
     charge(meter, Charge::new(ChargePoint::UnitIdentityRead), locus)?;
     match &source.form {
         EqualityUnitForm::Declared {
-            key,
             dimension_node,
             dimension_terms,
-            root,
             path,
         } => {
+            let key = source
+                .id
+                .declared_key()
+                .ok_or(EqualityMaterializationError::IdentityForm { locus })?;
+            let root = path.last().map_or(key, |edge| &edge.target);
             let dimension =
                 Dimension::from_admitted(terms(dimension_terms, row, TermKind::Dimension, meter)?);
             let mut native_path = reserved(path.len(), locus)?;
@@ -343,10 +358,11 @@ fn unit(
                 canonical,
             ))))
         }
-        EqualityUnitForm::Compound {
-            dimension_terms,
-            terms: roots,
-        } => {
+        EqualityUnitForm::Compound { dimension_terms } => {
+            let roots = source
+                .id
+                .compound_terms()
+                .ok_or(EqualityMaterializationError::IdentityForm { locus })?;
             let dimension =
                 Dimension::from_admitted(terms(dimension_terms, row, TermKind::Dimension, meter)?);
             let roots = terms(roots, row, TermKind::Compound, meter)?;
