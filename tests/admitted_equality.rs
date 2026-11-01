@@ -417,10 +417,10 @@ fn materialization_shares_remaining_work_and_returns_no_partial_value_at_n_minus
     };
     assert_eq!(cause.limit_kind, LimitKind::WorkUnits);
     assert_eq!(cause.limit, total - 1);
-    assert!(matches!(
+    assert_eq!(
         locus,
-        EqualityMaterializationLocus::Unit { .. } | EqualityMaterializationLocus::Edge { .. }
-    ));
+        EqualityMaterializationLocus::DimensionTerm { row: 1, term: 0 }
+    );
 }
 
 #[trace("IR-1223")]
@@ -537,4 +537,56 @@ fn a_long_retained_path_materializes_on_a_small_stack_without_a_depth_cap() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[trace("IR-1223")]
+#[test]
+fn enum_case_copy_respects_the_callers_byte_provision_without_normalizing() {
+    let mut limits = *meter(10_000).limits();
+    limits.text_input_bytes = 2;
+    let declaration = common::node(700);
+    let case = "e\u{301}";
+    let variant = VariantId::new(declaration.clone(), case).unwrap();
+    let mut original = descriptor();
+    original.schedule = EqualitySchedule::Enum;
+    original.left =
+        EqualityOperand::typed(ValueType::Enum(EnumShape::new(false, [variant.clone()])));
+    original.right = original.left.clone();
+    original
+        .enum_declarations
+        .push(EqualityEnumDeclarationDescriptor {
+            key: declaration.clone(),
+            ordered: false,
+            members: vec![case.into()],
+        });
+    original.enum_members.push(EqualityEnumMemberDescriptor {
+        variant,
+        declaration,
+        member: common::node(701),
+        ordered: false,
+        position: 0,
+        case: case.into(),
+    });
+    let error =
+        mint_admitted_equality_decision(ReaderSeal, original.clone(), &mut Meter::new(limits))
+            .unwrap_err();
+    let EqualityMaterializationError::Resource { cause, locus } = error else {
+        panic!("typed original case-copy refusal");
+    };
+    assert_eq!(cause.limit_kind, LimitKind::TextInputBytes);
+    assert_eq!(cause.limit, 2);
+    assert_eq!(cause.next_charge, Integer::from(3_usize));
+    assert_eq!(locus, EqualityMaterializationLocus::EnumMember { row: 0 });
+    limits.text_input_bytes = 3;
+    let decision =
+        mint_admitted_equality_decision(ReaderSeal, original, &mut Meter::new(limits)).unwrap();
+    assert_eq!(decision.enum_members()[0].case.as_ref(), case);
+    assert_eq!(
+        decision
+            .resolved_enum_members()
+            .resolve(decision.enum_members()[0].variant.clone())
+            .unwrap()
+            .case(),
+        case
+    );
 }

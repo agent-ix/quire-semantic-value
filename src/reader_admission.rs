@@ -389,7 +389,10 @@ pub fn mint_admitted_equality_decision(
     for (row, original) in descriptor.enum_members.iter().enumerate() {
         charge(
             meter,
-            Charge::new(ChargePoint::EnumIdentityRead),
+            Charge::new(ChargePoint::EnumIdentityRead).exact_size(
+                LimitKind::TextInputBytes,
+                Integer::from(original.case.len()),
+            ),
             EqualityMaterializationLocus::EnumMember { row },
         )?;
         let value = EnumValue::from_admitted(
