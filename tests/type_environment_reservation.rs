@@ -148,3 +148,23 @@ fn membership_preserves_capacity_at_a_retained_path_reservation() {
     assert_eq!(seen.borrow().as_slice(), [request, request]);
     assert_eq!(result, Err(EnvironmentFailure::Capacity(request)));
 }
+
+#[trace("FR-108-AC-1", "FR-115-AC-1")]
+#[test]
+fn record_environment_admission_scales_without_per_root_scratch_reservations() {
+    for count in [128_u64, 512, 2_048] {
+        let declarations: Vec<_> = (0..count).map(|n| {
+            CompositeDeclaration::new(common::node(n), format!("R{n}"),
+                CompositeShape::Record(vec![FieldDeclaration::new("value", ValueType::Integer, quire_exact::Presence::Required)]))
+        }).collect();
+        let reservations = Cell::new(0_usize);
+        let started = std::time::Instant::now();
+        let environment = TypeEnvironment::new_with_reservation(declarations, [], &|_| {
+            reservations.set(reservations.get() + 1);
+            ReservationDecision::Permit
+        }).expect("independent records admit");
+        assert_eq!(environment.composites().count(), usize::try_from(count).unwrap());
+        std::println!("records={count} reservations={} elapsed={:?}", reservations.get(), started.elapsed());
+        assert!(reservations.get() < usize::try_from(count).unwrap() * 8, "scratch paths must be reused: {} reservations for {count} roots", reservations.get());
+    }
+}
