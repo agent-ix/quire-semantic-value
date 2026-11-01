@@ -43,3 +43,14 @@ Plan completion: not assessed
 Computed quire matrix inspected for FR-108 AC-1 through AC-5. Existing admission storage behavior remains owned by FR-108; no new stub or unowned production behavior found in this diff. No applicable AssuranceProfile found. No spec/plan files changed, so spec-review and subanalyses do not apply. Repository-wide gap claims are outside the dispatched scope. Optional broad semantic audit not run; focused semantic/order/budget/allocation inspection explicitly requested.
 
 No Cargo, full suites, or Kani run under the user's speed rule. Parent supplied passed focused fmt, all-target Clippy -D warnings, five public reservation tests and ascending-index scaling test; named ancestry/recursion checks pending with parent. Independently ran git diff --check (passed). Baseline counts supplied: ascending128 comparisons889 versus127; independent-record reservations2947/11779/47107 versus2439/9735/38919 at128/512/2048.
+
+## Dispositions
+
+Round 1 inspected fix 39b75c8a8d46fa14684be216ac699e55607c1de2 against the original candidate, restricted to FND-001/FND-002. Both fixes now exercise the claimed criterion. Focused runtime checks are pending with the lead; fmt and all-target Clippy passed as supplied by the lead. No Cargo run by reviewer.
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | Actual initial index reservation is denied, the measured request and AdditionalElements unit are checked through EnvironmentFailure, the index stays empty, and the same ascending inserts then succeed. |
+| FND-002 | fixed | At every scaling size the final actual admission reservation is denied, its complete measured StorageRequest is preserved in EnvironmentFailure::Allocation, and retry equals the original complete admitted environment. |
+
+Current disposition verdict: PASS for the two reviewed findings; runtime verification remains with the lead. Original findings and original verdict above are retained as review history.
