@@ -333,7 +333,7 @@ fn selected_affine_path_materializes_canonical_without_reselecting_ids_or_conver
 fn compound_descriptor_keeps_original_identity_dimensions_and_root_powers() {
     let root = common::node(500);
     let dimension = common::node(501);
-    let roots = vec![(root.clone(), Integer::from(2))];
+    let roots = vec![(root.clone(), Integer::from(2_i64))];
     let id = UnitId::compound(roots.clone());
     let mut original = descriptor();
     original.schedule = EqualitySchedule::Quantity;
@@ -343,7 +343,7 @@ fn compound_descriptor_keeps_original_identity_dimensions_and_root_powers() {
         quantity_type: common::node(502),
         id: id.clone(),
         form: EqualityUnitForm::Compound {
-            dimension_terms: vec![(dimension.clone(), Integer::from(2))],
+            dimension_terms: vec![(dimension.clone(), Integer::from(2_i64))],
             terms: roots.clone(),
         },
     });
@@ -368,7 +368,7 @@ fn compound_descriptor_keeps_original_identity_dimensions_and_root_powers() {
             .exponents()
             .map(|(key, value)| (key, value.clone()))
             .collect::<Vec<_>>(),
-        vec![(dimension, Integer::from(2))]
+        vec![(dimension, Integer::from(2_i64))]
     );
     let value = Value::Quantity(Quantity::new(rational(3), id));
     let environment = TypeEnvironment::default().with_units(decision.resolved_units().clone());
@@ -447,4 +447,94 @@ fn rational_growth_refuses_before_the_first_unpaid_fold_operation() {
             step: AffineStep::Scale
         }
     );
+}
+
+#[trace("IR-1223")]
+#[test]
+fn each_unpaid_affine_event_keeps_its_original_typed_locus() {
+    for (occurrence, edge, step) in [
+        (1, 0, AffineStep::Scale),
+        (2, 0, AffineStep::OffsetScale),
+        (3, 0, AffineStep::OffsetAdd),
+        (4, 1, AffineStep::Scale),
+        (5, 1, AffineStep::OffsetScale),
+        (6, 1, AffineStep::OffsetAdd),
+    ] {
+        let mut denied = meter(100_000).with_injected_denial(quire_exact::InjectedDenial {
+            point: quire_exact::ChargePoint::UnitRationalArithmetic,
+            occurrence: std::num::NonZeroU64::new(occurrence).unwrap(),
+        });
+        let error = mint_admitted_equality_decision(ReaderSeal, affine_descriptor(), &mut denied)
+            .unwrap_err();
+        let EqualityMaterializationError::Resource { cause, locus } = error else {
+            panic!("typed original denial");
+        };
+        assert_eq!(
+            cause.charge_point,
+            quire_exact::ChargePoint::UnitRationalArithmetic
+        );
+        assert_eq!(
+            locus,
+            EqualityMaterializationLocus::Edge { row: 0, edge, step }
+        );
+    }
+}
+
+#[trace("IR-1223")]
+#[test]
+fn a_long_retained_path_materializes_on_a_small_stack_without_a_depth_cap() {
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            let count = 2_048_u64;
+            let root = common::node(10_000 + count);
+            let source = common::node(10_000);
+            let id = UnitId::declared(source.clone());
+            let mut original = descriptor();
+            original.schedule = EqualitySchedule::Quantity;
+            original.left = EqualityOperand::typed(ValueType::Quantity(id.clone()));
+            original.right = original.left.clone();
+            let path: Vec<_> = (1..=count)
+                .map(|n| EqualityUnitEdgeDescriptor {
+                    target: common::node(10_000 + n),
+                    scale: rational(1),
+                    offset: rational(0),
+                })
+                .collect();
+            original.units.push(EqualityUnitDescriptor {
+                quantity_type: common::node(9_999),
+                id: id.clone(),
+                form: EqualityUnitForm::Declared {
+                    key: source,
+                    dimension_node: common::node(9_998),
+                    dimension_terms: vec![(common::node(9_998), Integer::one())],
+                    root: root.clone(),
+                    path: path.clone(),
+                },
+            });
+            let decision =
+                mint_admitted_equality_decision(ReaderSeal, original, &mut meter(1_000_000))
+                    .unwrap();
+            let EqualityUnitForm::Declared {
+                path: retained,
+                root: retained_root,
+                ..
+            } = &decision.units()[0].form
+            else {
+                panic!("declared");
+            };
+            assert_eq!(retained, &path);
+            assert_eq!(retained_root, &root);
+            let quire_semantic_value::quantity::QuantityUnit::Declared(native) =
+                decision.resolved_units().get(id).unwrap()
+            else {
+                panic!("declared");
+            };
+            assert_eq!(native.canonical().scale(), &rational(1));
+            assert_eq!(native.canonical().offset(), &rational(0));
+            assert_eq!(native.path().len(), usize::try_from(count).unwrap());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }

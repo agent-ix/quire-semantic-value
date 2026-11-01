@@ -173,18 +173,23 @@ fn reserved<T>(
     Ok(values)
 }
 
+#[derive(Clone, Copy)]
+enum TermKind {
+    Dimension,
+    Compound,
+}
+
 fn terms(
     source: &[(NodeKey, Integer)],
     row: usize,
-    compound: bool,
+    kind: TermKind,
     meter: &mut Meter,
 ) -> Result<Vec<(NodeKey, Integer)>, EqualityMaterializationError> {
     let mut values = reserved(source.len(), EqualityMaterializationLocus::Unit { row })?;
     for (term, (key, exponent)) in source.iter().enumerate() {
-        let locus = if compound {
-            EqualityMaterializationLocus::CompoundTerm { row, term }
-        } else {
-            EqualityMaterializationLocus::DimensionTerm { row, term }
+        let locus = match kind {
+            TermKind::Compound => EqualityMaterializationLocus::CompoundTerm { row, term },
+            TermKind::Dimension => EqualityMaterializationLocus::DimensionTerm { row, term },
         };
         charge(
             meter,
@@ -261,7 +266,8 @@ fn unit(
             root,
             path,
         } => {
-            let dimension = Dimension::from_admitted(terms(dimension_terms, row, false, meter)?);
+            let dimension =
+                Dimension::from_admitted(terms(dimension_terms, row, TermKind::Dimension, meter)?);
             let mut native_path = reserved(path.len(), locus)?;
             let mut canonical = UnitEdge::identity();
             for (edge, original) in path.iter().enumerate() {
@@ -315,8 +321,9 @@ fn unit(
             dimension_terms,
             terms: roots,
         } => {
-            let dimension = Dimension::from_admitted(terms(dimension_terms, row, false, meter)?);
-            let roots = terms(roots, row, true, meter)?;
+            let dimension =
+                Dimension::from_admitted(terms(dimension_terms, row, TermKind::Dimension, meter)?);
+            let roots = terms(roots, row, TermKind::Compound, meter)?;
             Ok(QuantityUnit::Compound(CompoundUnit::from_admitted(
                 roots, dimension,
             )))
