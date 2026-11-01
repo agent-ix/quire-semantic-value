@@ -121,15 +121,16 @@ pub struct EqualityDecisionDescriptor {
 ///
 /// An external caller cannot construct the retained value from raw fields:
 /// ```compile_fail,E0451
-/// use quire_semantic_value::declaration::{AdmittedEqualityDecision, CheckedEquality};
-/// fn forge(checked: CheckedEquality) -> AdmittedEqualityDecision {
-///     AdmittedEqualityDecision {
-///         checked,
-///         location: unimplemented!(),
-///         units: unimplemented!(),
-///         enum_declarations: unimplemented!(),
-///         enum_members: unimplemented!(),
-///     }
+/// use quire_semantic_value::declaration::{
+///     AdmittedEqualityDecision, CheckedEquality, EqualityUnitDescriptor,
+///     EqualityEnumMemberDescriptor,
+/// };
+/// use quire_semantic_value::enumeration::EnumDeclaration;
+/// use quire_exact::Location;
+/// fn forge(checked: CheckedEquality, location: Location,
+///     units: Vec<EqualityUnitDescriptor>, enum_declarations: Vec<EnumDeclaration>,
+///     enum_members: Vec<EqualityEnumMemberDescriptor>) -> AdmittedEqualityDecision {
+///     AdmittedEqualityDecision { checked, location, units, enum_declarations, enum_members }
 /// }
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -177,6 +178,14 @@ impl AdmittedEqualityDecision {
     /// Original admitted declarations, with verbatim case bytes and ordering.
     pub fn enum_declarations(&self) -> &[EnumDeclaration] {
         &self.enum_declarations
+    }
+    /// Complete materialized table under the original witnessed unit IDs.
+    pub fn resolved_units(&self) -> &UnitTable {
+        &self.checked.units
+    }
+    /// Complete materialized filtered index under original variant IDs.
+    pub fn resolved_enum_members(&self) -> &EnumMemberIndex {
+        &self.checked.enum_members
     }
     /// Full original filtered member rows.
     pub fn enum_members(&self) -> &[EqualityEnumMemberDescriptor] {
