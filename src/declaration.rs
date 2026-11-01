@@ -85,6 +85,14 @@ use crate::supplied_membership::{
     SuppliedAdmissionError, SuppliedMembershipBudget,
 };
 
+mod admitted;
+pub(crate) use admitted::materialize_admitted;
+pub use admitted::{
+    AdmittedEqualityDecision, EqualityDecisionDescriptor, EqualityEnumDeclarationDescriptor,
+    EqualityEnumMemberDescriptor, EqualityUnitDescriptor, EqualityUnitEdgeDescriptor,
+    EqualityUnitForm,
+};
+
 mod membership;
 
 /// One object-type field's identity: the object type that declares it and

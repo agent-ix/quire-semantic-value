@@ -525,7 +525,10 @@ fn read_identities(operands: &[UnitQuantity<'_>], meter: &mut Meter) -> Result<(
 
 /// One scheduled exact rational event, charged from its operands before the
 /// result is computed.
-fn rational_event(operation: RationalArithmetic<'_>, meter: &mut Meter) -> Result<Rational, Stop> {
+pub(crate) fn rational_event(
+    operation: RationalArithmetic<'_>,
+    meter: &mut Meter,
+) -> Result<Rational, Stop> {
     meter.charge(
         Charge::new(ChargePoint::UnitRationalArithmetic)
             .exact_size(LimitKind::IntegerBits, rational_arithmetic_bits(operation)),

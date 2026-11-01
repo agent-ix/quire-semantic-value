@@ -27,6 +27,8 @@ pub mod loss;
 pub mod model_transition;
 pub mod object_closure;
 pub mod quantity;
+#[doc(hidden)]
+pub mod reader_admission;
 pub mod relationship_extent;
 pub mod semantic_node;
 pub mod step_simulation;

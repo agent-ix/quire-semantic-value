@@ -48,6 +48,10 @@ fn refuse(cause: SemanticGraphCause) -> InvalidSemanticGraph {
 pub struct Dimension(BTreeMap<NodeKey, Integer>);
 
 impl Dimension {
+    pub(crate) fn from_admitted(terms: Vec<(NodeKey, Integer)>) -> Self {
+        Self(terms.into_iter().collect())
+    }
+
     /// The empty (dimensionless) map.
     pub fn dimensionless() -> Self {
         Self::default()
@@ -119,7 +123,46 @@ pub struct UnitEdge {
     offset: Rational,
 }
 
+pub(crate) trait AffineArithmetic {
+    type Error;
+    fn multiply(&mut self, left: &Rational, right: &Rational) -> Result<Rational, Self::Error>;
+    fn add(&mut self, left: &Rational, right: &Rational) -> Result<Rational, Self::Error>;
+}
+
+struct UnmeteredAffine;
+impl AffineArithmetic for UnmeteredAffine {
+    type Error = core::convert::Infallible;
+    fn multiply(&mut self, left: &Rational, right: &Rational) -> Result<Rational, Self::Error> {
+        Ok(left.mul(right))
+    }
+    fn add(&mut self, left: &Rational, right: &Rational) -> Result<Rational, Self::Error> {
+        Ok(left.add(right))
+    }
+}
+
 impl UnitEdge {
+    pub(crate) fn from_admitted(scale: Rational, offset: Rational) -> Self {
+        Self { scale, offset }
+    }
+
+    pub(crate) fn identity() -> Self {
+        Self {
+            scale: Rational::from_integer(Integer::one()),
+            offset: Rational::from_integer(Integer::zero()),
+        }
+    }
+
+    pub(crate) fn followed_by<A: AffineArithmetic>(
+        &self,
+        edge: &Self,
+        arithmetic: &mut A,
+    ) -> Result<Self, A::Error> {
+        let scale = arithmetic.multiply(&edge.scale, &self.scale)?;
+        let offset = arithmetic.multiply(&edge.scale, &self.offset)?;
+        let offset = arithmetic.add(&offset, &edge.offset)?;
+        Ok(Self { scale, offset })
+    }
+
     /// A unit node's edge after its semantic checks, in order: a zero scale
     /// refuses, then a canonical root (`is_root`) whose edge is not the
     /// identity (scale one, offset zero).
@@ -161,6 +204,24 @@ pub struct Unit {
 }
 
 impl Unit {
+    pub(crate) fn from_admitted(
+        key: NodeKey,
+        dimension_node: NodeKey,
+        dimension: Dimension,
+        root: NodeKey,
+        path: Vec<UnitEdge>,
+        canonical: UnitEdge,
+    ) -> Self {
+        Self {
+            key,
+            dimension_node,
+            dimension,
+            root,
+            path,
+            canonical,
+        }
+    }
+
     /// The unit node key.
     pub fn key(&self) -> NodeKey {
         self.key.clone()
@@ -576,20 +637,16 @@ fn unit_paths(
         .iter()
         .map(|(key, unit)| {
             let mut path = Vec::new();
-            let mut canonical = UnitEdge {
-                scale: Rational::from_integer(Integer::one()),
-                offset: Rational::from_integer(Integer::zero()),
-            };
+            let mut canonical = UnitEdge::identity();
             let mut current = (key, unit);
             while let Some(target) = current.1.target.as_ref() {
                 if path.len() >= units.len() {
                     return Err(refuse(SemanticGraphCause::TargetCycle));
                 }
                 let edge = current.1.edge.clone();
-                canonical = UnitEdge {
-                    scale: edge.scale.mul(&canonical.scale),
-                    offset: edge.scale.mul(&canonical.offset).add(&edge.offset),
-                };
+                canonical = canonical
+                    .followed_by(&edge, &mut UnmeteredAffine)
+                    .unwrap_or_else(|never| match never {});
                 path.push(edge);
                 let next = units
                     .get(target)
@@ -916,6 +973,10 @@ impl Hash for CompoundUnit {
 }
 
 impl CompoundUnit {
+    pub(crate) fn from_admitted(terms: Vec<(NodeKey, Integer)>, dimension: Dimension) -> Self {
+        Self::new(terms.into_iter().collect(), dimension)
+    }
+
     fn new(terms: BTreeMap<NodeKey, Integer>, dimension: Dimension) -> Self {
         Self { terms, dimension }
     }
