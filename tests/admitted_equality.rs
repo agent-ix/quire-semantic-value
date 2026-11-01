@@ -590,3 +590,19 @@ fn enum_case_copy_respects_the_callers_byte_provision_without_normalizing() {
         case
     );
 }
+
+#[trace("IR-1223")]
+#[test]
+fn materialization_codes_have_a_closed_round_trip_catalog() {
+    use quire_semantic_value::reader_admission::EqualityMaterializationCode as Code;
+    assert_eq!(
+        Code::ALL.map(Code::as_str),
+        ["resource", "arithmetic", "allocation", "capacity"]
+    );
+    for code in Code::ALL {
+        assert_eq!(Code::from_code(code.as_str()), Some(code));
+    }
+    for unknown in ["", "RESOURCE", "unknown", "capacity "] {
+        assert_eq!(Code::from_code(unknown), None);
+    }
+}

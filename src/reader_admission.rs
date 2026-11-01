@@ -98,6 +98,31 @@ pub enum EqualityMaterializationCode {
     Capacity,
 }
 
+impl EqualityMaterializationCode {
+    /// Complete stable materialization-failure catalog.
+    pub const ALL: [Self; 4] = [
+        Self::Resource,
+        Self::Arithmetic,
+        Self::Allocation,
+        Self::Capacity,
+    ];
+
+    /// Stable machine-readable spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Resource => "resource",
+            Self::Arithmetic => "arithmetic",
+            Self::Allocation => "allocation",
+            Self::Capacity => "capacity",
+        }
+    }
+
+    /// Parse one catalog spelling; unknown spellings are absent.
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|entry| entry.as_str() == code)
+    }
+}
+
 /// No opaque or partial decision is returned on these failures. The caller's
 /// read meter retains its admitted prefix and original first denied charge.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
