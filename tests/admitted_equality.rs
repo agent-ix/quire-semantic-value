@@ -150,12 +150,12 @@ fn text(value: &str, ty: &TextType) -> Value {
 fn text_schedule_retains_the_original_exact_type_and_normalization_profile() {
     let ty = TextType::new(0, 10, TextProfile::Nfc).unwrap();
     let mut original = descriptor();
-    original.left = EqualityOperand::typed(ValueType::Text(ty.clone()));
+    original.left = EqualityOperand::typed(ValueType::Text(ty));
     original.right = original.left.clone();
     original.schedule = EqualitySchedule::Text;
     let decision =
         mint_admitted_equality_decision(ReaderSeal, original, &mut meter(10_000)).unwrap();
-    assert_eq!(decision.left().source(), &ValueType::Text(ty.clone()));
+    assert_eq!(decision.left().source(), &ValueType::Text(ty));
     assert_eq!(decision.schedule(), EqualitySchedule::Text);
     assert_eq!(
         CheckedEquality::from_admitted_decision(&decision).evaluate(
