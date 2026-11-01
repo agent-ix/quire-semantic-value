@@ -8709,7 +8709,10 @@ mod nested_conformance_tests {
 
 #[cfg(test)]
 mod index_scaling_tests {
-    use super::{GlobalReservations, OrderedIndex};
+    use super::{
+        EnvironmentFailure, GlobalReservations, InjectedReservations, OrderedIndex,
+        ReservationDecision, StorageRequest, StorageUnit,
+    };
     use core::cell::Cell;
     use core::cmp::Ordering;
     use ix_trace_rs::trace;
@@ -8740,6 +8743,22 @@ mod index_scaling_tests {
         for count in [128, 512, 2_048] {
             let compared = Cell::new(0);
             let mut index = OrderedIndex::default();
+            let observed = Cell::new(None);
+            let deny = |request| {
+                observed.set(Some(request));
+                ReservationDecision::AllocationDenied
+            };
+            let denied = index
+                .try_insert(
+                    Counted(0, &compared),
+                    0,
+                    &InjectedReservations { decide: &deny },
+                )
+                .map_err(EnvironmentFailure::from);
+            let request = StorageRequest::new(1, StorageUnit::AdditionalElements);
+            assert_eq!(observed.get(), Some(request));
+            assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+            assert_eq!(index.len(), 0);
             for n in 0..count {
                 assert_eq!(
                     index.try_insert(Counted(n, &compared), n, &GlobalReservations),
