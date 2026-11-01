@@ -23,6 +23,7 @@ use crate::unit::{AffineArithmetic, CompoundUnit, Dimension, Unit, UnitEdge};
 
 /// The IR reader's convention seal. This public item is not an unforgeable
 /// Rust capability; structural API/dependency audits constrain supported use.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
 pub struct ReaderSeal;
 
@@ -346,6 +347,7 @@ fn unit(
 /// Original typed resource/arithmetic failures retain their first unit/edge
 /// position. Explicit vector/count reservation failures are typed separately.
 /// No partial admitted decision is published.
+#[doc(hidden)]
 pub fn mint_admitted_equality_decision(
     _seal: ReaderSeal,
     mut descriptor: EqualityDecisionDescriptor,
