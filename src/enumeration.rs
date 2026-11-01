@@ -42,6 +42,14 @@ pub struct EnumDeclaration {
 }
 
 impl EnumDeclaration {
+    pub(crate) fn from_admitted(key: NodeKey, ordered: bool, members: Vec<String>) -> Self {
+        Self {
+            key,
+            ordered,
+            members,
+        }
+    }
+
     /// The declaration node `key` with its member cases, in declaration
     /// order for an `ordered enum` and sorted by case name otherwise
     /// (QSpec FR-141).
@@ -157,6 +165,22 @@ pub struct EnumValue {
 }
 
 impl EnumValue {
+    pub(crate) fn from_admitted(
+        declaration: NodeKey,
+        member: NodeKey,
+        ordered: bool,
+        position: usize,
+        case: Box<str>,
+    ) -> Self {
+        Self {
+            declaration,
+            member,
+            ordered,
+            position,
+            case,
+        }
+    }
+
     /// Declaration node key.
     pub fn declaration(&self) -> NodeKey {
         self.declaration.clone()
@@ -212,6 +236,10 @@ impl EnumValue {
 pub struct EnumMemberIndex(Arc<BTreeMap<VariantId, EnumValue>>);
 
 impl EnumMemberIndex {
+    pub(crate) fn record_admitted(&mut self, variant: VariantId, member: EnumValue) {
+        Arc::make_mut(&mut self.0).insert(variant, member);
+    }
+
     /// Record one admitted member, keyed by its own `VariantId`
     /// ([`EnumValue::variant`], its member key retyped). The last write for
     /// a given `VariantId` wins. When member keys are the verified
