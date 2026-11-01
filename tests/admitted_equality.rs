@@ -258,13 +258,10 @@ fn affine_descriptor() -> EqualityDecisionDescriptor {
     original.right = EqualityOperand::typed(ValueType::Quantity(root_id.clone()));
     original.units = vec![
         EqualityUnitDescriptor {
-            quantity_type: common::node(410),
             id: source_id,
             form: EqualityUnitForm::Declared {
-                key: source,
                 dimension_node: dimension.clone(),
                 dimension_terms: vec![(dimension.clone(), Integer::one())],
-                root: root.clone(),
                 path: vec![
                     EqualityUnitEdgeDescriptor {
                         target: intermediate,
@@ -280,13 +277,10 @@ fn affine_descriptor() -> EqualityDecisionDescriptor {
             },
         },
         EqualityUnitDescriptor {
-            quantity_type: common::node(411),
             id: root_id,
             form: EqualityUnitForm::Declared {
-                key: root.clone(),
                 dimension_node: dimension.clone(),
                 dimension_terms: vec![(dimension, Integer::one())],
-                root,
                 path: vec![],
             },
         },
@@ -309,6 +303,15 @@ fn selected_affine_path_materializes_canonical_without_reselecting_ids_or_conver
     assert_eq!(unit.canonical().scale(), &rational(10));
     assert_eq!(unit.canonical().offset(), &rational(22));
     assert_eq!(unit.root(), common::node(403));
+    assert_eq!(unit.key(), rows[0].id.declared_key().unwrap().clone());
+    let quire_semantic_value::quantity::QuantityUnit::Declared(root_unit) =
+        decision.resolved_units().get(rows[1].id.clone()).unwrap()
+    else {
+        panic!("root declared row");
+    };
+    assert_eq!(root_unit.key(), rows[1].id.declared_key().unwrap().clone());
+    assert_eq!(root_unit.root(), root_unit.key());
+    assert!(root_unit.path().is_empty());
     assert_eq!(unit.path().len(), 2);
     assert_eq!(
         decision.left().target(),
@@ -340,11 +343,9 @@ fn compound_descriptor_keeps_original_identity_dimensions_and_root_powers() {
     original.left = EqualityOperand::typed(ValueType::Quantity(id.clone()));
     original.right = original.left.clone();
     original.units.push(EqualityUnitDescriptor {
-        quantity_type: common::node(502),
         id: id.clone(),
         form: EqualityUnitForm::Compound {
             dimension_terms: vec![(dimension.clone(), Integer::from(2_i64))],
-            terms: roots.clone(),
         },
     });
     let decision =
@@ -502,34 +503,27 @@ fn a_long_retained_path_materializes_on_a_small_stack_without_a_depth_cap() {
                 })
                 .collect();
             original.units.push(EqualityUnitDescriptor {
-                quantity_type: common::node(9_999),
                 id: id.clone(),
                 form: EqualityUnitForm::Declared {
-                    key: source,
                     dimension_node: common::node(9_998),
                     dimension_terms: vec![(common::node(9_998), Integer::one())],
-                    root: root.clone(),
                     path: path.clone(),
                 },
             });
             let decision =
                 mint_admitted_equality_decision(ReaderSeal, original, &mut meter(1_000_000))
                     .unwrap();
-            let EqualityUnitForm::Declared {
-                path: retained,
-                root: retained_root,
-                ..
-            } = &decision.units()[0].form
+            let EqualityUnitForm::Declared { path: retained, .. } = &decision.units()[0].form
             else {
                 panic!("declared");
             };
             assert_eq!(retained, &path);
-            assert_eq!(retained_root, &root);
             let quire_semantic_value::quantity::QuantityUnit::Declared(native) =
                 decision.resolved_units().get(id).unwrap()
             else {
                 panic!("declared");
             };
+            assert_eq!(native.root(), root);
             assert_eq!(native.canonical().scale(), &rational(1));
             assert_eq!(native.canonical().offset(), &rational(0));
             assert_eq!(native.path().len(), usize::try_from(count).unwrap());
@@ -597,12 +591,54 @@ fn materialization_codes_have_a_closed_round_trip_catalog() {
     use quire_semantic_value::reader_admission::EqualityMaterializationCode as Code;
     assert_eq!(
         Code::ALL.map(Code::as_str),
-        ["resource", "arithmetic", "allocation", "capacity"]
+        [
+            "resource",
+            "arithmetic",
+            "allocation",
+            "capacity",
+            "identity_form"
+        ]
     );
     for code in Code::ALL {
         assert_eq!(Code::from_code(code.as_str()), Some(code));
     }
     for unknown in ["", "RESOURCE", "unknown", "capacity "] {
         assert_eq!(Code::from_code(unknown), None);
+    }
+}
+
+#[trace("IR-1223")]
+#[test]
+fn a_mismatched_unit_identity_arm_is_a_typed_materialization_failure() {
+    use quire_semantic_value::reader_admission::EqualityMaterializationCode;
+    for compound_id in [false, true] {
+        let mut original = descriptor();
+        original.units.push(EqualityUnitDescriptor {
+            id: if compound_id {
+                UnitId::compound(vec![])
+            } else {
+                UnitId::declared(common::node(700))
+            },
+            form: if compound_id {
+                EqualityUnitForm::Declared {
+                    dimension_node: common::node(701),
+                    dimension_terms: vec![],
+                    path: vec![],
+                }
+            } else {
+                EqualityUnitForm::Compound {
+                    dimension_terms: vec![],
+                }
+            },
+        });
+        let error =
+            mint_admitted_equality_decision(ReaderSeal, original, &mut meter(100)).unwrap_err();
+        assert_eq!(error.code(), EqualityMaterializationCode::IdentityForm);
+        assert_eq!(
+            error,
+            EqualityMaterializationError::IdentityForm {
+                locus: EqualityMaterializationLocus::Unit { row: 0 },
+            }
+        );
     }
 }
