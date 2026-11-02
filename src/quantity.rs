@@ -18,7 +18,9 @@ use quire_exact::{
     BoundedInteger, Charge, ChargePoint, Integer, IntegerInterval, LimitKind, Meter, Quantity,
     UnitId,
 };
-use quire_exact::{CheckedInvariantCause, InexactTarget, Outcome, Refusal, Undefined};
+use quire_exact::{
+    CheckedInvariantCause, InexactTarget, Outcome, QuantityCarrier, Refusal, Undefined,
+};
 use quire_exact::{ComparisonOperator, IllTyped, IllTypedCause};
 
 /// The unit of a quantity: an admitted declared unit or a compound unit
@@ -328,6 +330,10 @@ pub enum QuantityTarget {
         /// The rounding spelling of the scale-zero placement.
         rounding: RoundingMode,
     },
+    /// A carried-quantity target whose carrier and rounding mode are part of
+    /// its declared type. An inexact placement under `exact` is reported as
+    /// `Refusal::InexactConversion`; non-exact modes retain their loss record.
+    Carried(QuantityCarrier),
 }
 
 /// A converted value in its target representation.
@@ -467,7 +473,10 @@ pub fn convert_quantity(
     }
     let target = match target {
         QuantityTarget::Exact => Target::Exact,
-        QuantityTarget::Decimal(decimal) => Target::Decimal(decimal.clone()),
+        QuantityTarget::Decimal(decimal) => Target::Decimal {
+            decimal: decimal.clone(),
+            inexact_conversion: None,
+        },
         QuantityTarget::Integer { domain, rounding } => Target::Integer {
             placement: DecimalType::new(
                 domain.lower().clone(),
@@ -477,6 +486,24 @@ pub fn convert_quantity(
                 *rounding,
             )?,
             domain,
+            inexact_conversion: None,
+        },
+        QuantityTarget::Carried(carrier) => match carrier {
+            QuantityCarrier::Decimal(decimal) => Target::Decimal {
+                decimal: decimal.clone(),
+                inexact_conversion: Some(InexactTarget::Decimal(Box::new(decimal.clone()))),
+            },
+            QuantityCarrier::Integer { domain, rounding } => Target::Integer {
+                placement: DecimalType::new(
+                    domain.lower().clone(),
+                    domain.upper().clone(),
+                    0,
+                    0,
+                    *rounding,
+                )?,
+                domain,
+                inexact_conversion: Some(InexactTarget::Integer(Box::new(domain.clone()))),
+            },
         },
     };
     Ok(outcome_from_stop(convert(source, unit, &target, meter)))
@@ -784,10 +811,14 @@ fn power(base: &Rational, exponent: &Integer, meter: &mut Meter) -> Result<Optio
 /// A conversion target resolved at type-check time.
 enum Target<'a> {
     Exact,
-    Decimal(DecimalType),
+    Decimal {
+        decimal: DecimalType,
+        inexact_conversion: Option<InexactTarget>,
+    },
     Integer {
         placement: DecimalType,
         domain: &'a IntegerInterval,
+        inexact_conversion: Option<InexactTarget>,
     },
 }
 
@@ -815,27 +846,46 @@ fn convert(
             charge_retain(meter)?;
             ConvertedValue::Exact(exact)
         }
-        Target::Decimal(decimal) => {
-            let admitted = place(&exact, decimal, Retained::Decimal, meter)?
-                .admit()
-                .map_err(refused)?;
+        Target::Decimal {
+            decimal,
+            inexact_conversion,
+        } => {
+            let admitted = place(
+                &exact,
+                decimal,
+                Retained::Decimal,
+                inexact_conversion.as_ref(),
+                meter,
+            )?
+            .admit()
+            .map_err(refused)?;
             charge_retain(meter)?;
             ConvertedValue::Decimal(admitted.retain())
         }
-        Target::Integer { placement, domain } => {
+        Target::Integer {
+            placement,
+            domain,
+            inexact_conversion,
+        } => {
             let out_of_domain = || {
                 Stop::Refused(Refusal::IntegerOutOfDomain {
                     target: Box::new((*domain).clone()),
                 })
             };
             // The scale-zero placement's membership is the integer domain.
-            let (coefficient, loss) = place(&exact, placement, Retained::Integer(domain), meter)?
-                .admit()
-                .map_err(|_| out_of_domain())?
-                .into_integer()
-                .ok_or(Stop::Refused(Refusal::CheckedInvariant {
-                    cause: CheckedInvariantCause::ExpectedIntegerPlacement,
-                }))?;
+            let (coefficient, loss) = place(
+                &exact,
+                placement,
+                Retained::Integer(domain),
+                inexact_conversion.as_ref(),
+                meter,
+            )?
+            .admit()
+            .map_err(|_| out_of_domain())?
+            .into_integer()
+            .ok_or(Stop::Refused(Refusal::CheckedInvariant {
+                cause: CheckedInvariantCause::ExpectedIntegerPlacement,
+            }))?;
             let value = domain.admit(coefficient).map_err(|_| out_of_domain())?;
             charge_retain(meter)?;
             ConvertedValue::Integer { value, loss }
@@ -867,17 +917,24 @@ fn place(
     exact: &Rational,
     decimal: &DecimalType,
     retained: Retained<'_>,
+    inexact_conversion: Option<&InexactTarget>,
     meter: &mut Meter,
 ) -> Result<Placed, Stop> {
     // An integer target's strict-`exact` refusal names the declared
     // `Int[..]`, not the scale-zero placement type (QSL FR-096).
-    let refuse = |refusal: Refusal| match (refusal, retained) {
-        (Refusal::InexactDecimal { .. }, Retained::Integer(domain)) => {
-            Stop::Refused(Refusal::InexactDecimal {
-                target: InexactTarget::Integer(Box::new(domain.clone())),
-            })
-        }
-        (refusal, _) => refused(refusal),
+    let refuse = |refusal: Refusal| match refusal {
+        Refusal::InexactDecimal { target } => match inexact_conversion {
+            Some(target) => Stop::Refused(Refusal::InexactConversion {
+                target: target.clone(),
+            }),
+            None => match (target, retained) {
+                (_, Retained::Integer(domain)) => Stop::Refused(Refusal::InexactDecimal {
+                    target: InexactTarget::Integer(Box::new(domain.clone())),
+                }),
+                (target, Retained::Decimal) => Stop::Refused(Refusal::InexactDecimal { target }),
+            },
+        },
+        refusal => refused(refusal),
     };
     let placement = decimal.placement(exact).map_err(refuse)?;
     // Sized from the reduced exact numerator `a`, before placement
@@ -937,6 +994,7 @@ mod checked_invariant_tests {
         let target = Target::Integer {
             placement,
             domain: &domain,
+            inexact_conversion: None,
         };
         let mut meter = Meter::new(ScalarLimits {
             integer_bits: 1024,

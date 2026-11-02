@@ -15,8 +15,8 @@ use alloc::vec::Vec;
 use core::cell::Cell;
 
 use quire_exact::{
-    Cancel, DecimalMembershipFailure, NumericMembershipFailure, NumericTypeEqualityFailure, Value,
-    ValueType,
+    Cancel, DecimalMembershipFailure, NumericMembershipFailure, NumericTypeEqualityFailure,
+    QuantityCarrier, Value, ValueType,
 };
 
 use super::{
@@ -151,6 +151,13 @@ fn leaf_cause(expected: &ValueType, value: &Value) -> InvalidMembershipCause {
                 InvalidMembershipCause::Type
             }
         }
+        (ValueType::CarriedQuantity(carried), Value::Quantity(quantity)) => {
+            if quantity.unit() == carried.unit() {
+                InvalidMembershipCause::Payload
+            } else {
+                InvalidMembershipCause::Type
+            }
+        }
         // The kernel has no map value, so every value at a map type is of
         // another kind.
         (ValueType::Map(_), _) => InvalidMembershipCause::Kind,
@@ -163,6 +170,7 @@ fn leaf_cause(expected: &ValueType, value: &Value) -> InvalidMembershipCause {
             | ValueType::Float(_)
             | ValueType::Quantity(_)
             | ValueType::BoundedQuantity(_)
+            | ValueType::CarriedQuantity(_)
             | ValueType::Text(_)
             | ValueType::String
             | ValueType::Uuid
@@ -175,6 +183,39 @@ fn leaf_cause(expected: &ValueType, value: &Value) -> InvalidMembershipCause {
             | ValueType::Population(_),
             _,
         ) => InvalidMembershipCause::Kind,
+    }
+}
+
+/// A carried quantity value must already be a member of the carrier grid;
+/// the carrier's rounding mode applies when producing values, not when
+/// admitting a retained `Value::Quantity`.
+fn carried_quantity_admits(
+    carried: &quire_exact::CarriedQuantityType,
+    quantity: &quire_exact::Quantity,
+) -> bool {
+    if quantity.unit() != carried.unit() {
+        return false;
+    }
+    match carried.carrier() {
+        QuantityCarrier::Integer { domain, .. } => {
+            quantity.magnitude().is_integer() && domain.contains(quantity.magnitude().numerator())
+        }
+        QuantityCarrier::Decimal(domain) => {
+            let Ok(exact) = quire_exact::DecimalType::new(
+                domain.lower().clone(),
+                domain.upper().clone(),
+                u64::from(domain.min_scale()),
+                u64::from(domain.max_scale()),
+                quire_exact::RoundingMode::Exact,
+            ) else {
+                return false;
+            };
+            exact
+                .placement(quantity.magnitude())
+                .and_then(|placement| placement.materialize())
+                .and_then(|placed| placed.admit())
+                .is_ok()
+        }
     }
 }
 
@@ -452,6 +493,59 @@ impl TypeEnvironment {
             },
             &mut NumericChecks {
                 value: &mut |expected, value, locus| {
+                    if let (ValueType::CarriedQuantity(carried), Value::Quantity(quantity)) =
+                        (expected, value)
+                    {
+                        for (operand, measured_bits) in [
+                            (
+                                quire_exact::NumericMembershipOperand::RationalNumerator,
+                                quantity.magnitude().numerator().magnitude_bits(),
+                            ),
+                            (
+                                quire_exact::NumericMembershipOperand::RationalDenominator,
+                                quantity.magnitude().denominator().magnitude_bits(),
+                            ),
+                        ] {
+                            if measured_bits > magnitude_bits {
+                                return Err(BoundedSuppliedAdmissionError::NumericSize {
+                                    operand,
+                                    measured_bits,
+                                    limit_bits: magnitude_bits,
+                                    locus,
+                                });
+                            }
+                        }
+                        if quantity.unit() != carried.unit() {
+                            return Ok(Some(false));
+                        }
+                        if let QuantityCarrier::Decimal(domain) = carried.carrier() {
+                            for (operand, bound) in [
+                                (DecimalMembershipOperand::Lower, domain.lower()),
+                                (DecimalMembershipOperand::Upper, domain.upper()),
+                            ] {
+                                let measured_bits = bound.magnitude_bits();
+                                if measured_bits > magnitude_bits {
+                                    return Err(BoundedSuppliedAdmissionError::DecimalSize {
+                                        operand,
+                                        measured_bits,
+                                        limit_bits: magnitude_bits,
+                                        locus,
+                                    });
+                                }
+                            }
+                        }
+                        let _ = cancel.poll();
+                        if let Some(cause) = cancel.cause() {
+                            return Err(SuppliedAdmissionError::Cancelled {
+                                cause,
+                                spent: spent.get(),
+                                event: MembershipEvent::ValueVisit,
+                                locus,
+                            }
+                            .into());
+                        }
+                        return Ok(Some(carried_quantity_admits(carried, quantity)));
+                    }
                     if let (ValueType::Decimal(domain), Value::Decimal(decimal)) = (expected, value)
                     {
                         // S = min_scale bounds max(normalized_scale, min_scale)
@@ -926,7 +1020,12 @@ impl TypeEnvironment {
                         here,
                     ))?;
                 }
-                let admitted = numeric_admitted.unwrap_or_else(|| expected.admits(value));
+                let admitted = numeric_admitted.unwrap_or_else(|| match (expected, value) {
+                    (ValueType::CarriedQuantity(carried), Value::Quantity(quantity)) => {
+                        carried_quantity_admits(carried, quantity)
+                    }
+                    _ => expected.admits(value),
+                });
                 on_boundary(MembershipBoundary::AfterHelper(
                     MembershipEvent::ValueVisit,
                     here,
@@ -4333,5 +4432,65 @@ mod tests {
                 assert_eq!(retry_budget.spent(), 20_003);
             }
         }
+    }
+
+    /// Carried quantities are retained `Value::Quantity` leaves whose values
+    /// must already fit the declared carrier grid, even when that carrier's
+    /// conversion mode permits rounding.
+    /// Trace: FR-497-AC-6, FR-142-AC-30
+    #[trace("TC-1287", "FR-497-AC-6", "FR-142-AC-30")]
+    #[test]
+    fn carried_quantity_admission_checks_unit_and_carrier_grid() {
+        use quire_exact::{CarriedQuantityType, Quantity, QuantityCarrier, UnitId};
+
+        let unit = UnitId::declared(crate::test_identity::node(91));
+        let other_unit = UnitId::declared(crate::test_identity::node(92));
+        let decimal = DecimalType::new(
+            Integer::from(-100_i64),
+            Integer::from(100_i64),
+            2,
+            2,
+            RoundingMode::NearestEven,
+        )
+        .expect("valid carrier");
+        let decimal_type = ValueType::carried_quantity(CarriedQuantityType::new(
+            unit.clone(),
+            QuantityCarrier::Decimal(decimal),
+        ));
+        let quantity = |numerator: i64, denominator: i64, unit| {
+            Value::Quantity(Quantity::new(
+                Rational::new(Integer::from(numerator), Integer::from(denominator))
+                    .expect("positive denominator"),
+                unit,
+            ))
+        };
+        let environment = environment();
+
+        assert!(environment
+            .admits(&decimal_type, &quantity(1, 4, unit.clone()))
+            .expect("admission"));
+        assert!(!environment
+            .admits(&decimal_type, &quantity(1, 3, unit.clone()))
+            .expect("admission"));
+        assert!(!environment
+            .admits(&decimal_type, &quantity(1, 4, other_unit))
+            .expect("admission"));
+
+        let integer_type = ValueType::carried_quantity(CarriedQuantityType::new(
+            unit.clone(),
+            QuantityCarrier::Integer {
+                domain: IntegerInterval::spanning(Integer::from(-2_i64), Integer::from(2_i64)),
+                rounding: RoundingMode::NearestEven,
+            },
+        ));
+        assert!(environment
+            .admits(&integer_type, &quantity(2, 1, unit.clone()))
+            .expect("admission"));
+        assert!(!environment
+            .admits(&integer_type, &quantity(5, 2, unit.clone()))
+            .expect("admission"));
+        assert!(!environment
+            .admits(&integer_type, &quantity(3, 1, unit))
+            .expect("admission"));
     }
 }

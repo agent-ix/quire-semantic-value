@@ -2534,6 +2534,7 @@ impl TypeEnvironment {
                                 | ValueType::Float(_)
                                 | ValueType::Quantity(_)
                                 | ValueType::BoundedQuantity(_)
+                                | ValueType::CarriedQuantity(_)
                                 | ValueType::Text(_)
                                 | ValueType::Uuid
                                 | ValueType::Timestamp
@@ -2940,6 +2941,7 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::BoundedQuantity(_)
+                | ValueType::CarriedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -2985,6 +2987,7 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::BoundedQuantity(_)
+                | ValueType::CarriedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3052,9 +3055,9 @@ impl TypeEnvironment {
     /// [`Self::composite_conforms`] and the walk stops there: its own members
     /// were admitted against its own declaration. A `Reference<T>` is admitted
     /// when the reference's object type [`Self::conforms`] to `T`. Every other
-    /// leaf, and the recorded payload or element type of every `Option` and
-    /// collection, is the exact kernel [`ValueType::admits`], so admission is
-    /// never covariant over a type constructor. The answer carries no cause
+    /// leaf and each recorded payload or element type uses exact kernel
+    /// membership; carried quantities additionally check their unit and
+    /// carrier grid. Admission is never covariant over a type constructor. The answer carries no cause
     /// and charges no work: the callers that hold the value own its
     /// accounting. A refused reservation is an error, never `false`; the
     /// cause-carrying, event-by-event form is `admits_walk`.
@@ -3283,6 +3286,7 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::BoundedQuantity(_)
+                | ValueType::CarriedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3336,6 +3340,7 @@ impl TypeEnvironment {
                 | ValueType::Decimal(_)
                 | ValueType::Quantity(_)
                 | ValueType::BoundedQuantity(_)
+                | ValueType::CarriedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3402,6 +3407,7 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::BoundedQuantity(_)
+                | ValueType::CarriedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3476,6 +3482,7 @@ impl TypeEnvironment {
                 | ValueType::Decimal(_)
                 | ValueType::Quantity(_)
                 | ValueType::BoundedQuantity(_)
+                | ValueType::CarriedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3537,6 +3544,7 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::BoundedQuantity(_)
+                | ValueType::CarriedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3709,6 +3717,7 @@ impl TypeEnvironment {
                     | ValueType::Float(_)
                     | ValueType::Quantity(_)
                     | ValueType::BoundedQuantity(_)
+                    | ValueType::CarriedQuantity(_)
                     | ValueType::Text(_)
                     | ValueType::String
                     | ValueType::Uuid
@@ -5544,6 +5553,7 @@ fn top_level_unit(value_type: &ValueType) -> Option<UnitId> {
     match value_type {
         ValueType::Quantity(id) => Some(id.clone()),
         ValueType::BoundedQuantity(bounded) => Some(bounded.unit().clone()),
+        ValueType::CarriedQuantity(carried) => Some(carried.unit().clone()),
         ValueType::Boolean
         | ValueType::Integer
         | ValueType::Int(_)
@@ -5577,6 +5587,7 @@ fn bounded_read(value_type: &ValueType) -> Option<ValueType> {
         | ValueType::Decimal(_)
         | ValueType::Float(_)
         | ValueType::Quantity(_)
+        | ValueType::CarriedQuantity(_)
         | ValueType::Text(_)
         | ValueType::String
         | ValueType::Uuid
@@ -5681,6 +5692,7 @@ fn integer_source_admits(lower: &Integer, upper: &Integer, target: &ValueType) -
         | ValueType::Float(_)
         | ValueType::Quantity(_)
         | ValueType::BoundedQuantity(_)
+        | ValueType::CarriedQuantity(_)
         | ValueType::Text(_)
         | ValueType::String
         | ValueType::Uuid
