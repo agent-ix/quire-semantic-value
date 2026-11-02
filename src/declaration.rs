@@ -465,11 +465,12 @@ mod storage_reservation_tests {
         let denial = DenyBytes {
             seen: Cell::new(None),
         };
-        let denied = try_clone_node(&key, &denial);
-        let request = denial.seen.get().expect("structural copy requested bytes");
-        assert!(request.amount() > 0);
-        assert_eq!(request.unit(), StorageUnit::Bytes);
-        assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+        let shared = try_clone_node(&key, &denial).expect("immutable NodeKey clone");
+        assert_eq!(shared, key);
+        assert!(
+            denial.seen.get().is_none(),
+            "Arc clone allocates no storage"
+        );
 
         let effective = crate::test_identity::effective(1);
         let denial = DenyBytes {
