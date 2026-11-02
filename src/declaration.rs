@@ -465,11 +465,12 @@ mod storage_reservation_tests {
         let denial = DenyBytes {
             seen: Cell::new(None),
         };
-        let denied = try_clone_node(&key, &denial);
-        let request = denial.seen.get().expect("structural copy requested bytes");
-        assert!(request.amount() > 0);
-        assert_eq!(request.unit(), StorageUnit::Bytes);
-        assert_eq!(denied, Err(EnvironmentFailure::Allocation(request)));
+        let shared = try_clone_node(&key, &denial).expect("immutable NodeKey clone");
+        assert_eq!(shared, key);
+        assert!(
+            denial.seen.get().is_none(),
+            "Arc clone allocates no storage"
+        );
 
         let effective = crate::test_identity::effective(1);
         let denial = DenyBytes {
@@ -2042,11 +2043,13 @@ fn identity_copy_failure(error: IdentityCopyError<StorageFailure>) -> Environmen
     }
 }
 
-fn try_clone_node<R: ReservationPolicy>(key: &NodeKey, policy: &R) -> Admission<NodeKey> {
-    key.try_clone_with(&mut |requested| {
-        policy.check_request(StorageRequest::new(requested, StorageUnit::Bytes))
-    })
-    .map_err(identity_copy_failure)
+fn try_clone_node<R: ReservationPolicy>(key: &NodeKey, _policy: &R) -> Admission<NodeKey> {
+    // NodeKey is an immutable, Arc-backed structural identity. Its ordinary
+    // clone only increments the shared owner count; deep-copying it here
+    // repeatedly allocates the package, path, and copy-stack scratch for each
+    // independent declaration root. Retain the identity without duplicating
+    // its immutable structure.
+    Ok(key.clone())
 }
 
 fn try_clone_effective<R: ReservationPolicy>(
@@ -2534,6 +2537,7 @@ impl TypeEnvironment {
                                 | ValueType::Float(_)
                                 | ValueType::Quantity(_)
                                 | ValueType::BoundedQuantity(_)
+                                | ValueType::CarriedQuantity(_)
                                 | ValueType::Text(_)
                                 | ValueType::Uuid
                                 | ValueType::Timestamp
@@ -2940,6 +2944,7 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::BoundedQuantity(_)
+                | ValueType::CarriedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -2985,6 +2990,7 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::BoundedQuantity(_)
+                | ValueType::CarriedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3052,9 +3058,9 @@ impl TypeEnvironment {
     /// [`Self::composite_conforms`] and the walk stops there: its own members
     /// were admitted against its own declaration. A `Reference<T>` is admitted
     /// when the reference's object type [`Self::conforms`] to `T`. Every other
-    /// leaf, and the recorded payload or element type of every `Option` and
-    /// collection, is the exact kernel [`ValueType::admits`], so admission is
-    /// never covariant over a type constructor. The answer carries no cause
+    /// leaf and each recorded payload or element type uses exact kernel
+    /// membership; carried quantities additionally check their unit and
+    /// carrier grid. Admission is never covariant over a type constructor. The answer carries no cause
     /// and charges no work: the callers that hold the value own its
     /// accounting. A refused reservation is an error, never `false`; the
     /// cause-carrying, event-by-event form is `admits_walk`.
@@ -3283,6 +3289,7 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::BoundedQuantity(_)
+                | ValueType::CarriedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3336,6 +3343,7 @@ impl TypeEnvironment {
                 | ValueType::Decimal(_)
                 | ValueType::Quantity(_)
                 | ValueType::BoundedQuantity(_)
+                | ValueType::CarriedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3402,6 +3410,7 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::BoundedQuantity(_)
+                | ValueType::CarriedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3476,6 +3485,7 @@ impl TypeEnvironment {
                 | ValueType::Decimal(_)
                 | ValueType::Quantity(_)
                 | ValueType::BoundedQuantity(_)
+                | ValueType::CarriedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3537,6 +3547,7 @@ impl TypeEnvironment {
                 | ValueType::Float(_)
                 | ValueType::Quantity(_)
                 | ValueType::BoundedQuantity(_)
+                | ValueType::CarriedQuantity(_)
                 | ValueType::Text(_)
                 | ValueType::String
                 | ValueType::Uuid
@@ -3709,6 +3720,7 @@ impl TypeEnvironment {
                     | ValueType::Float(_)
                     | ValueType::Quantity(_)
                     | ValueType::BoundedQuantity(_)
+                    | ValueType::CarriedQuantity(_)
                     | ValueType::Text(_)
                     | ValueType::String
                     | ValueType::Uuid
@@ -5415,6 +5427,14 @@ impl TypeEnvironment {
                 return ill_typed(IllTypedCause::DistinctUnits)
             }
             (ValueType::Quantity(_), ValueType::Quantity(_)) => EqualitySchedule::Quantity,
+            // A carried quantity has the same runtime `Value::Quantity`
+            // representation, but only identical carried types reach this
+            // schedule through the equality-conversion table above.
+            (ValueType::CarriedQuantity(left), ValueType::CarriedQuantity(right))
+                if left == right =>
+            {
+                EqualitySchedule::Quantity
+            }
             // QSpec FR-153 names a population binding only as the direct operand of
             // `allInstances`/`lookup`, never as an equality operand: refuse it
             // here rather than falling into the `l == r` plan schedule below,
@@ -5544,6 +5564,7 @@ fn top_level_unit(value_type: &ValueType) -> Option<UnitId> {
     match value_type {
         ValueType::Quantity(id) => Some(id.clone()),
         ValueType::BoundedQuantity(bounded) => Some(bounded.unit().clone()),
+        ValueType::CarriedQuantity(carried) => Some(carried.unit().clone()),
         ValueType::Boolean
         | ValueType::Integer
         | ValueType::Int(_)
@@ -5577,6 +5598,7 @@ fn bounded_read(value_type: &ValueType) -> Option<ValueType> {
         | ValueType::Decimal(_)
         | ValueType::Float(_)
         | ValueType::Quantity(_)
+        | ValueType::CarriedQuantity(_)
         | ValueType::Text(_)
         | ValueType::String
         | ValueType::Uuid
@@ -5681,6 +5703,7 @@ fn integer_source_admits(lower: &Integer, upper: &Integer, target: &ValueType) -
         | ValueType::Float(_)
         | ValueType::Quantity(_)
         | ValueType::BoundedQuantity(_)
+        | ValueType::CarriedQuantity(_)
         | ValueType::Text(_)
         | ValueType::String
         | ValueType::Uuid

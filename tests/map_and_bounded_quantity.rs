@@ -11,10 +11,11 @@ mod common;
 
 use ix_trace_rs::trace;
 use quire_exact::{
-    from_admitted, BoundedQuantityType, Cancel, CancelCause, CardinalityBound, CollectionKind,
-    CollectionType, FieldValue, FloatType, Identifier, IeeeWidth, IllTypedCause, Integer,
-    IntegerInterval, MapType, Meter, NodeKey, OptionValue, Outcome, Presence, Quantity, Rational,
-    ScalarLimits, UnionMember, UnitId, Value, ValueType, VariantId,
+    from_admitted, BoundedQuantityType, Cancel, CancelCause, CardinalityBound, CarriedQuantityType,
+    CollectionKind, CollectionType, FieldValue, FloatType, Identifier, IeeeWidth, IllTypedCause,
+    Integer, IntegerInterval, MapType, Meter, NodeKey, OptionValue, Outcome, Presence, Quantity,
+    QuantityCarrier, Rational, RoundingMode, ScalarLimits, UnionMember, UnitId, Value, ValueType,
+    VariantId,
 };
 use quire_semantic_value::declaration::{
     admits_equality_conversion, CompositeDeclaration, CompositeShape, DeclarationCause,
@@ -1366,6 +1367,57 @@ fn equality_reads_a_top_level_bounded_quantity_as_a_quantity() {
     };
     assert!(matches!(compare(9, 3), Outcome::Completed(false)));
     assert!(matches!(compare(4, 4), Outcome::Completed(true)));
+}
+
+/// Identical carried types use the exact runtime quantity equality schedule;
+/// no equality conversion is introduced to ordinary or differently carried
+/// quantity types.
+#[trace("TC-1287", "FR-497-AC-6", "FR-142-AC-30")]
+#[test]
+fn equality_compares_identically_carried_quantity_values_exactly() {
+    let table = unit_table();
+    let environment = environment();
+    let carried = ValueType::carried_quantity(CarriedQuantityType::new(
+        unit_u(),
+        QuantityCarrier::Decimal(
+            quire_exact::DecimalType::new(
+                integer(-100),
+                integer(100),
+                2,
+                2,
+                RoundingMode::NearestEven,
+            )
+            .unwrap(),
+        ),
+    ));
+    let checked = check(
+        &environment,
+        &table,
+        typed(carried.clone()),
+        typed(carried.clone()),
+    )
+    .expect("identical carried type has equality");
+    assert_eq!(checked.schedule(), EqualitySchedule::Quantity);
+
+    let rational = |numerator, denominator| {
+        Rational::new(integer(numerator), integer(denominator)).expect("positive denominator")
+    };
+    let left = Value::Quantity(Quantity::new(rational(1, 4), unit_u()));
+    let same_value = Value::Quantity(Quantity::new(rational(25, 100), unit_u()));
+    let different_value = Value::Quantity(Quantity::new(rational(1, 2), unit_u()));
+    assert!(matches!(
+        checked.evaluate(&environment, &left, &same_value, &mut meter()),
+        Outcome::Completed(true)
+    ));
+    assert!(matches!(
+        checked.evaluate(&environment, &left, &different_value, &mut meter()),
+        Outcome::Completed(false)
+    ));
+    assert!(!admits_equality_conversion(
+        &carried,
+        &ValueType::Quantity(unit_u()),
+        &UnitScope::new(&table),
+    ));
 }
 
 // --------------------------------------------------------------- AC-16

@@ -12,12 +12,13 @@ use std::num::NonZeroU64;
 
 use ix_trace_rs::trace;
 use quire_exact::{
-    ChargePoint, InjectedDenial, Integer, IntegerInterval, Meter, NodeKey, Outcome, Quantity,
-    Rational, RoundingMode, ScalarLimits, UnitDomain, UnitId,
+    ChargePoint, DecimalType, InexactTarget, InjectedDenial, Integer, IntegerInterval, Meter,
+    NodeKey, Outcome, Quantity, QuantityCarrier, Rational, Refusal, RoundingMode, ScalarLimits,
+    UnitDomain, UnitId,
 };
 use quire_semantic_value::quantity::{
-    convert_quantity, Conversion, HandoffRefusal, QuantityTarget, QuantityUnit, UnitScope,
-    UnitTable,
+    convert_quantity, Conversion, ConvertedValue, HandoffRefusal, QuantityTarget, QuantityUnit,
+    UnitScope, UnitTable,
 };
 use quire_semantic_value::semantic_node::IdentityRefusal;
 use quire_semantic_value::unit::{
@@ -305,6 +306,161 @@ fn a_decimal_or_integer_conversion_is_not_a_quantity() {
             Err(HandoffRefusal::NotExact)
         );
     }
+}
+
+/// A carried target has a distinct exact-placement refusal from an ordinary
+/// decimal or integer conversion, and non-exact modes retain loss records.
+#[trace("TC-1287", "FR-497-AC-4", "FR-497-AC-5", "FR-497-AC-6")]
+#[test]
+fn carried_quantity_targets_map_exact_refusals_and_preserve_rounding() {
+    let graph = energy_graph();
+    let table = UnitTable::declared(&graph);
+    let source_quantity = Quantity::new(rational(1), UnitId::declared(key(MILLIJOULE)));
+    let source = table.resolve(&source_quantity).unwrap();
+    let target_unit = declared(&table, JOULE);
+
+    let exact_decimal = DecimalType::new(int(1), int(2), 2, 2, RoundingMode::Exact).unwrap();
+    let exact_integer = IntegerInterval::spanning(int(1), int(2));
+    let carried_targets = [
+        (
+            QuantityCarrier::Decimal(exact_decimal.clone()),
+            InexactTarget::Decimal(Box::new(exact_decimal)),
+        ),
+        (
+            QuantityCarrier::Integer {
+                domain: exact_integer.clone(),
+                rounding: RoundingMode::Exact,
+            },
+            InexactTarget::Integer(Box::new(exact_integer)),
+        ),
+    ];
+
+    for (carrier, expected) in carried_targets {
+        let Outcome::Refused(refusal) = convert_quantity(
+            source,
+            &target_unit,
+            &QuantityTarget::Carried(carrier),
+            &mut meter(),
+        )
+        .unwrap() else {
+            panic!("exact carried placement refuses");
+        };
+        assert_eq!(refusal, Refusal::InexactConversion { target: expected });
+        assert_eq!(refusal.code(), Some("inexact_conversion"));
+        assert_eq!(refusal.cause(), Some("inexact-conversion"));
+    }
+
+    let rounded_decimal =
+        DecimalType::new(int(-1), int(1), 2, 2, RoundingMode::NearestEven).unwrap();
+    let Outcome::Completed(conversion) = convert_quantity(
+        source,
+        &target_unit,
+        &QuantityTarget::Carried(QuantityCarrier::Decimal(rounded_decimal)),
+        &mut meter(),
+    )
+    .unwrap() else {
+        panic!("nearest-even carried Decimal placement completes");
+    };
+    let ConvertedValue::Decimal(result) = conversion.value() else {
+        panic!("carried Decimal placement retains a Decimal result");
+    };
+    assert!(result.loss().is_some());
+    assert_eq!(result.value().normalized().coefficient(), &Integer::zero());
+
+    let rounded_integer = IntegerInterval::spanning(int(-1), int(1));
+    let Outcome::Completed(conversion) = convert_quantity(
+        source,
+        &target_unit,
+        &QuantityTarget::Carried(QuantityCarrier::Integer {
+            domain: rounded_integer,
+            rounding: RoundingMode::NearestEven,
+        }),
+        &mut meter(),
+    )
+    .unwrap() else {
+        panic!("nearest-even carried Int placement completes");
+    };
+    let ConvertedValue::Integer { value, loss } = conversion.value() else {
+        panic!("carried Int placement retains an Integer result");
+    };
+    assert!(loss.is_some());
+    assert_eq!(value.value(), &Integer::zero());
+}
+
+/// Ordinary conversion targets keep their old refusal identity, while carried
+/// targets preserve exact-before-membership and rounded-membership ordering.
+#[trace("TC-1287", "FR-497-AC-4", "FR-497-AC-5")]
+#[test]
+fn carried_refusals_precede_membership_without_changing_legacy_targets() {
+    let graph = energy_graph();
+    let table = UnitTable::declared(&graph);
+    let source_quantity = Quantity::new(rational(1), UnitId::declared(key(MILLIJOULE)));
+    let source = table.resolve(&source_quantity).unwrap();
+    let target_unit = declared(&table, JOULE);
+
+    let legacy_decimal = DecimalType::new(int(1), int(2), 2, 2, RoundingMode::Exact).unwrap();
+    let legacy_integer = IntegerInterval::spanning(int(1), int(2));
+    for (target, expected) in [
+        (
+            QuantityTarget::Decimal(legacy_decimal.clone()),
+            InexactTarget::Decimal(Box::new(legacy_decimal)),
+        ),
+        (
+            QuantityTarget::Integer {
+                domain: legacy_integer.clone(),
+                rounding: RoundingMode::Exact,
+            },
+            InexactTarget::Integer(Box::new(legacy_integer)),
+        ),
+    ] {
+        let Outcome::Refused(refusal) =
+            convert_quantity(source, &target_unit, &target, &mut meter()).unwrap()
+        else {
+            panic!("legacy exact placement refuses");
+        };
+        assert_eq!(refusal, Refusal::InexactDecimal { target: expected });
+        assert_eq!(refusal.code(), Some("inexact_decimal"));
+    }
+
+    let exact_outside = DecimalType::new(int(1), int(2), 2, 2, RoundingMode::Exact).unwrap();
+    assert!(matches!(
+        convert_quantity(
+            source,
+            &target_unit,
+            &QuantityTarget::Carried(QuantityCarrier::Decimal(exact_outside)),
+            &mut meter(),
+        )
+        .unwrap(),
+        Outcome::Refused(Refusal::InexactConversion { .. })
+    ));
+
+    let rounded_outside =
+        DecimalType::new(int(1), int(2), 2, 2, RoundingMode::NearestEven).unwrap();
+    assert!(matches!(
+        convert_quantity(
+            source,
+            &target_unit,
+            &QuantityTarget::Carried(QuantityCarrier::Decimal(rounded_outside)),
+            &mut meter(),
+        )
+        .unwrap(),
+        Outcome::Refused(Refusal::DecimalOutOfDomain { .. })
+    ));
+
+    let rounded_integer_outside = IntegerInterval::spanning(int(1), int(2));
+    assert!(matches!(
+        convert_quantity(
+            source,
+            &target_unit,
+            &QuantityTarget::Carried(QuantityCarrier::Integer {
+                domain: rounded_integer_outside,
+                rounding: RoundingMode::NearestEven,
+            }),
+            &mut meter(),
+        )
+        .unwrap(),
+        Outcome::Refused(Refusal::IntegerOutOfDomain { .. })
+    ));
 }
 
 /// A source unit with no terms, and a target of `roots` dimension-cancelling
