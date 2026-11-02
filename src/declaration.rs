@@ -2098,14 +2098,16 @@ impl<K: Ord, V> OrderedIndex<K, V> {
         self.entries
             .binary_search_by(|(item, _)| item.cmp(key))
             .ok()
-            .map(|at| &self.entries[at].1)
+            .and_then(|at| self.entries.get(at))
+            .map(|(_, value)| value)
     }
 
     fn get_mut(&mut self, key: &K) -> Option<&mut V> {
         self.entries
             .binary_search_by(|(item, _)| item.cmp(key))
             .ok()
-            .map(|at| &mut self.entries[at].1)
+            .and_then(|at| self.entries.get_mut(at))
+            .map(|(_, value)| value)
     }
 
     pub(crate) fn contains_key(&self, key: &K) -> bool {
