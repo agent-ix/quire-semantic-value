@@ -1372,7 +1372,7 @@ fn equality_reads_a_top_level_bounded_quantity_as_a_quantity() {
 /// Identical carried types use the exact runtime quantity equality schedule;
 /// no equality conversion is introduced to ordinary or differently carried
 /// quantity types.
-#[trace("TC-1287", "FR-497-AC-6", "FR-142-AC-30")]
+#[trace("TC-1287", "FR-497-AC-2", "FR-497-AC-6", "FR-142-AC-30")]
 #[test]
 fn equality_compares_identically_carried_quantity_values_exactly() {
     let table = unit_table();
