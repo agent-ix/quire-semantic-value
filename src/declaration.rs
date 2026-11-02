@@ -5424,6 +5424,14 @@ impl TypeEnvironment {
                 return ill_typed(IllTypedCause::DistinctUnits)
             }
             (ValueType::Quantity(_), ValueType::Quantity(_)) => EqualitySchedule::Quantity,
+            // A carried quantity has the same runtime `Value::Quantity`
+            // representation, but only identical carried types reach this
+            // schedule through the equality-conversion table above.
+            (ValueType::CarriedQuantity(left), ValueType::CarriedQuantity(right))
+                if left == right =>
+            {
+                EqualitySchedule::Quantity
+            }
             // QSpec FR-153 names a population binding only as the direct operand of
             // `allInstances`/`lookup`, never as an equality operand: refuse it
             // here rather than falling into the `l == r` plan schedule below,

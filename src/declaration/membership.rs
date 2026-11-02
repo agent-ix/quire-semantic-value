@@ -496,6 +496,42 @@ impl TypeEnvironment {
                     if let (ValueType::CarriedQuantity(carried), Value::Quantity(quantity)) =
                         (expected, value)
                     {
+                        if quantity.unit() != carried.unit() {
+                            return Ok(Some(false));
+                        }
+                        if let QuantityCarrier::Integer { domain, .. } = carried.carrier() {
+                            if !quantity.magnitude().is_integer() {
+                                return Ok(Some(false));
+                            }
+                            return domain
+                                .try_contains_bounded(
+                                    quantity.magnitude().numerator(),
+                                    magnitude_bits,
+                                    cancel,
+                                )
+                                .map(Some)
+                                .map_err(|failure| match failure {
+                                    NumericMembershipFailure::UnsupportedSize {
+                                        operand,
+                                        measured_bits,
+                                        limit_bits,
+                                    } => BoundedSuppliedAdmissionError::NumericSize {
+                                        operand,
+                                        measured_bits,
+                                        limit_bits,
+                                        locus,
+                                    },
+                                    NumericMembershipFailure::Cancelled(cause) => {
+                                        SuppliedAdmissionError::Cancelled {
+                                            cause,
+                                            spent: spent.get(),
+                                            event: MembershipEvent::ValueVisit,
+                                            locus,
+                                        }
+                                        .into()
+                                    }
+                                });
+                        }
                         for (operand, measured_bits) in [
                             (
                                 quire_exact::NumericMembershipOperand::RationalNumerator,
@@ -515,23 +551,21 @@ impl TypeEnvironment {
                                 });
                             }
                         }
-                        if quantity.unit() != carried.unit() {
+                        let QuantityCarrier::Decimal(domain) = carried.carrier() else {
                             return Ok(Some(false));
-                        }
-                        if let QuantityCarrier::Decimal(domain) = carried.carrier() {
-                            for (operand, bound) in [
-                                (DecimalMembershipOperand::Lower, domain.lower()),
-                                (DecimalMembershipOperand::Upper, domain.upper()),
-                            ] {
-                                let measured_bits = bound.magnitude_bits();
-                                if measured_bits > magnitude_bits {
-                                    return Err(BoundedSuppliedAdmissionError::DecimalSize {
-                                        operand,
-                                        measured_bits,
-                                        limit_bits: magnitude_bits,
-                                        locus,
-                                    });
-                                }
+                        };
+                        for (operand, bound) in [
+                            (DecimalMembershipOperand::Lower, domain.lower()),
+                            (DecimalMembershipOperand::Upper, domain.upper()),
+                        ] {
+                            let measured_bits = bound.magnitude_bits();
+                            if measured_bits > magnitude_bits {
+                                return Err(BoundedSuppliedAdmissionError::DecimalSize {
+                                    operand,
+                                    measured_bits,
+                                    limit_bits: magnitude_bits,
+                                    locus,
+                                });
                             }
                         }
                         let _ = cancel.poll();
@@ -4492,5 +4526,104 @@ mod tests {
         assert!(!environment
             .admits(&integer_type, &quantity(3, 1, unit))
             .expect("admission"));
+    }
+
+    /// Bounded admission reports oversized integer carrier endpoints before
+    /// comparison and gives a foreign-unit value precedence over its size.
+    /// Trace: FR-497-AC-6, FR-142-AC-30
+    #[trace("TC-1287", "FR-497-AC-6", "FR-142-AC-30")]
+    #[test]
+    fn bounded_carried_quantity_checks_endpoints_and_unit_first() {
+        use quire_exact::NumericMembershipOperand as Operand;
+        use quire_exact::{CarriedQuantityType, Quantity, QuantityCarrier, UnitId};
+
+        let unit = UnitId::declared(crate::test_identity::node(93));
+        let other_unit = UnitId::declared(crate::test_identity::node(94));
+        let oversized = Integer::one().shifted_left(8);
+        let value = Value::Quantity(Quantity::new(
+            Rational::from_integer(Integer::zero()),
+            unit.clone(),
+        ));
+        let mut arena = MembershipPathArena::new().expect("arena");
+        let at = MembershipLocus {
+            path: arena.root(11),
+            part: MembershipPart::Value,
+        };
+        let cancel = Cancel::new();
+
+        for (lower, upper, operand) in [
+            (oversized.neg(), Integer::one(), Operand::IntegerLower),
+            (
+                Integer::one().neg(),
+                oversized.clone(),
+                Operand::IntegerUpper,
+            ),
+        ] {
+            let expected = ValueType::carried_quantity(CarriedQuantityType::new(
+                unit.clone(),
+                QuantityCarrier::Integer {
+                    domain: IntegerInterval::spanning(lower, upper),
+                    rounding: RoundingMode::Exact,
+                },
+            ));
+            let mut budget = SuppliedMembershipBudget::new(1);
+            assert_eq!(
+                environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                    &expected,
+                    &value,
+                    &mut arena,
+                    at,
+                    &mut budget,
+                    &cancel,
+                    1,
+                ),
+                Err(BoundedSuppliedAdmissionError::NumericSize {
+                    operand,
+                    measured_bits: 9,
+                    limit_bits: 1,
+                    locus: at,
+                })
+            );
+            assert_eq!(budget.spent(), 1);
+        }
+
+        let expected = ValueType::carried_quantity(CarriedQuantityType::new(
+            unit,
+            QuantityCarrier::Decimal(
+                quire_exact::DecimalType::new(
+                    Integer::from(-100_i64),
+                    Integer::from(100_i64),
+                    2,
+                    2,
+                    RoundingMode::Exact,
+                )
+                .expect("valid Decimal carrier"),
+            ),
+        ));
+        let enormous = Integer::one().shifted_left(128);
+        let oversized_quantity = Value::Quantity(Quantity::new(
+            Rational::new(enormous.clone(), enormous.add(&Integer::one()))
+                .expect("positive denominator"),
+            other_unit,
+        ));
+        let mut budget = SuppliedMembershipBudget::new(1);
+        assert_eq!(
+            environment().admit_supplied_bounded_numeric::<InvalidMembershipCause>(
+                &expected,
+                &oversized_quantity,
+                &mut arena,
+                at,
+                &mut budget,
+                &cancel,
+                1,
+            ),
+            Err(BoundedSuppliedAdmissionError::Admission(
+                SuppliedAdmissionError::Invalid {
+                    cause: InvalidMembershipCause::Type,
+                    locus: at,
+                }
+            ))
+        );
+        assert_eq!(budget.spent(), 1);
     }
 }
