@@ -218,10 +218,10 @@ mod tests {
     fn canonical_bytes_are_exact_for_each_obligation() {
         let limits = Limits::new(4096);
         let initial = StepSimulationRecord::new(key(0), StepObligation::Initial, Vec::new());
-        let expected = br#"{"hypotheses":[],"obligation":{"kind":"initial"},"refinement":"qsv-test:[Text(\"00000000000000000000\")]:0"}"#;
+        let expected = br#"{"hypotheses":[],"obligation":{"kind":"initial"},"refinement":"qsv-test:[\"00000000000000000000\",]:0"}"#;
         assert_eq!(to_vec(&initial, limits).expect("initial record"), expected);
         let stepped = StepSimulationRecord::new(key(0xab), step(6), vec![key(1), key(0xcd)]);
-        let expected = br#"{"hypotheses":["qsv-test:[Text(\"00000000000000000001\")]:0","qsv-test:[Text(\"00000000000000000205\")]:0"],"obligation":{"kind":"step","row":6},"refinement":"qsv-test:[Text(\"00000000000000000171\")]:0"}"#;
+        let expected = br#"{"hypotheses":["qsv-test:[\"00000000000000000001\",]:0","qsv-test:[\"00000000000000000205\",]:0"],"obligation":{"kind":"step","row":6},"refinement":"qsv-test:[\"00000000000000000171\",]:0"}"#;
         assert_eq!(to_vec(&stepped, limits).expect("step record"), expected);
         assert_eq!(
             to_vec(&StepObligation::Initial, limits).expect("obligation"),
