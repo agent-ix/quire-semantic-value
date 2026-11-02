@@ -2042,11 +2042,13 @@ fn identity_copy_failure(error: IdentityCopyError<StorageFailure>) -> Environmen
     }
 }
 
-fn try_clone_node<R: ReservationPolicy>(key: &NodeKey, policy: &R) -> Admission<NodeKey> {
-    key.try_clone_with(&mut |requested| {
-        policy.check_request(StorageRequest::new(requested, StorageUnit::Bytes))
-    })
-    .map_err(identity_copy_failure)
+fn try_clone_node<R: ReservationPolicy>(key: &NodeKey, _policy: &R) -> Admission<NodeKey> {
+    // NodeKey is an immutable, Arc-backed structural identity. Its ordinary
+    // clone only increments the shared owner count; deep-copying it here
+    // repeatedly allocates the package, path, and copy-stack scratch for each
+    // independent declaration root. Retain the identity without duplicating
+    // its immutable structure.
+    Ok(key.clone())
 }
 
 fn try_clone_effective<R: ReservationPolicy>(
