@@ -1526,6 +1526,33 @@ fn equality_compares_identically_carried_quantity_values_exactly() {
     ));
 
     let plain_quantity = ValueType::Quantity(unit_u());
+    let carried_integer_with_other_rounding =
+        ValueType::carried_quantity(CarriedQuantityType::new(
+            unit_u(),
+            QuantityCarrier::Integer {
+                domain: IntegerInterval::spanning(integer(-2), integer(2)),
+                rounding: RoundingMode::NearestEven,
+            },
+        ));
+    assert_eq!(
+        check(
+            &environment,
+            &table,
+            typed(carried_integer.clone()),
+            typed(carried_integer_with_other_rounding.clone()),
+        ),
+        Err(IllTypedCause::TypeMismatch)
+    );
+    assert!(!admits_equality_conversion(
+        &carried_integer,
+        &carried_integer_with_other_rounding,
+        &UnitScope::new(&table),
+    ));
+    assert!(!admits_equality_conversion(
+        &carried_integer_with_other_rounding,
+        &carried_integer,
+        &UnitScope::new(&table),
+    ));
     assert!(!admits_equality_conversion(
         &plain_quantity,
         &carried_integer,
