@@ -6217,6 +6217,11 @@ pub fn operand_value(
         return Ok(value.clone());
     };
     let converted = match (source, target, value) {
+        (
+            ValueType::CarriedQuantity(source),
+            ValueType::CarriedQuantity(target),
+            Value::Quantity(_),
+        ) if source == target => value.clone(),
         (source, target, value) if source == target => value.clone(),
         (_, ValueType::Integer | ValueType::Int(_), Value::Integer(_)) => value.clone(),
         (_, ValueType::Rational(_), Value::Integer(integer)) => {
@@ -6285,7 +6290,15 @@ pub fn operand_value(
             ))
         }
     };
-    if target.admits(&converted) {
+    let target_admitted = if matches!(target, ValueType::CarriedQuantity(_)) {
+        // Carried quantities deliberately have no kernel-only `admits` rule:
+        // their unit and carrier grid are checked by the declaration
+        // environment, just as for a source value above.
+        types.admits_or_abort(target, &converted)
+    } else {
+        target.admits(&converted)
+    };
+    if target_admitted {
         Ok(converted)
     } else {
         Err(invariant(

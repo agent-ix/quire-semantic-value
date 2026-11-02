@@ -18,9 +18,9 @@ use quire_exact::{
     VariantId,
 };
 use quire_semantic_value::declaration::{
-    admits_equality_conversion, CompositeDeclaration, CompositeShape, DeclarationCause,
-    EnvironmentFailure, EnvironmentLimitKind, EqualityOperand, EqualityOperator, EqualitySchedule,
-    FieldDeclaration, RecursionEdges, TypeEnvironment, TypeEnvironmentLimits,
+    admits_equality_conversion, operand_value, CompositeDeclaration, CompositeShape,
+    DeclarationCause, EnvironmentFailure, EnvironmentLimitKind, EqualityOperand, EqualityOperator,
+    EqualitySchedule, FieldDeclaration, RecursionEdges, TypeEnvironment, TypeEnvironmentLimits,
     UnionMemberDeclaration,
 };
 use quire_semantic_value::enumeration::EnumMemberIndex;
@@ -1372,7 +1372,7 @@ fn equality_reads_a_top_level_bounded_quantity_as_a_quantity() {
 /// Identical carried types use the exact runtime quantity equality schedule;
 /// no equality conversion is introduced to ordinary or differently carried
 /// quantity types.
-#[trace("TC-1287", "FR-497-AC-6", "FR-142-AC-30")]
+#[trace("TC-1287", "FR-497-AC-2", "FR-497-AC-6", "FR-142-AC-30")]
 #[test]
 fn equality_compares_identically_carried_quantity_values_exactly() {
     let table = unit_table();
@@ -1416,6 +1416,151 @@ fn equality_compares_identically_carried_quantity_values_exactly() {
     assert!(!admits_equality_conversion(
         &carried,
         &ValueType::Quantity(unit_u()),
+        &UnitScope::new(&table),
+    ));
+
+    let carried_integer = ValueType::carried_quantity(CarriedQuantityType::new(
+        unit_u(),
+        QuantityCarrier::Integer {
+            domain: IntegerInterval::spanning(integer(-2), integer(2)),
+            rounding: RoundingMode::Exact,
+        },
+    ));
+    let result = operand_value(
+        &environment,
+        &EqualityOperand::converted(carried_integer.clone(), carried_integer.clone()),
+        &Value::Quantity(quantity(2, unit_u())),
+        &UnitScope::new(&table),
+        &mut meter(),
+    )
+    .expect("same-type carried result is admitted without conversion");
+    let Value::Quantity(result) = result else {
+        panic!("carried identity returns the existing quantity representation");
+    };
+    assert_eq!(result.unit(), &unit_u());
+    assert_eq!(result.magnitude(), quantity(2, unit_u()).magnitude());
+
+    let record_types = TypeEnvironment::new(
+        [record(
+            77,
+            "CarriedRecord",
+            vec![field("amount", carried_integer.clone())],
+        )],
+        [],
+    )
+    .unwrap();
+    let record_equality = check(
+        &record_types,
+        &table,
+        typed(ValueType::Composite(key(77))),
+        typed(ValueType::Composite(key(77))),
+    )
+    .unwrap();
+    assert_eq!(record_equality.schedule(), EqualitySchedule::Plan);
+    let held_record = |amount| {
+        record_types
+            .record(
+                key(77),
+                vec![(
+                    "amount",
+                    FieldValue::Present(Value::Quantity(quantity(amount, unit_u()))),
+                )],
+            )
+            .unwrap()
+    };
+    assert!(matches!(
+        record_equality.evaluate(
+            &record_types,
+            &held_record(2),
+            &held_record(2),
+            &mut meter()
+        ),
+        Outcome::Completed(true)
+    ));
+    assert!(matches!(
+        record_equality.evaluate(
+            &record_types,
+            &held_record(2),
+            &held_record(1),
+            &mut meter()
+        ),
+        Outcome::Completed(false)
+    ));
+
+    let sequence_type = ValueType::collection(CollectionType::new(
+        CollectionKind::Sequence,
+        carried_integer.clone(),
+        None,
+    ));
+    let collection_equality = check(
+        &environment,
+        &table,
+        typed(sequence_type.clone()),
+        typed(sequence_type.clone()),
+    )
+    .unwrap();
+    let held_sequence = |amount| {
+        from_admitted(
+            CollectionType::new(CollectionKind::Sequence, carried_integer.clone(), None),
+            vec![Value::Quantity(quantity(amount, unit_u()))],
+        )
+    };
+    assert_eq!(collection_equality.schedule(), EqualitySchedule::Plan);
+    assert!(matches!(
+        collection_equality.evaluate(
+            &environment,
+            &held_sequence(2),
+            &held_sequence(2),
+            &mut meter()
+        ),
+        Outcome::Completed(true)
+    ));
+    assert!(matches!(
+        collection_equality.evaluate(
+            &environment,
+            &held_sequence(2),
+            &held_sequence(1),
+            &mut meter()
+        ),
+        Outcome::Completed(false)
+    ));
+
+    let plain_quantity = ValueType::Quantity(unit_u());
+    let carried_integer_with_other_rounding =
+        ValueType::carried_quantity(CarriedQuantityType::new(
+            unit_u(),
+            QuantityCarrier::Integer {
+                domain: IntegerInterval::spanning(integer(-2), integer(2)),
+                rounding: RoundingMode::NearestEven,
+            },
+        ));
+    assert_eq!(
+        check(
+            &environment,
+            &table,
+            typed(carried_integer.clone()),
+            typed(carried_integer_with_other_rounding.clone()),
+        ),
+        Err(IllTypedCause::TypeMismatch)
+    );
+    assert!(!admits_equality_conversion(
+        &carried_integer,
+        &carried_integer_with_other_rounding,
+        &UnitScope::new(&table),
+    ));
+    assert!(!admits_equality_conversion(
+        &carried_integer_with_other_rounding,
+        &carried_integer,
+        &UnitScope::new(&table),
+    ));
+    assert!(!admits_equality_conversion(
+        &plain_quantity,
+        &carried_integer,
+        &UnitScope::new(&table),
+    ));
+    assert!(!admits_equality_conversion(
+        &carried_integer,
+        &plain_quantity,
         &UnitScope::new(&table),
     ));
 }
