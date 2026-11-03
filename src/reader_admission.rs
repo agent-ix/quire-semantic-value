@@ -5,6 +5,7 @@
 //! an audited convention, not language-level cross-crate unforgeability.
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use quire_exact::{
@@ -131,7 +132,8 @@ impl EqualityMaterializationCode {
 /// read meter retains its admitted prefix and original first denied charge.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum EqualityMaterializationError {
-    /// The trusted descriptor's representation arm disagrees with its original ID.
+    /// The trusted descriptor's representation arm or enum member disagrees
+    /// with its original admitted identity or declaration.
     /// No semantic membership, algebra or identity recomputation is performed.
     #[error("equality materialization identity arm mismatch at {locus:?}")]
     IdentityForm {
@@ -438,10 +440,23 @@ pub fn mint_admitted_equality_decision(
             ),
             EqualityMaterializationLocus::EnumMember { row },
         )?;
+        let declaration = declarations
+            .iter()
+            .find(|declaration| {
+                declaration.key() == original.declaration
+                    && declaration.is_ordered() == original.ordered
+                    && declaration
+                        .members()
+                        .get(original.position)
+                        .map(String::as_str)
+                        == Some(original.case.as_ref())
+            })
+            .ok_or(EqualityMaterializationError::IdentityForm {
+                locus: EqualityMaterializationLocus::EnumMember { row },
+            })?;
         let value = EnumValue::from_admitted(
-            original.declaration.clone(),
+            declaration,
             original.member.clone(),
-            original.ordered,
             original.position,
             original.case.clone(),
         );

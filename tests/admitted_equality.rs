@@ -216,6 +216,7 @@ fn enum_materialization_preserves_utf8_cases_original_ids_positions_and_filter()
         assert_eq!(retained.position(), original.position);
         assert_eq!(retained.case(), original.case.as_ref());
         assert_eq!(retained.is_ordered(), original.ordered);
+        assert_eq!(retained.declaration_members(), cases);
     }
     let foreign = VariantId::new(common::node(999), "foreign").unwrap();
     assert!(decision.resolved_enum_members().resolve(foreign).is_none());
