@@ -22,26 +22,58 @@ fn hash_of(code: &CatalogCode) -> u64 {
 
 #[test]
 #[trace("TC-926", "FR-126-AC-1")]
-fn category_exit_codes_follow_the_declared_order() {
-    assert_eq!(
-        Category::ALL,
-        [
-            Category::Success,
-            Category::Violation,
-            Category::Undefined,
-            Category::Refusal,
-            Category::Unsupported,
-            Category::Incomplete,
-            Category::Inconclusive,
-            Category::InternalFailure,
-        ]
-    );
-    let exits: Vec<u8> = Category::ALL.iter().map(|c| c.exit_code()).collect();
-    assert_eq!(exits, [0, 10, 10, 20, 21, 22, 22, 30]);
-    assert_eq!(Category::Inconclusive.trace_exit_code(), 0);
-    assert_eq!(Category::Incomplete.trace_exit_code(), 22);
+fn category_vocabulary_has_stable_order_labels_and_exit_codes() {
+    use Category::*;
+    let expected = [
+        (Success, "success", 0),
+        (Violation, "violation", 10),
+        (Undefined, "undefined", 10),
+        (Refusal, "refusal", 20),
+        (Unsupported, "unsupported", 21),
+        (Incomplete, "incomplete", 22),
+        (Pending, "pending", 0),
+        (Indeterminate, "indeterminate", 11),
+        (Inconclusive, "inconclusive", 22),
+        (InternalFailure, "internal-failure", 30),
+    ];
+    assert_eq!(Category::ALL, expected.map(|(category, _, _)| category));
+    for (category, label, code) in expected {
+        assert_eq!(category.as_str(), label, "{category:?}");
+        assert_eq!(category.to_string(), label, "{category:?}");
+        assert_eq!(category.exit_code(), code, "{category:?}");
+        assert_eq!(category.trace_exit_code(), code, "{category:?}");
+    }
+}
+
+#[test]
+#[trace("TC-926", "FR-126-AC-1")]
+fn category_severity_uses_the_explicit_order_in_both_input_directions() {
+    let severity = [30, 20, 21, 22, 10, 11, 0];
+    for (rank, &higher) in severity.iter().enumerate() {
+        assert_eq!(Category::most_severe([higher]), Some(higher));
+        for &lower in &severity[rank + 1..] {
+            assert_eq!(Category::most_severe([higher, lower]), Some(higher));
+            assert_eq!(Category::most_severe([lower, higher]), Some(higher));
+        }
+    }
+    assert_eq!(Category::most_severe(severity), Some(30));
     assert_eq!(Category::most_severe([]), None);
-    assert_eq!(Category::most_severe([0, 22, 30, 10]), Some(30));
+}
+
+#[test]
+#[trace("TC-926", "FR-126-AC-1")]
+fn category_severity_keeps_unknown_codes_and_first_input_ties() {
+    for unknown in [1, 12, 255] {
+        for known in Category::ALL.map(Category::exit_code) {
+            assert_eq!(Category::most_severe([unknown, known]), Some(unknown));
+            assert_eq!(Category::most_severe([known, unknown]), Some(unknown));
+        }
+    }
+    assert_eq!(Category::most_severe([1, 255]), Some(1));
+    assert_eq!(Category::most_severe([255, 1]), Some(255));
+    for code in [0, 10, 22] {
+        assert_eq!(Category::most_severe([code, code]), Some(code));
+    }
 }
 
 #[test]

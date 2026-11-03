@@ -43,11 +43,11 @@ pub fn render_identity(identity: &[u8]) -> String {
 }
 
 /// ADR-013 O-16: the outcome category every evaluation, negotiation and proof
-/// result maps into. Exactly the eight values ADR-013 §3 O-16's category
+/// result maps into. Exactly the ten values ADR-013 §3 O-16's category
 /// table names in its first column; not a kernel type (`quire-exact` carries
 /// no category), and this crate is its only owner. Category-mapping
 /// functions from each family's own outcome (C-08, C-09, C-23) match this
-/// enum exhaustively with no `_` arm, so a ninth category fails every one of
+/// enum exhaustively with no `_` arm, so an additional category fails every one of
 /// them to compile rather than silently falling into an existing row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Category {
@@ -67,6 +67,10 @@ pub enum Category {
     /// A named charge was unavailable and no partial value exists: timeout,
     /// cancellation or bound exhaustion.
     Incomplete,
+    /// A supplied-trace clause remains unresolved at the end of the trace.
+    Pending,
+    /// A finite observation window did not determine the result.
+    Indeterminate,
     /// Neither proved nor refuted -- including a vacuous proof and a replay
     /// parity disagreement.
     Inconclusive,
@@ -76,21 +80,21 @@ pub enum Category {
 
 impl Category {
     /// Every value, in the ADR-013 O-16 category table's row order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Success,
         Self::Violation,
         Self::Undefined,
         Self::Refusal,
         Self::Unsupported,
         Self::Incomplete,
+        Self::Pending,
+        Self::Indeterminate,
         Self::Inconclusive,
         Self::InternalFailure,
     ];
 
-    /// A stable display spelling. ADR-013 O-16 fixes the eight values and
-    /// states that category values "compare lexically on their wire
-    /// strings", but names no QSpec wire contract for this QSL-internal
-    /// type, so this spelling is QSL's own and carries no QSpec authority.
+    /// The stable category spelling used by consumers for display and
+    /// serialized outcome labels (ADR-013 O-16).
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Success => "success",
@@ -99,19 +103,20 @@ impl Category {
             Self::Refusal => "refusal",
             Self::Unsupported => "unsupported",
             Self::Incomplete => "incomplete",
+            Self::Pending => "pending",
+            Self::Indeterminate => "indeterminate",
             Self::Inconclusive => "inconclusive",
             Self::InternalFailure => "internal-failure",
         }
     }
 
-    /// FR-285 (ADR-029 CB-4): the one exit function, QSpec FR-301's code
-    /// for an item of this category. Undefined folds to 10 with violation;
-    /// inconclusive is a proof or `analyze` item's, which did not settle
-    /// its claim and so is incomplete (22). A supplied-trace clause still
-    /// pending at the trace's end takes [`Self::trace_exit_code`] instead.
+    /// The category's exit code (FR-126, ADR-013 O-16). Pending trace
+    /// obligations exit 0; finite-window indeterminacy exits 11; an
+    /// inconclusive proof or analysis exits 22.
     pub const fn exit_code(self) -> u8 {
         match self {
-            Self::Success => 0,
+            Self::Success | Self::Pending => 0,
+            Self::Indeterminate => 11,
             Self::Violation | Self::Undefined => 10,
             Self::Refusal => 20,
             Self::Unsupported => 21,
@@ -120,22 +125,18 @@ impl Category {
         }
     }
 
-    /// FR-285's row for a supplied-trace clause (FR-283): one still pending
-    /// when the trace ends is inconclusive but observed no violation, so it
-    /// exits 0. Every other category exits as [`Self::exit_code`] states.
+    /// The trace exit code, identical to [`Self::exit_code`]. A pending
+    /// trace obligation has its own category; inconclusive results exit 22.
     pub const fn trace_exit_code(self) -> u8 {
-        match self {
-            Self::Inconclusive => 0,
-            other => other.exit_code(),
-        }
+        self.exit_code()
     }
 
-    /// FR-285's severity fold: the most severe of `codes` under QSpec
-    /// FR-301's order 30, 20, 21, 22, 10, 0, or `None` when `codes` is
-    /// empty. A code outside that set ranks most severe, so it is never
-    /// hidden behind a known one.
+    /// The most severe of `codes` under the explicit order
+    /// 30, 20, 21, 22, 10, 11, 0, or `None` for empty input. Unknown codes
+    /// rank above known codes, with the first input winning equal ranks.
+    /// Categories sharing an exit code have no additional precedence.
     pub fn most_severe(codes: impl IntoIterator<Item = u8>) -> Option<u8> {
-        const ORDER: [u8; 6] = [30, 20, 21, 22, 10, 0];
+        const ORDER: [u8; 7] = [30, 20, 21, 22, 10, 11, 0];
         codes.into_iter().min_by_key(|code| {
             ORDER
                 .iter()
