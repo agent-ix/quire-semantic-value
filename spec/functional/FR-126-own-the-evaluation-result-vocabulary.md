@@ -38,9 +38,34 @@ records here, and QSL FR-403's disposition table assigns the run and
 
 ## Behavior
 
-- `Category` SHALL have the eight ADR-013 O-16 values.
-- `Category::exit_code` SHALL map them to 0, 10, 10, 20, 21, 22, 22 and 30 in
-  declared order.
+- `Category` SHALL have the ten ADR-013 O-16 values in the following
+  `Category::ALL` order, with these stable `as_str` and `Display` spellings
+  and `exit_code` results:
+
+  | Category | Spelling | Exit code |
+  | --- | --- | --- |
+  | `Success` | `success` | 0 |
+  | `Violation` | `violation` | 10 |
+  | `Undefined` | `undefined` | 10 |
+  | `Refusal` | `refusal` | 20 |
+  | `Unsupported` | `unsupported` | 21 |
+  | `Incomplete` | `incomplete` | 22 |
+  | `Pending` | `pending` | 0 |
+  | `Indeterminate` | `indeterminate` | 11 |
+  | `Inconclusive` | `inconclusive` | 22 |
+  | `InternalFailure` | `internal-failure` | 30 |
+
+- `Category::trace_exit_code(self) -> u8` SHALL return the same code as
+  `Category::exit_code` for every category, including `Pending` (0),
+  `Indeterminate` (11) and `Inconclusive` (22).
+- `Category::most_severe` SHALL fold known codes by the explicit severity
+  order `30 > 20 > 21 > 22 > 10 > 11 > 0`.
+- `Category::most_severe` SHALL rank every unknown code above every known
+  code, retaining the first input among equal-ranked codes.
+- `Category::most_severe` SHALL return `None` for empty input.
+- The code fold SHALL NOT impose a distinct category precedence on categories
+  sharing a code; consumers selecting an item with the winning code retain
+  the first such item.
 - `CatalogCode` equality and hashing SHALL be lexical on the code and cause.
 - A `CatalogCode` rendering prefix SHALL NOT change its equality or hash.
 - `InternalFault::catalog_code` SHALL be
@@ -72,7 +97,7 @@ records here, and QSL FR-403's disposition table assigns the run and
 
 | ID | Criteria | Verification |
 | --- | --- | --- |
-| FR-126-AC-1 | `Category::ALL` is exactly `[Success, Violation, Undefined, Refusal, Unsupported, Incomplete, Inconclusive, InternalFailure]`, in that order, and `exit_code` returns 0, 10, 10, 20, 21, 22, 22, 30 for them; `trace_exit_code` returns 0 for `Inconclusive`; `most_severe` of no codes is `None`. | Test (TC-926) |
+| FR-126-AC-1 | `Category::ALL` is exactly `[Success, Violation, Undefined, Refusal, Unsupported, Incomplete, Pending, Indeterminate, Inconclusive, InternalFailure]`, in that order; `as_str` and `Display` return the spellings in the Behavior table; `exit_code` and `trace_exit_code` both return 0, 10, 10, 20, 21, 22, 0, 11, 22, 30 respectively. `most_severe` follows `30 > 20 > 21 > 22 > 10 > 11 > 0`, ranks unknown codes above known codes with first-input ties, and returns `None` for empty input; shared-code categories have no additional precedence. | Test |
 | FR-126-AC-2 | Two `CatalogCode`s with equal code and cause are equal and hash equal whatever their prefix; `Display` renders `prefix/code/cause` with a prefix and `code/cause` without. | Test (TC-926) |
 | FR-126-AC-3 | `InternalFault::new(stage, invariant)` reports the runtime-invariant code, category `InternalFailure`, its stage and invariant, and the named values it was given. | Test (TC-926) |
 | FR-126-AC-4 | An `UndefinedCoded` implementation without a prefix renders the reason spelling; with a prefix it renders `prefix/reason`. | Test (TC-926) |
@@ -83,5 +108,9 @@ records here, and QSL FR-403's disposition table assigns the run and
 | FR-126-AC-9 | A `SuppliedRun` maps an allocator-denied bounded-admission error to a `Storage` cause and an unrepresentable size to a `Capacity` cause, each with its own unit, no limit and zero consumed. | Test (TC-925) |
 
 ## Dependencies
+
+- IR-1281 implements the ten-category contract above; this specification
+  update precedes its implementation and test changes. Consumer adoption in
+  QSL is separate work.
 
 - QSL FR-401 places these types; QSL FR-262 names them in the interface.
