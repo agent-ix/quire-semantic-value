@@ -34,3 +34,12 @@ PR #91 at `ea350f30e2c94ca22027f623a8c8bceff53735eb`. The direct enum comparison
 For declarations `(K, true, [A,B])` and `(K, true, [A,C])`, an `A` member at position 0 matches both predicates. `Iterator::find` selects the first declaration regardless of which declaration the member row came from. The resulting `EnumValue` can therefore retain `[A,B]` when its actual declaration was `[A,C]`. The reader descriptor currently has no unambiguous association field; `declaration.key()` also clones each candidate during the unmetered linear scan. The unchanged integration test has only one declaration and cannot expose this case.
 
 Direct `EnumDeclaration::member` shares one `Arc<[String]>` with its declaration, and `compare_enum` checks key, ordered flag and list before charges. The focused test's content, order, key, flag, positive equality and ordering assertions can fail under relevant mutations.
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | At a27ecf6f4175cf599cb653f73864d46faa00c745, the reader compares every declaration with the member's admitted key and returns typed IdentityForm at that member row if any same-key declaration differs in ordered flag or complete member list. It then checks selected case and position. The new integration test rejects [A,B]/[A,C] ambiguity and accepts identical duplicates. |
+
+## Current assessment
+
+**PASS at a27ecf6f4175cf599cb653f73864d46faa00c745** — FND-001 is fixed; the revised diff introduced no new finding. This disposition did not rerun full gates or builds.
