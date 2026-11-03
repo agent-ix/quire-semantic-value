@@ -643,6 +643,107 @@ mod tests {
         let renamed = ordered(["a", "c"]);
         assert_eq!(read(&renamed, &owner, "c"), None);
         assert_eq!(read(&reading, &reference(A, "none"), "a"), None);
+
+        // Equal slot vectors under reordered names are different objects:
+        // `a = 2, b = 1` under `{a, b}` stores `[2, 1]`, as `closure` does.
+        let swapped = ObjectClosure::new(
+            &reading,
+            [(owner.clone(), vec![("a", int(2)), ("b", int(1))])],
+            &[],
+        )
+        .expect("one object closes");
+        assert_ne!(closure, swapped);
+        let rebuilt = ObjectClosure::new(
+            &admitting,
+            [(owner.clone(), vec![("b", int(2)), ("a", int(1))])],
+            &[],
+        )
+        .expect("one object closes");
+        assert_eq!(closure, rebuilt);
+    }
+
+    /// TC-904 row 11: attributes of different types, more than two of them
+    /// and inherited from two supertypes whose order differs between the
+    /// admitting and the reading environment are each read by name.
+    #[trace("TC-904", "FR-106-AC-12")]
+    #[test]
+    fn attribute_reads_mixed_and_inherited_attributes_by_name() {
+        const P: u8 = 5;
+        const Q: u8 = 6;
+        let field = |name, value_type| FieldDeclaration::new(name, value_type, Presence::Required);
+        let environment = |own: [(&'static str, ValueType); 3], supertypes: [u8; 2]| {
+            TypeEnvironment::new(
+                [],
+                [
+                    ObjectTypeDeclaration::new(
+                        object_type(A),
+                        "A",
+                        own.into_iter().map(|(name, ty)| field(name, ty)).collect(),
+                    )
+                    .with_supertypes(supertypes.into_iter().map(object_type).collect()),
+                    ObjectTypeDeclaration::new(
+                        object_type(P),
+                        "P",
+                        vec![field("p", ValueType::Integer)],
+                    ),
+                    ObjectTypeDeclaration::new(
+                        object_type(Q),
+                        "Q",
+                        vec![field("q", ValueType::Integer)],
+                    ),
+                ],
+            )
+            .expect("an object type with two supertypes admits")
+        };
+        let admitting = environment(
+            [
+                ("b", ValueType::Integer),
+                ("a", ValueType::Boolean),
+                ("c", ValueType::Integer),
+            ],
+            [P, Q],
+        );
+        let reading = environment(
+            [
+                ("c", ValueType::Integer),
+                ("a", ValueType::Boolean),
+                ("b", ValueType::Integer),
+            ],
+            [Q, P],
+        );
+        let owner = reference(A, "o");
+        let closure = ObjectClosure::new(
+            &admitting,
+            [(
+                owner.clone(),
+                vec![
+                    ("a", FieldValue::Present(Value::Boolean(true))),
+                    ("b", int(1)),
+                    ("c", int(3)),
+                    ("p", int(4)),
+                    ("q", int(5)),
+                ],
+            )],
+            &[],
+        )
+        .expect("one object closes");
+        let read = |owner_type, name| {
+            closure
+                .attribute(
+                    &reading,
+                    &owner,
+                    &FieldRef::new(object_type(owner_type), name),
+                )
+                .map(held)
+        };
+        assert_eq!(read(A, "b"), Some(integer(1)));
+        assert_eq!(read(A, "c"), Some(integer(3)));
+        assert_eq!(read(P, "p"), Some(integer(4)));
+        assert_eq!(read(Q, "q"), Some(integer(5)));
+        assert!(matches!(
+            closure.attribute(&reading, &owner, &FieldRef::new(object_type(A), "a")),
+            Some(FieldValue::Present(Value::Boolean(true)))
+        ));
     }
 
     /// TC-904 row 10: `object` and `iter` expose each object's `(name,
