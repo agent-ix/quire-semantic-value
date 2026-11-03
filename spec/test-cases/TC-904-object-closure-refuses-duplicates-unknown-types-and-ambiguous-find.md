@@ -12,7 +12,7 @@ relationships:
 
 Verify the admission rules of `ObjectClosure`.
 
-Scope: FR-106-AC-10, FR-106-AC-11.
+Scope: FR-106-AC-10, FR-106-AC-11, FR-106-AC-12.
 
 ## Test Procedure
 
@@ -28,11 +28,13 @@ Over a type environment with model object types `A` and `B`, each with one requi
 | 6 | an attribute holding a union whose payload holds a union whose payload references an object that is not admitted | `ObjectClosureRefusal` at the owner with cause `DanglingReference` naming that reference |
 | 7 | the row 6 reference listed in the tolerated set | closes with no refusal |
 | 8 | an attribute holding an `Option` payload, a collection element or a composite slot that references an object that is not admitted, with and without that reference tolerated | `DanglingReference` naming it; closes when tolerated |
+| 9 | an `A` object admitted with `a = 1`, `b = 2` under an environment declaring `A`'s `Integer` attributes `{b, a}`; `attribute` for `a` and `b` under one declaring `{a, b}`, for `c` under one declaring `{a, c}`, and for an object not admitted | `1` for `a`, `2` for `b`; none for `c` and for the unadmitted object |
+| 10 | two `A` objects admitted under `{b, a, note?}`, the lower reference without `note`; `iter`, `object(...).get` | `iter` lists the lower reference first, each as `(b, ·), (a, ·), (note, ·)` with the omitted `note` `Absent`; `get("note")` returns the slot, `get("missing")` and `object` of an unadmitted reference none |
 
 ## Expected Results
 
-Rows 1 and 2 refuse with exactly the stated cause, row 3 finds the one object, row 4 finds none, rows 5 and 7 close, and rows 6 and 8 refuse with the stated cause unless tolerated.
+Rows 1 and 2 refuse with exactly the stated cause, row 3 finds the one object, row 4 finds none, rows 5 and 7 close, and rows 6 and 8 refuse with the stated cause unless tolerated, and rows 9 and 10 read each slot by its attribute name.
 
 ## Status
 
-Implemented. The tests are unit tests in `src/object_closure.rs`, tagged `#[trace("TC-904", ...)]`; rows 5 to 8 bind FR-106-AC-11.
+Implemented. The tests are unit tests in `src/object_closure.rs`, tagged `#[trace("TC-904", ...)]`; rows 5 to 8 bind FR-106-AC-11 and rows 9 and 10 bind FR-106-AC-12.

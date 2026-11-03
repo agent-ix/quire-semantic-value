@@ -14,14 +14,20 @@
 //! `PopulationId` to population-binding correspondence is not here: the binding
 //! is the caller's model's, so the caller holds that map beside the closure it
 //! builds.
+//!
+//! Each object's slots are stored in the slot order of the environment the
+//! closure was admitted under, beside that order's attribute names, so a
+//! reader holding another environment finds an attribute by name rather than
+//! by position (FR-106-AC-12).
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::declaration::{fill_slots, ConstructionRefusal, FieldRef, TypeEnvironment};
 use crate::relationship_extent::{ManifestOutcome, Resolution};
-use quire_exact::{FieldValue, ObjectReference, UniverseId, Value};
+use quire_exact::{EffectiveId, FieldValue, ObjectReference, UniverseId, Value};
 
 /// Why an object closure does not close.
 ///
@@ -56,6 +62,32 @@ pub enum ObjectClosureCause {
 #[derive(Clone, Debug, Default)]
 pub struct ObjectClosure {
     objects: BTreeMap<ObjectReference, Box<[FieldValue]>>,
+    /// Each admitted object type's attribute names in slot order, held once
+    /// per type: `names[t][i]` names slot `i` of every object of type `t`.
+    names: BTreeMap<EffectiveId, Box<[String]>>,
+}
+
+/// One admitted object's attributes, each named as the admitting
+/// environment declared it, in that environment's slot order.
+#[derive(Clone, Copy, Debug)]
+pub struct ObjectAttributes<'a> {
+    names: &'a [String],
+    slots: &'a [FieldValue],
+}
+
+impl<'a> ObjectAttributes<'a> {
+    /// The slot of the attribute named `name`, or `None` when the admitting
+    /// environment declared no such attribute for the object's type.
+    pub fn get(self, name: &str) -> Option<&'a FieldValue> {
+        self.iter()
+            .find_map(|(held, slot)| (held == name).then_some(slot))
+    }
+
+    /// Every `(name, slot)` pair, in the admitting environment's slot order.
+    /// An omitted `?` attribute is listed with an `Absent` slot.
+    pub fn iter(self) -> impl Iterator<Item = (&'a str, &'a FieldValue)> + Clone {
+        self.names.iter().map(String::as_str).zip(self.slots)
+    }
 }
 
 impl ObjectClosure {
@@ -94,6 +126,7 @@ impl ObjectClosure {
         tolerated_dangling: &[ObjectReference],
     ) -> Result<Self, ObjectClosureRefusal> {
         let mut admitted = BTreeMap::new();
+        let mut names = BTreeMap::new();
         for (reference, attributes) in objects {
             let refuse = |cause| ObjectClosureRefusal {
                 object: Box::new(reference.clone()),
@@ -107,9 +140,20 @@ impl ObjectClosure {
             if admitted.contains_key(&reference) {
                 return Err(refuse(ObjectClosureCause::DuplicateObject));
             }
+            names
+                .entry(reference.object_type().clone())
+                .or_insert_with(|| {
+                    declared
+                        .iter()
+                        .map(|attribute| String::from(attribute.field().name()))
+                        .collect()
+                });
             admitted.insert(reference, slots);
         }
-        let closure = Self { objects: admitted };
+        let closure = Self {
+            objects: admitted,
+            names,
+        };
         let tolerated: BTreeSet<&ObjectReference> = tolerated_dangling.iter().collect();
         for (owner, slots) in &closure.objects {
             closure.check_closed(owner, slots, &tolerated)?;
@@ -146,17 +190,50 @@ impl ObjectClosure {
     /// conforms to that static type, so its effective attribute set has
     /// exactly one attribute standing for `field`: `field` itself when
     /// inherited unchanged, or the field that redefines it.
+    ///
+    /// `types` resolves `field` to that attribute's name, and the slot is
+    /// found by that name, so `types` need not be the environment the
+    /// closure was admitted under: `None` when the admitting environment
+    /// declared no attribute of that name for the object's type.
     pub fn attribute(
         &self,
         types: &TypeEnvironment,
         reference: &ObjectReference,
         field: &FieldRef,
     ) -> Option<&FieldValue> {
-        let position = types
+        let attribute = types
             .attributes(reference.object_type().clone())?
             .iter()
-            .position(|attribute| attribute.stands_for(field))?;
-        self.objects.get(reference)?.get(position)
+            .find(|attribute| attribute.stands_for(field))?;
+        self.object(reference)?.get(attribute.field().name())
+    }
+
+    /// The admitted attributes of `reference`, or `None` when the closure
+    /// holds no such object.
+    pub fn object(&self, reference: &ObjectReference) -> Option<ObjectAttributes<'_>> {
+        let slots = self.objects.get(reference)?;
+        Some(self.attributes_of(reference, slots))
+    }
+
+    /// Every admitted object with its attributes, in reference order.
+    pub fn iter(&self) -> impl Iterator<Item = (&ObjectReference, ObjectAttributes<'_>)> + Clone {
+        self.objects
+            .iter()
+            .map(|(reference, slots)| (reference, self.attributes_of(reference, slots)))
+    }
+
+    fn attributes_of<'s>(
+        &'s self,
+        reference: &ObjectReference,
+        slots: &'s [FieldValue],
+    ) -> ObjectAttributes<'s> {
+        // `new` records every admitted object's type; an unrecorded type
+        // (unreachable) reads as no attribute names rather than panicking.
+        let names = self
+            .names
+            .get(reference.object_type())
+            .map_or(&[][..], |names| &names[..]);
+        ObjectAttributes { names, slots }
     }
 
     fn check_closed(
@@ -201,7 +278,8 @@ impl ObjectClosure {
 
 impl PartialEq for ObjectClosure {
     fn eq(&self, other: &Self) -> bool {
-        self.objects.len() == other.objects.len()
+        self.names == other.names
+            && self.objects.len() == other.objects.len()
             && self
                 .objects
                 .iter()
@@ -502,6 +580,127 @@ mod tests {
                 }
             );
         }
+    }
+
+    /// Object type `A` declared with integer attributes in `order`, an
+    /// optional `note` last.
+    fn ordered(order: [&str; 2]) -> TypeEnvironment {
+        let int = |name| FieldDeclaration::new(name, ValueType::Integer, Presence::Required);
+        TypeEnvironment::new(
+            [],
+            [ObjectTypeDeclaration::new(
+                object_type(A),
+                "A",
+                vec![
+                    int(order[0]),
+                    int(order[1]),
+                    FieldDeclaration::new("note", ValueType::Integer, Presence::Optional),
+                ],
+            )],
+        )
+        .expect("one object type admits")
+    }
+
+    fn int(value: i64) -> FieldValue {
+        FieldValue::Present(Value::Integer(value.into()))
+    }
+
+    /// The integer a slot holds; `None` for an absent, null or non-integer
+    /// slot (`FieldValue` has no `PartialEq`).
+    fn held(slot: &FieldValue) -> Option<quire_exact::Integer> {
+        match slot {
+            FieldValue::Present(Value::Integer(integer)) => Some(integer.clone()),
+            FieldValue::Present(_) | FieldValue::Absent | FieldValue::Null => None,
+        }
+    }
+
+    fn integer(value: i64) -> Option<quire_exact::Integer> {
+        Some(value.into())
+    }
+
+    /// TC-904 row 9: a closure admitted under `{b, a}` and read under
+    /// `{a, b}` returns each same-typed attribute's own slot by name, and
+    /// an attribute the admitting environment never declared reads `None`.
+    #[trace("TC-904", "FR-106-AC-12")]
+    #[test]
+    fn attribute_reads_by_name_across_reordered_environments() {
+        let admitting = ordered(["b", "a"]);
+        let reading = ordered(["a", "b"]);
+        let owner = reference(A, "o");
+        let closure = ObjectClosure::new(
+            &admitting,
+            [(owner.clone(), vec![("a", int(1)), ("b", int(2))])],
+            &[],
+        )
+        .expect("one object closes");
+        let field = |name| FieldRef::new(object_type(A), name);
+        let read = |types: &TypeEnvironment, target: &ObjectReference, name| {
+            closure.attribute(types, target, &field(name)).map(held)
+        };
+        assert_eq!(read(&reading, &owner, "a"), Some(integer(1)));
+        assert_eq!(read(&reading, &owner, "b"), Some(integer(2)));
+
+        let renamed = ordered(["a", "c"]);
+        assert_eq!(read(&renamed, &owner, "c"), None);
+        assert_eq!(read(&reading, &reference(A, "none"), "a"), None);
+    }
+
+    /// TC-904 row 10: `object` and `iter` expose each object's `(name,
+    /// slot)` pairs in the admitting slot order, an omitted optional
+    /// attribute as `Absent`; `get` finds by name and misses an undeclared
+    /// name.
+    #[trace("TC-904", "FR-106-AC-12")]
+    #[test]
+    fn objects_iterate_as_named_slots() {
+        let types = ordered(["b", "a"]);
+        let first = reference(A, "1");
+        let second = reference(A, "2");
+        let closure = ObjectClosure::new(
+            &types,
+            [
+                (
+                    second.clone(),
+                    vec![("a", int(3)), ("b", int(4)), ("note", int(5))],
+                ),
+                (first.clone(), vec![("a", int(1)), ("b", int(2))]),
+            ],
+            &[],
+        )
+        .expect("two objects close");
+
+        let listed: Vec<_> = closure
+            .iter()
+            .map(|(reference, attributes)| {
+                let named: Vec<_> = attributes
+                    .iter()
+                    .map(|(name, slot)| (name, held(slot)))
+                    .collect();
+                (reference.clone(), named)
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                (
+                    first.clone(),
+                    vec![("b", integer(2)), ("a", integer(1)), ("note", None)]
+                ),
+                (
+                    second.clone(),
+                    vec![("b", integer(4)), ("a", integer(3)), ("note", integer(5))]
+                ),
+            ]
+        );
+        let first_attributes = closure.object(&first).expect("admitted object");
+        assert!(matches!(
+            first_attributes.get("note"),
+            Some(FieldValue::Absent)
+        ));
+
+        let attributes = closure.object(&second).expect("admitted object");
+        assert_eq!(attributes.get("note").map(held), Some(integer(5)));
+        assert!(attributes.get("missing").is_none());
+        assert!(closure.object(&reference(A, "none")).is_none());
     }
 
     #[allow(

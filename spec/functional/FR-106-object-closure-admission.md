@@ -8,7 +8,7 @@ relationships: []
 
 ## Description
 
-`quire-semantic-value` SHALL provide an `ObjectClosure` that admits objects over the kernel `ObjectReference`, checked against a `TypeEnvironment`. It SHALL refuse a second object with an admitted identity triple, refuse an object whose type is not a model object type of the environment, refuse an ambiguous `find`, and refuse a present reference, at any depth through Option payloads, composite slots, collection elements and union payloads, that names no closure object and is not a tolerated target. Admitting a snapshot and an invocation, which builds the closure, keeps the id `FR-106` in `agent-ix/quire-spec-language`.
+`quire-semantic-value` SHALL provide an `ObjectClosure` that admits objects over the kernel `ObjectReference`, checked against a `TypeEnvironment`. It SHALL refuse a second object with an admitted identity triple, refuse an object whose type is not a model object type of the environment, refuse an ambiguous `find`, and refuse a present reference, at any depth through Option payloads, composite slots, collection elements and union payloads, that names no closure object and is not a tolerated target. It SHALL record each admitted object type's attribute names in its slot order, find a slot by attribute name, and iterate every admitted object with its named slots. Admitting a snapshot and an invocation, which builds the closure, keeps the id `FR-106` in `agent-ix/quire-spec-language`.
 
 ## Use case
 
@@ -19,6 +19,7 @@ A caller admits a snapshot of objects. Two objects with one identity triple, or 
 1. **Admission.** The closure refuses a duplicate identity triple (universe, object type, object identity) with `DuplicateObject`, and an object whose type is not a model object type with `UnknownObjectType`.
 2. **Find.** `find` by universe and object key returns the one admitted object that matches, and returns none when two admitted objects share that universe and key under different object types.
 3. **Dangling references.** Every present reference reached through `Option` payloads, composite slots, collection elements and union payloads, at any depth, SHALL name an object of the closure or a tolerated target; otherwise admission refuses with `DanglingReference`, naming that reference.
+4. **Named slots.** The closure records each admitted object type's attribute names in the admitting environment's slot order. `attribute` resolves a field under the reader's environment to its attribute name and returns the slot of that name, so a reader whose environment orders the attributes differently gets each attribute's own slot. `object` returns one object's `(name, slot)` pairs and `iter` every admitted object with its pairs, in reference order.
 
 ## Acceptance Criteria
 
@@ -26,6 +27,7 @@ A caller admits a snapshot of objects. Two objects with one identity triple, or 
 | --- | --- | --- |
 | FR-106-AC-10 | The object closure refuses a second object whose identity triple (universe, object type, object identity) is already admitted with `DuplicateObject`, naming that triple, and refuses an object whose type is not a model object type of the type environment with `UnknownObjectType`. `find` by universe and object key returns the one admitted object that matches, and returns none when two admitted objects share that universe and key under different object types. | Test (TC-904) |
 | FR-106-AC-11 | A present reference inside an `Option` payload, a composite slot, a collection element or a union payload, nested to any depth including a union inside a union, that names no closure object and is not in the tolerated set is refused with `DanglingReference` naming that reference. A reference in the tolerated set is accepted, and a reference to a closure object is accepted. | Test (TC-904) |
+| FR-106-AC-12 | A closure admitted under an environment declaring object type `A`'s same-typed attributes as `{b, a}`, read through `attribute` under an environment declaring them `{a, b}`, returns `a`'s slot for `a` and `b`'s slot for `b`; a field whose name the admitting environment did not declare, or an object the closure does not hold, reads none. `object` and `iter` list each admitted object's `(name, slot)` pairs in the admitting slot order, an omitted optional attribute as `Absent`, and `iter` lists the objects in reference order. | Test (TC-904) |
 
 ## Status
 
