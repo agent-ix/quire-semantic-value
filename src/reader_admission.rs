@@ -440,20 +440,26 @@ pub fn mint_admitted_equality_decision(
             ),
             EqualityMaterializationLocus::EnumMember { row },
         )?;
-        let declaration = declarations
+        let mut same_key = declarations
             .iter()
-            .find(|declaration| {
-                declaration.key() == original.declaration
-                    && declaration.is_ordered() == original.ordered
-                    && declaration
-                        .members()
-                        .get(original.position)
-                        .map(String::as_str)
-                        == Some(original.case.as_ref())
-            })
+            .filter(|declaration| declaration.key_ref() == &original.declaration);
+        let declaration = same_key
+            .next()
             .ok_or(EqualityMaterializationError::IdentityForm {
                 locus: EqualityMaterializationLocus::EnumMember { row },
             })?;
+        if same_key.any(|candidate| candidate != declaration)
+            || declaration.is_ordered() != original.ordered
+            || declaration
+                .members()
+                .get(original.position)
+                .map(String::as_str)
+                != Some(original.case.as_ref())
+        {
+            return Err(EqualityMaterializationError::IdentityForm {
+                locus: EqualityMaterializationLocus::EnumMember { row },
+            });
+        }
         let value = EnumValue::from_admitted(
             declaration,
             original.member.clone(),

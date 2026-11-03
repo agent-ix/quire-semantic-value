@@ -118,6 +118,10 @@ impl EnumDeclaration {
         self.key.clone()
     }
 
+    pub(crate) fn key_ref(&self) -> &NodeKey {
+        &self.key
+    }
+
     /// Whether the declaration selects ordered semantics.
     pub fn is_ordered(&self) -> bool {
         self.ordered
