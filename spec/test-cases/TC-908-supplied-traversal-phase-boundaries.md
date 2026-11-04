@@ -127,6 +127,10 @@ FR-109-AC-6 remains planned. Existing budget and cancellation unit tests cover
 individual observations, but no integrated supplied-path test establishes every
 event charge alongside the absence of a conversion budget, evaluation meter and
 evaluated `FunctionCall` result.
-FR-109-AC-9 remains planned until a QSV-internal test exercises arena
-construction and supplied-run mapping at the ID boundary. Existing helper
-tests cover only the counter transition.
+FR-109-AC-9 executes in
+`arena_constructor_exhaustion_reports_one_native_unit_without_reusing_an_id`,
+`scoped_arena_takes_no_process_id_and_shares_none_with_issued_arenas`, and
+`exhausted_path_arena_stops_before_a_supplied_run_or_locus_exists`. These
+QSV-internal controls exercise the constructor and supplied-run mapping with a
+private counter, without mutating the process counter or claiming a public
+exhaustion trigger.

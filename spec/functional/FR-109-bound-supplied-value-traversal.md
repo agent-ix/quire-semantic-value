@@ -175,7 +175,10 @@ TC-920 owns the actual scratch-denial and checked-capacity mechanisms. The
 union descriptor helper premises still need inspection under FR-109-AC-7.
 FR-109-AC-6 is PLANNED for a direct QSV test of the newly narrowed supplied-caller contract; no existing tag is credited to that complete criterion. No numerical default is selected by this QSV requirement. Research predictions
 are not qualified defaults, event-table evidence or runtime acceptance results.
-FR-109-AC-9 is PLANNED for a QSV-internal construction and mapping control.
-The existing `next_arena_id` helper test establishes the counter boundary only;
-it does not exercise construction or the supplied-run stop. Exhaustion requires
-the process-local counter to reach its limit and has no public injection seam.
+FR-109-AC-9 has QSV-internal constructor and mapping controls in
+`src/supplied_membership.rs` and `src/supplied_stop.rs`. They use a private
+counter to exercise the final issuable ID, repeated capacity failure, scoped
+token separation and the admission-phase supplied-run stop without changing
+the process counter. Exhaustion still requires that process-local counter to
+reach its limit; no public injection seam or downstream QSL→IR→RT trigger is
+claimed.
