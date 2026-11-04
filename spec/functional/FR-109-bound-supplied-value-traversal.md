@@ -87,6 +87,13 @@ declaration admission and semantic evaluation.
    prohibition. It SHALL NOT copy kernel/container algorithms to simulate
    hidden helper counters, change semantic evaluation accounting, raise a
    consumer allowance, reset successful counters, or bypass admission.
+10. When a supplied run is constructed, its path arena SHALL take a distinct process-local
+    identifier. If that identifier space is exhausted, construction SHALL return
+    an admission-phase capacity stop requesting one `ArenaIdentifiers` unit,
+    with zero work consumed and no parameter, event, locus, arena or token.
+    This is separate from traversal-worklist storage denial and checked-size
+    overflow. A scoped, nonescaping path walk SHALL use its reserved identifier
+    without consuming the process counter or sharing tokens with issued arenas.
 
 ### Helper qualification table
 
@@ -119,6 +126,7 @@ caller/admission input bound and the helper operation it constrains.
 | FR-109-AC-6 | The supplied-membership path in `src/supplied_membership.rs` charges each reachable logical event once to the caller's cumulative supplied-admission budget and passes the original budget and cancellation handle through shared helpers. It neither debits a conversion budget nor constructs an evaluation meter or evaluated `FunctionCall` result. A denied event retains the successful supplied spend and its typed admission locus. | Test |
 | FR-109-AC-7 | Each claimed supported helper path has a source-backed input bound, finite comparison/arithmetic and temporary-storage bound, cancellation response boundary and fallible storage route where needed. Decimal caller qualification establishes admitted `B >= max(bits(c), bits(lo), bits(hi))` and `S >=` the actual alignment shift and uses the authoritative fallible kernel helper; the implemented union path still requires inspection of its helper premises. Logical-event totals alone do not establish helper premises. | Inspection |
 | FR-109-AC-8 | An integrated Decimal membership call at its owning value-visit event preserves one cumulative supplied budget and original cancellation handle. With source-backed `B,S`, reachable inclusive membership, nonmembership, N/N-1 and cancellation retain the owning phase/locus without a fifth helper event, per-limb debit or partial admission. A separate QSV projection test passes constructed typed kernel capacity and allocation failures through the same production error mapping and checks their distinct supplied-admission causes and rooted locus; actual kernel failure mechanisms are verified by exact-kernel TC-920, not claimed reachable through the public QSV call. A caller lacking either admitted bound does not claim Decimal support or choose a numeric default. | Test |
+| FR-109-AC-9 | At the process arena-ID boundary, the last issuable identifier creates one ordinary arena and the next and later requests return the same one-unit `ArenaIdentifiers` capacity error without reusing an ID. The supplied-run constructor maps that error to admission phase with zero consumed work and no parameter, event or locus; no run, arena or token escapes. An internal counter-controlled test exercises the production construction and mapping paths without mutating the process counter or claiming a public exhaustion trigger. | Test |
 
 ## Dependencies
 
@@ -167,3 +175,7 @@ TC-920 owns the actual scratch-denial and checked-capacity mechanisms. The
 union descriptor helper premises still need inspection under FR-109-AC-7.
 FR-109-AC-6 is PLANNED for a direct QSV test of the newly narrowed supplied-caller contract; no existing tag is credited to that complete criterion. No numerical default is selected by this QSV requirement. Research predictions
 are not qualified defaults, event-table evidence or runtime acceptance results.
+FR-109-AC-9 is PLANNED for a QSV-internal construction and mapping control.
+The existing `next_arena_id` helper test establishes the counter boundary only;
+it does not exercise construction or the supplied-run stop. Exhaustion requires
+the process-local counter to reach its limit and has no public injection seam.

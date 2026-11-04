@@ -71,6 +71,14 @@ do not obtain the expected count by reading the counter being tested.
    `DecimalType::try_contains` call can inject an allocator denial or construct
    a synthetic capacity overflow. [Exact-kernel TC-920](ix://agent-ix/quire-exact/TC-920)
    owns the actual scratch-denial and checked-capacity mechanism controls.
+10. Inside QSV, stage a private arena-ID counter at its final issuable value.
+    Create one ordinary arena through the same constructor path used by supplied
+    runs, then request another and assert the one-unit `ArenaIdentifiers`
+    capacity error repeats without ID reuse. Pass that failed construction
+    through the production supplied-run mapping and assert admission phase,
+    zero spent work, absent parameter/event/locus, and no returned run or token.
+    Do not mutate the process-global counter or claim that an external caller
+    can inject this condition.
 
 ## Expected Results
 
@@ -119,3 +127,6 @@ FR-109-AC-6 remains planned. Existing budget and cancellation unit tests cover
 individual observations, but no integrated supplied-path test establishes every
 event charge alongside the absence of a conversion budget, evaluation meter and
 evaluated `FunctionCall` result.
+FR-109-AC-9 remains planned until a QSV-internal test exercises arena
+construction and supplied-run mapping at the ID boundary. Existing helper
+tests cover only the counter transition.
