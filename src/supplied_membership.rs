@@ -186,13 +186,22 @@ pub(crate) enum PathAppendError<Cause> {
 impl MembershipPathArena {
     /// Create an empty invocation arena with a never-reused process ID.
     pub fn new() -> Result<Self, PathArenaCapacity> {
-        let id = next_arena_id(&NEXT_ARENA_ID)?;
+        Self::with_counter(&NEXT_ARENA_ID)
+    }
+
+    fn with_counter(counter: &AtomicUsize) -> Result<Self, PathArenaCapacity> {
+        let id = next_arena_id(counter)?;
         Ok(Self {
             id,
             nodes: Vec::new(),
             #[cfg(test)]
             growth_probe: None,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_test_counter(counter: &AtomicUsize) -> Result<Self, PathArenaCapacity> {
+        Self::with_counter(counter)
     }
 
     /// Create an arena for a walk that keeps every token to itself.
@@ -698,7 +707,7 @@ mod tests {
     use crate::declaration::{StorageRequest, StorageUnit};
 
     use super::{
-        next_arena_id, InvalidMembershipCause, MembershipEvent, MembershipLocus, MembershipPart,
+        InvalidMembershipCause, MembershipEvent, MembershipLocus, MembershipPart,
         MembershipPathArena, PathAppendError, PathArenaCapacity, PathArenaCapacityUnit, PathStep,
         PathToken, SuppliedAdmissionError, SuppliedAdmissionPhase, SuppliedMembershipBudget,
         SCOPED_ARENA_ID,
@@ -708,34 +717,41 @@ mod tests {
         MembershipLocus { path, part }
     }
 
-    /// Trace: FR-109-AC-5
-    #[ix_trace_rs::trace("TC-908", "FR-109-AC-5")]
+    /// Trace: FR-109-AC-9
+    #[ix_trace_rs::trace("TC-908", "FR-109-AC-9")]
     #[test]
     fn scoped_arena_takes_no_process_id_and_shares_none_with_issued_arenas() {
         let counter = AtomicUsize::new(usize::MAX - 1);
-        assert_eq!(next_arena_id(&counter), Ok(usize::MAX - 1));
-        assert_ne!(next_arena_id(&counter), Ok(SCOPED_ARENA_ID));
+        let issued = MembershipPathArena::new_with_test_counter(&counter).expect("last arena");
+        assert_eq!(issued.id, usize::MAX - 1);
+        assert_eq!(counter.load(Ordering::Relaxed), SCOPED_ARENA_ID);
         let scoped = MembershipPathArena::scoped();
-        let issued = MembershipPathArena::new().unwrap();
         let part = MembershipPart::Value;
         assert!(scoped.resolve(locus(scoped.root(0), part)).is_some());
         assert!(scoped.resolve(locus(issued.root(0), part)).is_none());
         assert!(issued.resolve(locus(scoped.root(0), part)).is_none());
     }
 
-    /// Trace: FR-109-AC-5
-    #[ix_trace_rs::trace("TC-908", "FR-109-AC-5")]
+    /// Trace: FR-109-AC-9
+    #[ix_trace_rs::trace("TC-908", "FR-109-AC-9")]
     #[test]
-    fn arena_identifier_exhaustion_reports_one_native_unit_without_a_locus() {
+    fn arena_constructor_exhaustion_reports_one_native_unit_without_reusing_an_id() {
         let counter = AtomicUsize::new(usize::MAX - 1);
-        assert_eq!(next_arena_id(&counter), Ok(usize::MAX - 1));
+        let last = MembershipPathArena::new_with_test_counter(&counter).expect("last arena");
+        assert_eq!(last.id, usize::MAX - 1);
         assert_eq!(counter.load(Ordering::Relaxed), usize::MAX);
         let capacity = PathArenaCapacity {
             requested: 1,
             unit: PathArenaCapacityUnit::ArenaIdentifiers,
         };
-        assert_eq!(next_arena_id(&counter), Err(capacity));
-        assert_eq!(next_arena_id(&counter), Err(capacity));
+        assert_eq!(
+            MembershipPathArena::new_with_test_counter(&counter).unwrap_err(),
+            capacity
+        );
+        assert_eq!(
+            MembershipPathArena::new_with_test_counter(&counter).unwrap_err(),
+            capacity
+        );
         assert_eq!(counter.load(Ordering::Relaxed), usize::MAX);
     }
 

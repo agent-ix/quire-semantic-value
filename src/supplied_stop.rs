@@ -549,7 +549,15 @@ impl SuppliedRun {
     ///
     /// A capacity stop when the process has no path-arena identifier left.
     pub fn new(limits: SuppliedLimits, cancel: Cancel) -> Result<Self, Box<SuppliedStop>> {
-        let arena = MembershipPathArena::new().map_err(|capacity| {
+        Self::with_arena(limits, cancel, MembershipPathArena::new())
+    }
+
+    fn with_arena(
+        limits: SuppliedLimits,
+        cancel: Cancel,
+        arena: Result<MembershipPathArena, PathArenaCapacity>,
+    ) -> Result<Self, Box<SuppliedStop>> {
+        let arena = arena.map_err(|capacity| {
             Box::new(SuppliedStop {
                 context: SuppliedContext {
                     phase: SuppliedPhase::Admission,
@@ -1071,6 +1079,8 @@ impl SuppliedRun {
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
     use ix_trace_rs::trace;
 
@@ -1090,6 +1100,36 @@ mod tests {
             SuppliedFailure::Stop(stop) => *stop,
             other => panic!("a supplied-phase stop, got {other:?}"),
         }
+    }
+
+    /// Trace: FR-109-AC-9
+    #[trace("TC-908", "FR-109-AC-9")]
+    #[test]
+    fn exhausted_path_arena_stops_before_a_supplied_run_or_locus_exists() {
+        let counter = AtomicUsize::new(usize::MAX);
+        let failure = SuppliedRun::with_arena(
+            SuppliedLimits::default(),
+            Cancel::new(),
+            MembershipPathArena::new_with_test_counter(&counter),
+        )
+        .expect_err("no supplied run can exist without a path arena");
+        assert_eq!(counter.load(Ordering::Relaxed), usize::MAX);
+        assert_eq!(
+            *failure,
+            SuppliedStop {
+                context: SuppliedContext {
+                    phase: SuppliedPhase::Admission,
+                    parameter: None,
+                    event: None,
+                    locus: None,
+                    consumed: 0,
+                },
+                cause: SuppliedCause::Capacity(SuppliedStorage {
+                    requested: 1,
+                    unit: SuppliedStorageUnit::ArenaIdentifiers,
+                }),
+            }
+        );
     }
 
     /// FR-126-AC-9: every storage-bearing arm of QSV's bounded
