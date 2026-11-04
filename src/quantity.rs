@@ -16,7 +16,7 @@ use quire_exact::{rational_arithmetic_bits, Rational, RationalArithmetic};
 use quire_exact::{sbits, sdigits, DecimalLoss, DecimalResult, DecimalType, Placed, RoundingMode};
 use quire_exact::{
     BoundedInteger, Charge, ChargePoint, Integer, IntegerInterval, LimitKind, Meter, Quantity,
-    UnitId,
+    RationalDomain, UnitId,
 };
 use quire_exact::{
     CheckedInvariantCause, InexactTarget, Outcome, QuantityCarrier, Refusal, Undefined,
@@ -330,6 +330,9 @@ pub enum QuantityTarget {
         /// The rounding spelling of the scale-zero placement.
         rounding: RoundingMode,
     },
+    /// A bounded exact Rational type. Conversion preserves the exact value
+    /// and refuses when its reduced numerator or denominator is out of range.
+    Rational(RationalDomain),
     /// A carried-quantity target whose carrier and rounding mode are part of
     /// its declared type. An inexact placement under `exact` is reported as
     /// `Refusal::InexactConversion`; non-exact modes retain their loss record.
@@ -488,6 +491,7 @@ pub fn convert_quantity(
             domain,
             inexact_conversion: None,
         },
+        QuantityTarget::Rational(domain) => Target::Rational(domain.clone()),
         QuantityTarget::Carried(carrier) => match carrier {
             QuantityCarrier::Decimal(decimal) => Target::Decimal {
                 decimal: decimal.clone(),
@@ -504,6 +508,7 @@ pub fn convert_quantity(
                 domain,
                 inexact_conversion: Some(InexactTarget::Integer(Box::new(domain.clone()))),
             },
+            QuantityCarrier::Rational(domain) => Target::Rational(domain.clone()),
         },
     };
     Ok(outcome_from_stop(convert(source, unit, &target, meter)))
@@ -820,6 +825,7 @@ enum Target<'a> {
         domain: &'a IntegerInterval,
         inexact_conversion: Option<InexactTarget>,
     },
+    Rational(RationalDomain),
 }
 
 /// `source → root → target` in full, with no shortcut and no operation event.
@@ -843,6 +849,19 @@ fn convert(
     let value = match target {
         Target::Exact => {
             charge_rational_target(meter)?;
+            charge_retain(meter)?;
+            ConvertedValue::Exact(exact)
+        }
+        Target::Rational(domain) => {
+            meter.charge(
+                Charge::new(ChargePoint::UnitTargetDomain)
+                    .exact_size(LimitKind::IntegerBits, exact.max_part_bits().into()),
+            )?;
+            if !domain.contains(&exact) {
+                return Err(Stop::Refused(Refusal::RationalOutOfDomain {
+                    target: Box::new(domain.clone()),
+                }));
+            }
             charge_retain(meter)?;
             ConvertedValue::Exact(exact)
         }
@@ -974,6 +993,67 @@ mod checked_invariant_tests {
     use super::*;
     use ix_trace_rs::trace;
     use quire_exact::ScalarLimits;
+
+    fn test_meter() -> Meter {
+        Meter::new(ScalarLimits {
+            integer_bits: 1024,
+            decimal_digits: 1024,
+            scale_expansion: 1024,
+            text_input_bytes: 1024,
+            text_scalars: 1024,
+            normalized_scalars: 1024,
+            unit_edges: 1024,
+            value_occurrences: 1024,
+            work_units: 1024,
+            result_units: 1024,
+        })
+    }
+
+    /// FR-497-AC-8: rational carried quantity conversion is exact and enforces
+    /// both reduced numerator and denominator bounds.
+    #[trace("FR-497-AC-8", "TC-1287")]
+    #[test]
+    fn rational_carried_quantity_conversion_preserves_exact_value_and_bounds() {
+        let unit = QuantityUnit::Compound(UnitGraph::default().compound_unit(&[]).unwrap());
+        let mut table = UnitTable::default();
+        let unit_id = table.insert(unit.clone()).unwrap();
+        let domain = RationalDomain::new(
+            IntegerInterval::spanning(Integer::from(-3_i64), Integer::from(7_i64)),
+            IntegerInterval::spanning(Integer::one(), Integer::from(12_i64)),
+        )
+        .unwrap();
+        let value = Quantity::new(
+            Rational::new(Integer::one(), Integer::from(4_i64)).unwrap(),
+            unit_id,
+        );
+        let mut meter = test_meter();
+        let converted = convert(
+            table.resolve(&value).unwrap(),
+            &unit,
+            &Target::Rational(domain.clone()),
+            &mut meter,
+        )
+        .unwrap();
+        assert_eq!(
+            converted.value,
+            ConvertedValue::Exact(value.magnitude().clone())
+        );
+
+        let out_of_range = Quantity::new(
+            Rational::from_integer(Integer::from(8_i64)),
+            value.unit().clone(),
+        );
+        let mut meter = test_meter();
+        assert!(matches!(
+            convert(
+                table.resolve(&out_of_range).unwrap(),
+                &unit,
+                &Target::Rational(domain.clone()),
+                &mut meter,
+            ),
+            Err(Stop::Refused(Refusal::RationalOutOfDomain { .. }))
+        ));
+    }
 
     #[trace("TC-906", "FR-122-AC-1")]
     #[test]
