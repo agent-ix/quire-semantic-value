@@ -216,6 +216,7 @@ fn carried_quantity_admits(
                 .and_then(|placed| placed.admit())
                 .is_ok()
         }
+        QuantityCarrier::Rational(domain) => domain.contains(quantity.magnitude()),
     }
 }
 
@@ -4524,8 +4525,25 @@ mod tests {
             .admits(&integer_type, &quantity(5, 2, unit.clone()))
             .expect("admission"));
         assert!(!environment
-            .admits(&integer_type, &quantity(3, 1, unit))
+            .admits(&integer_type, &quantity(3, 1, unit.clone()))
             .expect("admission"));
+
+        let rational_type = ValueType::carried_quantity(CarriedQuantityType::new(
+            unit.clone(),
+            QuantityCarrier::Rational(
+                quire_exact::RationalDomain::new(
+                    IntegerInterval::spanning(Integer::from(-3_i64), Integer::from(7_i64)),
+                    IntegerInterval::spanning(Integer::one(), Integer::from(12_i64)),
+                )
+                .expect("valid rational bounds"),
+            ),
+        ));
+        assert!(environment
+            .admits(&rational_type, &quantity(1, 4, unit.clone()))
+            .expect("rational carrier admits an in-range exact value"));
+        assert!(!environment
+            .admits(&rational_type, &quantity(8, 1, unit))
+            .expect("rational carrier refuses an out-of-range exact value"));
     }
 
     /// Bounded admission reports oversized integer carrier endpoints before
