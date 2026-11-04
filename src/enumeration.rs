@@ -38,7 +38,7 @@ pub fn is_member_list(members: &[String]) -> bool {
 pub struct EnumDeclaration {
     key: NodeKey,
     ordered: bool,
-    members: Vec<String>,
+    members: Arc<[String]>,
 }
 
 impl EnumDeclaration {
@@ -46,7 +46,7 @@ impl EnumDeclaration {
         Self {
             key,
             ordered,
-            members,
+            members: members.into(),
         }
     }
 
@@ -109,13 +109,17 @@ impl EnumDeclaration {
         Ok(Self {
             key,
             ordered,
-            members,
+            members: members.into(),
         })
     }
 
     /// The declaration node key.
     pub fn key(&self) -> NodeKey {
         self.key.clone()
+    }
+
+    pub(crate) fn key_ref(&self) -> &NodeKey {
+        &self.key
     }
 
     /// Whether the declaration selects ordered semantics.
@@ -148,34 +152,37 @@ impl EnumDeclaration {
             declaration: self.key.clone(),
             member,
             ordered: self.ordered,
+            members: self.members.clone(),
             position,
             case: case.into(),
         })
     }
 }
 
-/// An enumeration value: (declaration identity, member identity).
+/// An enumeration value with its admitted declaration key, ordered flag and
+/// complete member list, plus the selected member identity and position.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EnumValue {
     declaration: NodeKey,
     member: NodeKey,
     ordered: bool,
+    members: Arc<[String]>,
     position: usize,
     case: Box<str>,
 }
 
 impl EnumValue {
     pub(crate) fn from_admitted(
-        declaration: NodeKey,
+        declaration: &EnumDeclaration,
         member: NodeKey,
-        ordered: bool,
         position: usize,
         case: Box<str>,
     ) -> Self {
         Self {
-            declaration,
+            declaration: declaration.key.clone(),
             member,
-            ordered,
+            ordered: declaration.ordered,
+            members: declaration.members.clone(),
             position,
             case,
         }
@@ -202,6 +209,11 @@ impl EnumValue {
     /// Whether the declaration is an `ordered enum`.
     pub fn is_ordered(&self) -> bool {
         self.ordered
+    }
+
+    /// Exact member cases retained from the admitted declaration, in canonical order.
+    pub fn declaration_members(&self) -> &[String] {
+        &self.members
     }
 
     /// The case identifier.
@@ -274,15 +286,19 @@ impl EnumMemberIndex {
     }
 }
 
-/// Compare two enum values. Members of different declarations, and ordering
-/// requests over an unordered declaration, are ill-typed and consume nothing.
+/// Compare two enum values. Differing admitted declaration keys, ordered flags
+/// or complete member lists, and ordering over an unordered declaration, are
+/// ill-typed and consume nothing.
 pub fn compare_enum(
     operator: ComparisonOperator,
     left: &EnumValue,
     right: &EnumValue,
     meter: &mut Meter,
 ) -> Result<Outcome<bool>, IllTyped> {
-    if left.declaration != right.declaration {
+    if left.declaration != right.declaration
+        || left.ordered != right.ordered
+        || left.members != right.members
+    {
         return Err(IllTyped {
             cause: IllTypedCause::DistinctEnumDeclarations,
         });
@@ -479,5 +495,68 @@ mod tests {
             );
         }
         assert!(!is_member_list(&cases(&["Gold Plus"])));
+    }
+
+    #[trace("FR-131-AC-1", "FR-131-AC-2", "FR-131-AC-3", "FR-131-AC-4")]
+    #[test]
+    fn enum_comparison_requires_equal_admitted_declaration_structure() {
+        let original = EnumDeclaration::new(key(1), true, cases(&["A", "B"])).unwrap();
+        let changed = EnumDeclaration::new(key(1), true, cases(&["A", "C"])).unwrap();
+        let reordered = EnumDeclaration::new(key(1), true, cases(&["B", "A"])).unwrap();
+        let other_owner = EnumDeclaration::new(key(2), true, cases(&["A", "B"])).unwrap();
+        let unordered = EnumDeclaration::new(key(1), false, cases(&["A", "B"])).unwrap();
+        let equal = EnumDeclaration::new(key(1), true, cases(&["A", "B"])).unwrap();
+        let left = original.member("A", key(3)).unwrap();
+        assert_eq!(left.declaration_members(), cases(&["A", "B"]).as_slice());
+        let mut meter = Meter::new(ScalarLimits {
+            integer_bits: 1024,
+            decimal_digits: 1024,
+            scale_expansion: 1024,
+            text_input_bytes: 1024,
+            text_scalars: 1024,
+            normalized_scalars: 1024,
+            unit_edges: 1024,
+            value_occurrences: 1024,
+            work_units: 1024,
+            result_units: 1024,
+        });
+
+        for declaration in [&changed, &reordered, &other_owner, &unordered] {
+            let right = declaration.member("A", key(3)).unwrap();
+            let before = meter.admission_count();
+            assert_eq!(
+                compare_enum(ComparisonOperator::Equal, &left, &right, &mut meter),
+                Err(IllTyped {
+                    cause: IllTypedCause::DistinctEnumDeclarations
+                })
+            );
+            assert_eq!(meter.admission_count(), before);
+        }
+        let unordered_value = unordered.member("A", key(3)).unwrap();
+        assert_eq!(
+            compare_enum(
+                ComparisonOperator::Less,
+                &left,
+                &unordered_value,
+                &mut meter
+            ),
+            Err(IllTyped {
+                cause: IllTypedCause::DistinctEnumDeclarations
+            })
+        );
+        assert_eq!(meter.admission_count(), 0);
+
+        let right = equal.member("A", key(3)).unwrap();
+        assert_eq!(
+            compare_enum(ComparisonOperator::Equal, &left, &right, &mut meter),
+            Ok(Outcome::Completed(true))
+        );
+        assert_eq!(meter.admission_count(), 3);
+        let later = equal.member("B", key(4)).unwrap();
+        assert_eq!(
+            compare_enum(ComparisonOperator::Less, &left, &later, &mut meter),
+            Ok(Outcome::Completed(true))
+        );
+        assert_eq!(meter.admission_count(), 6);
     }
 }

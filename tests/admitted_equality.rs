@@ -216,6 +216,7 @@ fn enum_materialization_preserves_utf8_cases_original_ids_positions_and_filter()
         assert_eq!(retained.position(), original.position);
         assert_eq!(retained.case(), original.case.as_ref());
         assert_eq!(retained.is_ordered(), original.ordered);
+        assert_eq!(retained.declaration_members(), cases);
     }
     let foreign = VariantId::new(common::node(999), "foreign").unwrap();
     assert!(decision.resolved_enum_members().resolve(foreign).is_none());
@@ -239,6 +240,52 @@ fn enum_materialization_preserves_utf8_cases_original_ids_positions_and_filter()
             &mut meter(10_000)
         ),
         Outcome::Completed(false)
+    );
+}
+
+#[trace("FR-131-AC-1")]
+#[test]
+fn enum_materialization_refuses_ambiguous_same_key_declarations() {
+    let key = common::node(800);
+    let variant = VariantId::new(key.clone(), "A").unwrap();
+    let mut original = descriptor();
+    original.enum_declarations = vec![
+        EqualityEnumDeclarationDescriptor {
+            key: key.clone(),
+            ordered: true,
+            members: vec!["A".into(), "B".into()],
+        },
+        EqualityEnumDeclarationDescriptor {
+            key: key.clone(),
+            ordered: true,
+            members: vec!["A".into(), "C".into()],
+        },
+    ];
+    original.enum_members.push(EqualityEnumMemberDescriptor {
+        variant: variant.clone(),
+        declaration: key,
+        member: common::node(801),
+        ordered: true,
+        position: 0,
+        case: "A".into(),
+    });
+    assert_eq!(
+        mint_admitted_equality_decision(ReaderSeal, original.clone(), &mut meter(10_000)),
+        Err(EqualityMaterializationError::IdentityForm {
+            locus: EqualityMaterializationLocus::EnumMember { row: 0 }
+        })
+    );
+
+    original.enum_declarations[1].members = vec!["A".into(), "B".into()];
+    let decision = mint_admitted_equality_decision(ReaderSeal, original, &mut meter(10_000))
+        .expect("identical declarations are unambiguous");
+    assert_eq!(
+        decision
+            .resolved_enum_members()
+            .resolve(variant)
+            .unwrap()
+            .declaration_members(),
+        ["A", "B"]
     );
 }
 
