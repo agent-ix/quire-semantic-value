@@ -1024,6 +1024,35 @@ mod checked_invariant_tests {
         })
     }
 
+    /// QSL-1731 AC1 / FR-142: negating a unit-less quantity returns the exact
+    /// opposite magnitude and preserves its dimensionless unit id.
+    #[trace("QSL-1731-AC-1", "FR-142")]
+    #[test]
+    fn negate_preserves_dimensionless_unit_id() {
+        let unit = QuantityUnit::Compound(UnitGraph::default().compound_unit(&[]).unwrap());
+        let unit_id = unit.id().unwrap();
+        let quantity = Quantity::new(
+            Rational::new(Integer::from(7_i64), Integer::from(9_i64)).unwrap(),
+            unit_id.clone(),
+        );
+        let operand = UnitQuantity {
+            quantity: &quantity,
+            unit: &unit,
+        };
+        let mut meter = test_meter();
+
+        let outcome = evaluate_quantity(QuantityOperation::Negate(operand), &mut meter).unwrap();
+        let Outcome::Completed(result) = outcome else {
+            panic!("dimensionless negation must complete exactly, got {outcome:?}");
+        };
+        assert_eq!(
+            result.magnitude(),
+            &Rational::new(Integer::from(-7_i64), Integer::from(9_i64)).unwrap()
+        );
+        assert_eq!(result.unit(), &unit_id);
+        assert!(unit.dimension().is_dimensionless());
+    }
+
     /// FR-142 and FR-146-AC-9: negation preserves an exact rational value's
     /// unit, including a composed unit, and negates positive, negative and
     /// zero magnitudes without a definedness or range refusal.
