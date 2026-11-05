@@ -303,6 +303,8 @@ impl<'a> UnitQuantity<'a> {
 /// A quantity operation over resolved operands.
 #[derive(Clone, Copy, Debug)]
 pub enum QuantityOperation<'a> {
+    /// `-a` in the operand's unit.
+    Negate(UnitQuantity<'a>),
     /// `a + b` in one common unit.
     Add(UnitQuantity<'a>, UnitQuantity<'a>),
     /// `a - b` in one common unit.
@@ -419,10 +421,10 @@ pub enum HandoffRefusal {
 }
 
 /// Evaluate a quantity operation under `quire.value.accounting/v1`. The
-/// result carries the id of its unit: the operands' identical unit for `+`
-/// and `-`, otherwise the canonical compound unit. Incompatible dimensions,
-/// affine-unit arithmetic and distinct units are ill-typed and consume
-/// nothing.
+/// result carries the id of its unit: the operand's unit for negation, the
+/// operands' identical unit for `+` and `-`, otherwise the canonical compound
+/// unit. Incompatible dimensions, affine-unit arithmetic and distinct units
+/// are ill-typed and consume nothing.
 ///
 /// # Errors
 ///
@@ -627,6 +629,12 @@ fn charge_retain(meter: &mut Meter) -> Result<(), Stop> {
 /// unit.
 fn type_check(operation: QuantityOperation<'_>) -> Result<QuantityUnit, IllTyped> {
     let (unit_operation, a, b) = match operation {
+        QuantityOperation::Negate(operand) => {
+            if operand.unit.is_affine() {
+                return Err(ill_typed(IllTypedCause::AffineUnitArithmetic));
+            }
+            return Ok(operand.unit.clone());
+        }
         QuantityOperation::Add(a, b) => (UnitOperation::Add, a, b),
         QuantityOperation::Subtract(a, b) => (UnitOperation::Subtract, a, b),
         QuantityOperation::Multiply(a, b) => (UnitOperation::Multiply, a, b),
@@ -708,6 +716,7 @@ pub fn check_comparable(left: &QuantityUnit, right: &QuantityUnit) -> Result<(),
 /// wins: a zero divisor, then a zero base under a negative exponent.
 fn check_undefined(operation: QuantityOperation<'_>) -> Result<(), Stop> {
     let undefined = match operation {
+        QuantityOperation::Negate(_) => false,
         QuantityOperation::Divide(_, divisor) => divisor.value().is_zero(),
         QuantityOperation::Power(base, exponent) => {
             base.value().is_zero() && exponent.is_negative()
@@ -729,6 +738,7 @@ fn evaluate(
     meter: &mut Meter,
 ) -> Result<Quantity, Stop> {
     let operands = match operation {
+        QuantityOperation::Negate(a) => vec![a],
         QuantityOperation::Add(a, b)
         | QuantityOperation::Subtract(a, b)
         | QuantityOperation::Multiply(a, b)
@@ -738,6 +748,10 @@ fn evaluate(
     read_identities(&operands, meter)?;
     check_undefined(operation)?;
     let result = match operation {
+        QuantityOperation::Negate(a) => Quantity::new(
+            rational_event(RationalArithmetic::Negate(a.value()), meter)?,
+            unit,
+        ),
         QuantityOperation::Add(a, b) => Quantity::new(
             rational_event(RationalArithmetic::Add(a.value(), b.value()), meter)?,
             unit,
@@ -991,6 +1005,7 @@ fn compare(
 #[cfg(test)]
 mod checked_invariant_tests {
     use super::*;
+    use crate::unit::{DimensionNode, NominalDeclaration, UnitNode};
     use ix_trace_rs::trace;
     use quire_exact::ScalarLimits;
 
@@ -1007,6 +1022,144 @@ mod checked_invariant_tests {
             work_units: 1024,
             result_units: 1024,
         })
+    }
+
+    /// FR-142 and FR-146-AC-9: negation preserves an exact rational value's
+    /// unit, including a composed unit, and negates positive, negative and
+    /// zero magnitudes without a definedness or range refusal.
+    #[trace("FR-142", "FR-146-AC-9")]
+    #[test]
+    fn negate_preserves_composed_unit_and_exactly_negates_each_sign() {
+        let dimensions = alloc::collections::BTreeMap::from([
+            (
+                crate::test_identity::node(1),
+                DimensionNode::checked(vec![], NominalDeclaration::default()).unwrap(),
+            ),
+            (
+                crate::test_identity::node(2),
+                DimensionNode::checked(vec![], NominalDeclaration::default()).unwrap(),
+            ),
+        ]);
+        let units = alloc::collections::BTreeMap::from([
+            (
+                crate::test_identity::node(3),
+                UnitNode::checked(
+                    crate::test_identity::node(1),
+                    None,
+                    Rational::from_integer(Integer::one()),
+                    Rational::from_integer(Integer::zero()),
+                    NominalDeclaration::default(),
+                )
+                .unwrap(),
+            ),
+            (
+                crate::test_identity::node(4),
+                UnitNode::checked(
+                    crate::test_identity::node(2),
+                    None,
+                    Rational::from_integer(Integer::one()),
+                    Rational::from_integer(Integer::zero()),
+                    NominalDeclaration::default(),
+                )
+                .unwrap(),
+            ),
+        ]);
+        let graph = UnitGraph::from_checked_nodes(&dimensions, &units).unwrap();
+        let compound = QuantityUnit::Compound(
+            graph
+                .compound_unit(&[
+                    (crate::test_identity::node(3), Integer::one()),
+                    (crate::test_identity::node(4), Integer::from(-2_i64)),
+                ])
+                .unwrap(),
+        );
+        let unit_id = compound.id().unwrap();
+        let values = [
+            (
+                Rational::new(Integer::from(3_i64), Integer::from(7_i64)).unwrap(),
+                Rational::new(Integer::from(-3_i64), Integer::from(7_i64)).unwrap(),
+            ),
+            (
+                Rational::new(Integer::from(-5_i64), Integer::from(11_i64)).unwrap(),
+                Rational::new(Integer::from(5_i64), Integer::from(11_i64)).unwrap(),
+            ),
+            (
+                Rational::from_integer(Integer::zero()),
+                Rational::from_integer(Integer::zero()),
+            ),
+        ];
+
+        for (magnitude, expected) in values {
+            let quantity = Quantity::new(magnitude, unit_id.clone());
+            let operand = UnitQuantity {
+                quantity: &quantity,
+                unit: &compound,
+            };
+            let mut meter = test_meter();
+            let outcome =
+                evaluate_quantity(QuantityOperation::Negate(operand), &mut meter).unwrap();
+            let Outcome::Completed(result) = outcome else {
+                panic!("negation must complete exactly, got {outcome:?}");
+            };
+            assert_eq!(result.magnitude(), &expected);
+            assert_eq!(result.unit(), &unit_id);
+        }
+    }
+
+    /// FR-142 and FR-146-AC-9: negating an affine point is a type-time
+    /// refusal and consumes no accounting budget.
+    #[trace("FR-142", "FR-146-AC-9")]
+    #[test]
+    fn negate_refuses_affine_unit_without_consuming_budget() {
+        let dimensions = alloc::collections::BTreeMap::from([(
+            crate::test_identity::node(1),
+            DimensionNode::checked(vec![], NominalDeclaration::default()).unwrap(),
+        )]);
+        let units = alloc::collections::BTreeMap::from([
+            (
+                crate::test_identity::node(2),
+                UnitNode::checked(
+                    crate::test_identity::node(1),
+                    None,
+                    Rational::from_integer(Integer::one()),
+                    Rational::from_integer(Integer::zero()),
+                    NominalDeclaration::default(),
+                )
+                .unwrap(),
+            ),
+            (
+                crate::test_identity::node(3),
+                UnitNode::checked(
+                    crate::test_identity::node(1),
+                    Some(crate::test_identity::node(2)),
+                    Rational::from_integer(Integer::from(2_i64)),
+                    Rational::from_integer(Integer::from(5_i64)),
+                    NominalDeclaration::default(),
+                )
+                .unwrap(),
+            ),
+        ]);
+        let graph = UnitGraph::from_checked_nodes(&dimensions, &units).unwrap();
+        let affine = QuantityUnit::Declared(Box::new(
+            graph.unit(crate::test_identity::node(3)).unwrap().clone(),
+        ));
+        let quantity = Quantity::new(
+            Rational::from_integer(Integer::from(12_i64)),
+            affine.id().unwrap(),
+        );
+        let operand = UnitQuantity {
+            quantity: &quantity,
+            unit: &affine,
+        };
+        let mut meter = test_meter();
+
+        assert_eq!(
+            evaluate_quantity(QuantityOperation::Negate(operand), &mut meter),
+            Err(QuantityRefusal::IllTyped(ill_typed(
+                IllTypedCause::AffineUnitArithmetic
+            )))
+        );
+        assert_eq!(meter, test_meter());
     }
 
     /// FR-497-AC-8: rational carried quantity conversion is exact and enforces
