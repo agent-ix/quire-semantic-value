@@ -12,9 +12,9 @@ use std::num::NonZeroU64;
 
 use ix_trace_rs::trace;
 use quire_exact::{
-    ChargePoint, DecimalType, InexactTarget, InjectedDenial, Integer, IntegerInterval, Meter,
-    NodeKey, Outcome, Quantity, QuantityCarrier, Rational, Refusal, RoundingMode, ScalarLimits,
-    UnitDomain, UnitId,
+    ChargePoint, DecimalType, InexactTarget, InjectedDenial, Integer, IntegerInterval, LimitKind,
+    Meter, NodeKey, Outcome, Quantity, QuantityCarrier, Rational, Refusal, RoundingMode,
+    ScalarLimits, UnitDomain, UnitId,
 };
 use quire_semantic_value::quantity::{
     convert_quantity, Conversion, ConvertedValue, HandoffRefusal, QuantityTarget, QuantityUnit,
@@ -37,6 +37,26 @@ fn meter() -> Meter {
         value_occurrences: 1024,
         work_units: 1024,
         result_units: 1024,
+    })
+}
+
+fn tight_meter(
+    work_units: u64,
+    result_units: u64,
+    value_occurrences: u64,
+    decimal_digits: u64,
+) -> Meter {
+    Meter::new(ScalarLimits {
+        integer_bits: 2,
+        decimal_digits,
+        scale_expansion: 0,
+        text_input_bytes: 0,
+        text_scalars: 0,
+        normalized_scalars: 0,
+        unit_edges: 0,
+        value_occurrences,
+        work_units,
+        result_units,
     })
 }
 
@@ -385,6 +405,177 @@ fn carried_quantity_targets_map_exact_refusals_and_preserve_rounding() {
     };
     assert!(loss.is_some());
     assert_eq!(value.value(), &Integer::zero());
+}
+
+/// QSpec CQ-E13 and TC-187 U29: an exact integer carrier keeps its retained
+/// value at the published two-work boundary.
+#[trace("FR-124-AC-7", "FR-142-AC-28")]
+#[test]
+fn exact_integer_conversion_retains_at_two_work_units() {
+    let graph = energy_graph();
+    let table = UnitTable::declared(&graph);
+    let source = Quantity::new(rational(2), UnitId::declared(key(METRE)));
+    let target_unit = declared(&table, METRE);
+    let target = QuantityTarget::Carried(QuantityCarrier::Integer {
+        domain: IntegerInterval::spanning(int(-2), int(2)),
+        rounding: RoundingMode::Exact,
+    });
+    let mut meter = tight_meter(2, 1, 1, 0);
+
+    let Outcome::Completed(conversion) = convert_quantity(
+        table.resolve(&source).unwrap(),
+        &target_unit,
+        &target,
+        &mut meter,
+    )
+    .unwrap() else {
+        panic!("CQ-E13 completes at its published limits");
+    };
+    let ConvertedValue::Integer { value, loss } = conversion.value() else {
+        panic!("CQ-E13 retains an integer");
+    };
+    assert_eq!(value.value(), &int(2));
+    assert_eq!(loss, &None);
+    assert_eq!(meter.consumed(LimitKind::WorkUnits), 2);
+    assert_eq!(meter.consumed(LimitKind::ResultUnits), 1);
+    assert_eq!(meter.consumed(LimitKind::ValueOccurrences), 1);
+    assert_eq!(meter.admission_count(), 3);
+}
+
+/// The integer result charge remains atomic and named, and target-domain work
+/// denial precedes retention at the one-work boundary.
+#[trace("FR-124-AC-7", "FR-142-AC-28")]
+#[test]
+fn integer_conversion_retention_boundaries_are_atomic() {
+    let graph = energy_graph();
+    let table = UnitTable::declared(&graph);
+    let source = Quantity::new(rational(2), UnitId::declared(key(METRE)));
+    let target_unit = declared(&table, METRE);
+    let target = QuantityTarget::Carried(QuantityCarrier::Integer {
+        domain: IntegerInterval::spanning(int(-2), int(2)),
+        rounding: RoundingMode::Exact,
+    });
+
+    for (mut meter, kind, point, consumed, work, occurrences) in [
+        (
+            tight_meter(1, 1, 1, 0),
+            LimitKind::WorkUnits,
+            ChargePoint::UnitTargetDomain,
+            1,
+            1,
+            1,
+        ),
+        (
+            tight_meter(2, 0, 1, 0),
+            LimitKind::ResultUnits,
+            ChargePoint::UnitResultRetain,
+            0,
+            2,
+            1,
+        ),
+        (
+            tight_meter(2, 1, 0, 0),
+            LimitKind::ValueOccurrences,
+            ChargePoint::UnitIdentityRead,
+            0,
+            0,
+            0,
+        ),
+    ] {
+        let Outcome::Incomplete(incomplete) = convert_quantity(
+            table.resolve(&source).unwrap(),
+            &target_unit,
+            &target,
+            &mut meter,
+        )
+        .unwrap() else {
+            panic!("the selected boundary denies conversion");
+        };
+        assert_eq!(incomplete.limit_kind, kind);
+        assert_eq!(incomplete.charge_point, point);
+        assert_eq!(incomplete.consumed, consumed);
+        assert_eq!(incomplete.next_charge, int(1));
+        assert_eq!(meter.consumed(LimitKind::WorkUnits), work);
+        assert_eq!(meter.consumed(LimitKind::ResultUnits), 0);
+        assert_eq!(meter.consumed(LimitKind::ValueOccurrences), occurrences);
+        assert_eq!(meter.admission_count(), work);
+    }
+
+    let mut injected = tight_meter(2, 1, 1, 0).with_injected_denial(InjectedDenial {
+        point: ChargePoint::UnitResultRetain,
+        occurrence: NonZeroU64::new(1).unwrap(),
+    });
+    let Outcome::Incomplete(incomplete) = convert_quantity(
+        table.resolve(&source).unwrap(),
+        &target_unit,
+        &target,
+        &mut injected,
+    )
+    .unwrap() else {
+        panic!("the named integer retention charge is injectable");
+    };
+    assert_eq!(incomplete.limit_kind, LimitKind::WorkUnits);
+    assert_eq!(incomplete.charge_point, ChargePoint::UnitResultRetain);
+    assert_eq!(incomplete.consumed, 2);
+    assert_eq!(incomplete.next_charge, int(0));
+    assert_eq!(injected.consumed(LimitKind::ResultUnits), 0);
+    assert_eq!(injected.admission_count(), 2);
+}
+
+/// Exact rational and decimal conversion retain their existing one-work
+/// charge; the integer exception does not change their values.
+#[trace("FR-124-AC-7")]
+#[test]
+fn noninteger_conversion_retention_keeps_one_work_unit() {
+    let graph = energy_graph();
+    let table = UnitTable::declared(&graph);
+    let source = Quantity::new(rational(2), UnitId::declared(key(METRE)));
+    let target_unit = declared(&table, METRE);
+    let decimal = DecimalType::new(int(-2), int(2), 0, 0, RoundingMode::Exact).unwrap();
+
+    for target in [QuantityTarget::Exact, QuantityTarget::Decimal(decimal)] {
+        let decimal_digits = if matches!(&target, QuantityTarget::Decimal(_)) {
+            1
+        } else {
+            0
+        };
+        let mut tight = tight_meter(2, 1, 1, decimal_digits);
+        let Outcome::Incomplete(incomplete) = convert_quantity(
+            table.resolve(&source).unwrap(),
+            &target_unit,
+            &target,
+            &mut tight,
+        )
+        .unwrap() else {
+            panic!("noninteger retention needs a third work unit");
+        };
+        assert_eq!(incomplete.limit_kind, LimitKind::WorkUnits);
+        assert_eq!(incomplete.charge_point, ChargePoint::UnitResultRetain);
+        assert_eq!(incomplete.consumed, 2);
+        assert_eq!(incomplete.next_charge, int(1));
+        assert_eq!(tight.consumed(LimitKind::ResultUnits), 0);
+
+        let mut admitted = tight_meter(3, 1, 1, decimal_digits);
+        let Outcome::Completed(conversion) = convert_quantity(
+            table.resolve(&source).unwrap(),
+            &target_unit,
+            &target,
+            &mut admitted,
+        )
+        .unwrap() else {
+            panic!("noninteger conversion completes with three work units");
+        };
+        match conversion.value() {
+            ConvertedValue::Exact(value) => assert_eq!(value, &rational(2)),
+            ConvertedValue::Decimal(value) => {
+                assert_eq!(value.value().normalized().coefficient(), &int(2));
+                assert_eq!(value.loss(), None);
+            }
+            ConvertedValue::Integer { .. } => panic!("the target was not integer"),
+        }
+        assert_eq!(admitted.consumed(LimitKind::WorkUnits), 3);
+        assert_eq!(admitted.consumed(LimitKind::ResultUnits), 1);
+    }
 }
 
 /// Ordinary conversion targets keep their old refusal identity, while carried
