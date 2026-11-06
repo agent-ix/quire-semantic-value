@@ -13,7 +13,7 @@ relationships:
 Verify [FR-124](../functional/FR-124-identified-quantity-from-an-exact-conversion.md)
 through the public `quire_semantic_value::quantity` API: the pair that
 `Conversion::identified_quantity` returns, its retention and resolution in a
-`UnitScope`, its refusals, and that it adds no charge. Steps 1 to 6 are
+`UnitScope`, its refusals, and that it adds no charge. Steps 1 to 6 and 8 are
 executable tests; step 7 is the implementing PR's inspection and build gate.
 The fixtures are QSpec TC-187 U25's units (a declared unit converted into a
 compound target, then into joules).
