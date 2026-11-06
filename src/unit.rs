@@ -301,8 +301,11 @@ pub struct NominalUnitNode {
 )]
 pub enum NominalUnitForm {
     /// A dimension node: its `(base dimension, exponent)` terms, ascending
-    /// by key, empty for a base dimension.
+    /// by key, empty for a base dimension or a dimensionless derived
+    /// dimension. `base` distinguishes those two forms.
     Dimension {
+        /// Whether this node declares a base dimension.
+        base: bool,
         /// The derived dimension's terms.
         terms: Vec<(NodeKey, Integer)>,
     },
@@ -320,13 +323,14 @@ pub enum NominalUnitForm {
     },
 }
 
-/// A dimension node after its per-node checks, as read: its
-/// `(base dimension id, exponent)` terms, empty for a base dimension, and
-/// its [`NominalDeclaration`]. Each id is an admitted structural node key.
+/// A dimension node after its per-node checks, as read: whether it is a base
+/// dimension, its `(base dimension id, exponent)` terms, and its
+/// [`NominalDeclaration`]. Each id is an admitted structural node key.
 /// Built only by
 /// [`DimensionNode::checked`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DimensionNode {
+    base: bool,
     terms: Vec<(NodeKey, Integer)>,
     declaration: NominalDeclaration,
 }
@@ -340,7 +344,27 @@ impl DimensionNode {
         declaration: NominalDeclaration,
     ) -> Result<Self, SemanticGraphCause> {
         check_terms(&terms)?;
-        Ok(Self { terms, declaration })
+        let base = terms.is_empty();
+        Ok(Self {
+            base,
+            terms,
+            declaration,
+        })
+    }
+
+    /// A derived dimension whose normalized base terms may be empty. This
+    /// differs from [`Self::checked`] with empty terms, which declares a base
+    /// dimension. Terms must be nonzero and strictly ordered when present.
+    pub fn checked_derived(
+        terms: Vec<(NodeKey, Integer)>,
+        declaration: NominalDeclaration,
+    ) -> Result<Self, SemanticGraphCause> {
+        check_terms(&terms)?;
+        Ok(Self {
+            base: false,
+            terms,
+            declaration,
+        })
     }
 }
 
@@ -429,7 +453,10 @@ impl UnitGraph {
                 NominalUnitNode {
                     key: key.clone(),
                     declaration: node.declaration.clone(),
-                    form: NominalUnitForm::Dimension { terms },
+                    form: NominalUnitForm::Dimension {
+                        base: node.base,
+                        terms,
+                    },
                 },
             );
         }
@@ -529,15 +556,16 @@ pub struct NotAUnitKey {
     pub key: NodeKey,
 }
 
-/// A base dimension maps to itself; a derived dimension to its base terms,
-/// each resolved by lookup among the admitted dimension keys.
+/// A base dimension maps to itself; a derived dimension maps to its base
+/// terms, each resolved by lookup among the admitted dimension keys. An empty
+/// derived map is dimensionless and remains distinct from a base dimension.
 fn dimension_maps(
     dimensions: &BTreeMap<NodeKey, DimensionNode>,
 ) -> Result<BTreeMap<NodeKey, Dimension>, InvalidSemanticGraph> {
     dimensions
         .iter()
         .map(|(key, node)| {
-            if node.terms.is_empty() {
+            if node.base {
                 return Ok((
                     key.clone(),
                     Dimension([(key.clone(), Integer::one())].into()),
@@ -549,10 +577,7 @@ fn dimension_maps(
                     .get_key_value(term)
                     .map(|(key, _)| key.clone())
                     .ok_or(refuse(SemanticGraphCause::UnknownDimension))?;
-                if dimensions
-                    .get(&base)
-                    .is_some_and(|base| !base.terms.is_empty())
-                {
+                if dimensions.get(&base).is_some_and(|base| !base.base) {
                     return Err(refuse(SemanticGraphCause::NonBaseDimensionTerm));
                 }
                 terms.insert(base, exponent.clone());
@@ -1356,5 +1381,94 @@ mod tests {
             NominalDeclaration::default()
         )
         .is_ok());
+    }
+
+    /// A dimensionless derived node remains distinct from a base dimension,
+    /// so a root unit on it carries the empty dimension map.
+    #[trace("FR-091-AC-35", "QSpec-FR-142-AC-16", "QSpec-TC-187")]
+    #[test]
+    fn an_empty_derived_dimension_is_dimensionless_and_not_a_base_dimension() {
+        let length = id(1);
+        let number = id(2);
+        let one = id(3);
+        let dimensions = BTreeMap::from([
+            (
+                length.clone(),
+                DimensionNode::checked(vec![], NominalDeclaration::default()).unwrap(),
+            ),
+            (
+                number.clone(),
+                DimensionNode::checked_derived(vec![], NominalDeclaration::default()).unwrap(),
+            ),
+        ]);
+        let units = BTreeMap::from([(
+            one.clone(),
+            UnitNode::checked(
+                number.clone(),
+                None,
+                rational(1),
+                rational(0),
+                NominalDeclaration::default(),
+            )
+            .unwrap(),
+        )]);
+
+        let graph = UnitGraph::from_checked_nodes(&dimensions, &units).unwrap();
+
+        assert!(!graph.dimension(length).unwrap().is_dimensionless());
+        assert!(graph.dimension(number.clone()).unwrap().is_dimensionless());
+        assert!(graph.unit(one).unwrap().dimension().is_dimensionless());
+        assert!(matches!(
+            graph.nominal.get(&number).map(|node| &node.form),
+            Some(NominalUnitForm::Dimension { base: false, terms }) if terms.is_empty()
+        ));
+    }
+
+    /// Nonempty derived maps retain their base exponents and unresolved base
+    /// keys still refuse instead of becoming a dimensionless dimension.
+    #[trace("FR-091-AC-35", "QSpec-FR-142-AC-16")]
+    #[test]
+    fn derived_dimensions_keep_terms_and_refuse_unknown_base_dimensions() {
+        let length = id(1);
+        let area = id(2);
+        let dimensions = BTreeMap::from([
+            (
+                length.clone(),
+                DimensionNode::checked(vec![], NominalDeclaration::default()).unwrap(),
+            ),
+            (
+                area.clone(),
+                DimensionNode::checked_derived(
+                    vec![(length.clone(), Integer::from(2_i64))],
+                    NominalDeclaration::default(),
+                )
+                .unwrap(),
+            ),
+        ]);
+        let graph = UnitGraph::from_checked_nodes(&dimensions, &BTreeMap::new()).unwrap();
+        assert_eq!(
+            graph
+                .dimension(area)
+                .unwrap()
+                .exponents()
+                .collect::<Vec<_>>(),
+            vec![(length.clone(), &Integer::from(2_i64))]
+        );
+
+        let unknown = id(3);
+        let invalid_dimensions = BTreeMap::from([(
+            id(4),
+            DimensionNode::checked_derived(
+                vec![(unknown, Integer::one())],
+                NominalDeclaration::default(),
+            )
+            .unwrap(),
+        )]);
+        assert_eq!(
+            UnitGraph::from_checked_nodes(&invalid_dimensions, &BTreeMap::new()),
+            Err(InvalidSemanticGraph {
+                cause: SemanticGraphCause::UnknownDimension
+            })
+        );
     }
 }
