@@ -33,3 +33,11 @@ Ticket: IR-1372. Frozen head c25d49c. The changed requirement, criterion, and te
 ## Verdict
 
 PASS with one low documentation finding.
+
+## Dispositions
+
+Round 1, reviewed fix commit 05fbe1a. The TC-923 introduction now identifies executable steps 1 to 6 and 8.
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | TC-923 now states “Steps 1 to 6 and 8 are executable tests; step 7 is the implementing PR's inspection and build gate.” |
