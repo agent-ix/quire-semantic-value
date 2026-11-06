@@ -49,6 +49,12 @@ compound target, then into joules).
    because exactness is checked first (AC-3, AC-4).
 7. Inspect the public method, `Cargo.toml` and `Cargo.lock` diff; run `make
    build-no-std`, `make lint` and `cargo build --locked` (AC-6).
+8. Convert exact `2 m` into `Int[-2,2]` at CQ-E13's published limits and
+   compare its integer and loss, charge count and consumed counters. Repeat
+   with work limit one, result limit zero, occurrence limit zero and injected
+   `unit.result-retain` denial. Convert
+   the same source to exact rational and decimal targets at work limits two
+   and three (AC-7).
 
 ## Expected Results
 
@@ -64,6 +70,12 @@ compound target, then into joules).
   unit resolved.
 - Step 6: `NotExact`.
 - Step 7: only the new method and refusal type, and green gates.
+- Step 8: integer `2` with no loss completes after three charges with work
+  two, occurrence one and result one. Work one denies target-domain, result
+  zero denies result-retain without a partial charge, injected retention
+  denial names zero next work, and occurrence zero denies identity-read.
+  Exact rational and decimal targets need work three
+  to complete and retain their original values.
 
 ## Status
 

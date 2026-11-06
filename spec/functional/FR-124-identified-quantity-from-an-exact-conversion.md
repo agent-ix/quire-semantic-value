@@ -116,6 +116,15 @@ pub enum HandoffRefusal {
    remain distinct even though they carry that node as a component.
 7. The method SHALL use only the crate's existing dependencies, call no
    identity-minting method of `NodeKey`, and add no re-export (FR-060).
+8. On QSV's quantity conversion path, a completed conversion into an integer
+   target SHALL charge `unit.result-retain` with one value occurrence and one
+   result unit, but zero additional work units. `unit.target-domain` has already
+   paid the work of admitting the retained integer. Exact rational and decimal
+   conversion results, quantity arithmetic, and quantity comparison SHALL
+   continue to charge one work unit at `unit.result-retain`. Each retention
+   charge remains atomic and injectable by its named charge point. This rule
+   admits QSpec FR-142-AC-28's `CQ-E13` at its published limits without moving
+   a refusal or changing any target-domain charge.
 
 ## Acceptance Criteria
 
@@ -127,6 +136,7 @@ pub enum HandoffRefusal {
 | FR-124-AC-4 | A compound target whose dimensions cancel and whose ordered structural term encoding exceeds the 16 MiB `identity.input_bytes` ceiling returns `HandoffRefusal::Identity(InputBytes { bound: 16_777_216, required })` with `required > bound`, the same refusal as `QuantityUnit::id`, with no quantity and no unit, and the caller's `UnitScope` holds no new unit afterwards. The encoding is measured but neither hashed nor retained as identity. | Test (TC-923) |
 | FR-124-AC-5 | A declared root target with node `r` and a compound target whose sole root term is `(r, 1)` produce distinct unit ids from `identified_quantity` (`Declared(r)` before `Compound([(r, 1)])` in structural order), and resolving the compound quantity returns the compound unit rather than the declared root. | Test (TC-923) |
 | FR-124-AC-6 | The handoff adds no normal dependency or duplicate public identity type, retains the existing public `identified_quantity` signature, calls no `NodeKey::new` or retired digest constructor in production, and passes `make build-no-std`, `make lint` and `cargo build --locked`. | Inspection and Analysis (TC-923) |
+| FR-124-AC-7 | Exact `2 m` into `Int[-2,2]` completes as integer `2` with no loss under QSpec `CQ-E13` limits `L(2,0,0,1,2,1)`, admitting identity-read, target-domain, then result-retain with final work 2, occurrence 1 and result 1. Work limit 1 denies target-domain; result limit 0 and injected result-retain denial stop atomically without adding its counters, with the injected record naming zero next work; occurrence limit 0 denies identity-read before either later charge. Exact rational and decimal conversion retention still costs one work unit. | Test (TC-923) |
 
 ## Dependencies
 

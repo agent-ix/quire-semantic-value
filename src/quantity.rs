@@ -613,12 +613,14 @@ fn charge_rational_target(meter: &mut Meter) -> Result<(), Stop> {
         .map_err(Stop::from)
 }
 
-/// `unit.result-retain` of one quantity: `occ(result) = 1`.
-fn charge_retain(meter: &mut Meter) -> Result<(), Stop> {
+/// `unit.result-retain` of one result: `occ(result) = 1`. Integer conversion
+/// has already paid for its retained scalar at `unit.target-domain`.
+fn charge_retain(meter: &mut Meter, work_units: u64) -> Result<(), Stop> {
     meter
         .charge(
             Charge::new(ChargePoint::UnitResultRetain)
                 .size(LimitKind::ValueOccurrences, 1)
+                .work(Integer::from(work_units))
                 .results(1),
         )
         .map_err(Stop::from)
@@ -783,7 +785,7 @@ fn evaluate(
         }
     };
     charge_rational_target(meter)?;
-    charge_retain(meter)?;
+    charge_retain(meter, 1)?;
     Ok(result)
 }
 
@@ -863,7 +865,7 @@ fn convert(
     let value = match target {
         Target::Exact => {
             charge_rational_target(meter)?;
-            charge_retain(meter)?;
+            charge_retain(meter, 1)?;
             ConvertedValue::Exact(exact)
         }
         Target::Rational(domain) => {
@@ -876,7 +878,7 @@ fn convert(
                     target: Box::new(domain.clone()),
                 }));
             }
-            charge_retain(meter)?;
+            charge_retain(meter, 1)?;
             ConvertedValue::Exact(exact)
         }
         Target::Decimal {
@@ -892,7 +894,7 @@ fn convert(
             )?
             .admit()
             .map_err(refused)?;
-            charge_retain(meter)?;
+            charge_retain(meter, 1)?;
             ConvertedValue::Decimal(admitted.retain())
         }
         Target::Integer {
@@ -920,7 +922,7 @@ fn convert(
                 cause: CheckedInvariantCause::ExpectedIntegerPlacement,
             }))?;
             let value = domain.admit(coefficient).map_err(|_| out_of_domain())?;
-            charge_retain(meter)?;
+            charge_retain(meter, 0)?;
             ConvertedValue::Integer { value, loss }
         }
     };
@@ -998,7 +1000,7 @@ fn compare(
     charge_edges(left_edges.len() + right_edges.len(), meter)?;
     let left = events(left.value(), &left_edges, meter)?;
     let right = events(right.value(), &right_edges, meter)?;
-    charge_retain(meter)?;
+    charge_retain(meter, 1)?;
     Ok(left.cmp(&right))
 }
 
