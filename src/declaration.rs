@@ -46,7 +46,7 @@
 //! `Population` is QSpec FR-153's own restriction: it is never nested inside a
 //! record field, tuple position, option payload or collection element (every
 //! such context is refused earlier, at declaration admission, by
-//! `TypeEnvironment::type_refusal`), so none of this module's `admits()`
+//! `TypeEnvironment::walk_type_refusal`), so none of this module's `admits()`
 //! calls (`fill_slots`'s field check) ever receive a `Population` pair; only an
 //! evaluator's top-level parameter-admission loop needs the QSL FR-089-AC-5
 //! compensation, since `Population<T>[N]` is reachable there directly as a bare
