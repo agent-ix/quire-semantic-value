@@ -94,3 +94,16 @@ scope:
 ## Validation evidence
 
 Reviewer independently ran all four changed integration binaries: 57 passed, including actual allocator denial; shared storage reservation unit tests: 12 passed. cargo fmt --all -- --check and cargo clippy --locked --all-targets --all-features -- -D warnings passed. Spec and explicit scratchpad SR validation passed. Full aggregate/no_std/deny/docs gates are lead-owned and were not run in this review. Linear read-back passed: YAML parses, content round-trips (terminal newline stripped by CLI), and finding IDs match. Existing IR has-review label reused.
+
+## Dispositions
+
+| FND | outcome | reason |
+| --- | --- | --- |
+| FND-001 | fixed | Round 1: verified against 451fd4218092b4a37a08a1697ff8fe5a58a32d6c; canonical When trigger preserves the obligation. |
+| FND-002 | fixed | Round 1: verified against 451fd4218092b4a37a08a1697ff8fe5a58a32d6c; canonical When trigger preserves the obligation. |
+
+## Disposition round 1 verification
+
+Latest verdict: **PASS** at 451fd4218092b4a37a08a1697ff8fe5a58a32d6c. All prior findings are fixed; no new findings. Inspected the full fix delta: walk_type_refusal owns external/admission/equality semantic dispatch; borrowed UnknownDeclaration maps without cloning publicly and materializes via try_clone_node for admission. FallibleTypeStorage delegates every public/admission pending and visited reservation to checked reserve_elements; EqualityTypeStorage is selected only by the existing equality checker and uses native reserve_exact with Infallible exhaustion. No new panic adapter, semantic projection of storage failure, public API expansion or unsafe surface was introduced. contains_ieee_walk propagates the selected policy through pending and visited storage while preserving visit ordering, cycles and admission charge points.
+
+FR-132 temporal triggers are canonical When clauses without weakening preallocation or cleanup obligations. Initial findings remain unmodified. Reviewer independently reran the three actual-allocator integration tests and twelve storage reservation tests; all passed. Coder evidence independently inspected: 57 integration and 94 declaration tests passed, one existing performance test ignored; formatting and all-target/all-feature Clippy passed. No aggregate gate run. Base/gap/failure-domain conclusions remain PASS; no new code/criterion/trace gaps introduced.
