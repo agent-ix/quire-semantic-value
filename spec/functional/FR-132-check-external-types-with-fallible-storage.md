@@ -54,9 +54,8 @@ and reservation capacity overflow without retaining partial checking state.
    collection elements and map values retain their existing traversal.
    Enum scope remains the caller's responsibility. Nested IEEE discovery
    SHALL preserve its existing record, tuple, union-member and cycle behavior.
-5. When the check returns success, semantic refusal, or storage failure, QSV
-   SHALL leave the environment and supplied type unchanged and retain no
-   traversal state.
+5. When the check returns success, semantic refusal, or storage failure, QSV SHALL
+   leave the environment and supplied type unchanged and retain no traversal state.
    A retry after removing a denial SHALL produce the same result as a fresh
    successful-reservation attempt.
 
