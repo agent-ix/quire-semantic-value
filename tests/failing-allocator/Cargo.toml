@@ -1,0 +1,11 @@
+[package]
+name = "qsv-failing-allocator"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-or-later"
+
+# A separate test fixture owns the audited GlobalAlloc boundary. The product
+# manifest continues to forbid unsafe code, including in integration tests.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

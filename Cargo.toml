@@ -26,6 +26,7 @@ thiserror = { version = "2.0.20", default-features = false }
 test-support = []
 
 [dev-dependencies]
+qsv-failing-allocator = { path = "tests/failing-allocator" }
 allocation-counter = "0.8"
 ix-trace-rs = { git = "https://github.com/agent-ix/ix-trace-rs", branch = "main" }
 
