@@ -35,9 +35,9 @@ and reservation capacity overflow without retaining partial checking state.
    `try_check_type` and switch its in-repository callers to the fallible
    result. QSV SHALL expose no infallible compatibility wrapper for this
    external-type check.
-2. Before any allocation on the public check's reachable path, QSV SHALL use
-   `try_reserve` or `try_reserve_exact` with checked reservation sizing.
-   This includes the root worklist, later worklist growth, and visited
+2. When the public check requires storage on its reachable path, QSV SHALL
+   use `try_reserve` or `try_reserve_exact` with checked reservation sizing
+   before allocating. This includes the root worklist, later worklist growth, and visited
    composite storage used by nested IEEE discovery. Error construction SHALL
    require no further allocation.
 3. If an allocator denies a representable reservation, then QSV SHALL return
@@ -54,8 +54,9 @@ and reservation capacity overflow without retaining partial checking state.
    collection elements and map values retain their existing traversal.
    Enum scope remains the caller's responsibility. Nested IEEE discovery
    SHALL preserve its existing record, tuple, union-member and cycle behavior.
-5. After success, semantic refusal, or storage failure, QSV SHALL leave the
-   environment and supplied type unchanged and retain no traversal state.
+5. When the check returns success, semantic refusal, or storage failure, QSV
+   SHALL leave the environment and supplied type unchanged and retain no
+   traversal state.
    A retry after removing a denial SHALL produce the same result as a fresh
    successful-reservation attempt.
 
