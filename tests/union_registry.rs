@@ -312,18 +312,19 @@ fn unused_ieee_member_denies_all_keyed_kinds_but_sequence_admits() {
         CollectionKind::OrderedSet,
     ] {
         assert_eq!(
-            env.check_type(&ValueType::collection(CollectionType::new(
+            env.try_check_type(&ValueType::collection(CollectionType::new(
                 kind,
                 ValueType::Composite(key(1)),
                 None,
             )))
-            .unwrap_err()
-            .cause,
-            IllTypedCause::OperatorIneligible
+            .unwrap_err(),
+            quire_semantic_value::declaration::TypeCheckError::Refused(quire_exact::IllTyped {
+                cause: IllTypedCause::OperatorIneligible
+            })
         );
     }
     assert_eq!(
-        env.check_type(&ValueType::collection(CollectionType::new(
+        env.try_check_type(&ValueType::collection(CollectionType::new(
             CollectionKind::Sequence,
             ValueType::Composite(key(1)),
             None,

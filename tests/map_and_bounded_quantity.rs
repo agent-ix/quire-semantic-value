@@ -279,7 +279,7 @@ fn map_over_floats_is_admitted_and_set_of_such_a_map_is_refused() {
     let environment = environment();
     for value_type in &accepted {
         assert!(declare(core::slice::from_ref(value_type)).is_ok());
-        assert_eq!(environment.check_type(value_type), Ok(()));
+        assert_eq!(environment.try_check_type(value_type), Ok(()));
     }
     let refused = set_of(map_of(float64(), None));
     assert_eq!(
@@ -287,8 +287,10 @@ fn map_over_floats_is_admitted_and_set_of_such_a_map_is_refused() {
         Some(ill_typed(IllTypedCause::OperatorIneligible))
     );
     assert_eq!(
-        environment.check_type(&refused).unwrap_err().cause,
-        IllTypedCause::OperatorIneligible
+        environment.try_check_type(&refused).unwrap_err(),
+        quire_semantic_value::declaration::TypeCheckError::Refused(quire_exact::IllTyped {
+            cause: IllTypedCause::OperatorIneligible
+        })
     );
 }
 
@@ -341,15 +343,17 @@ fn map_value_type_is_refused_as_inside_option_and_collection() {
                 Some(cause.clone()),
                 "{wrapped:?}"
             );
-            // Plain: `check_type`, which reads an unknown declaration as a
+            // Plain: `try_check_type`, which reads an unknown declaration as a
             // type mismatch.
             let plain = match &cause {
                 DeclarationCause::Type(cause) => *cause,
                 _ => IllTypedCause::TypeMismatch,
             };
             assert_eq!(
-                environment.check_type(&wrapped).unwrap_err().cause,
-                plain,
+                environment.try_check_type(&wrapped).unwrap_err(),
+                quire_semantic_value::declaration::TypeCheckError::Refused(quire_exact::IllTyped {
+                    cause: plain
+                }),
                 "{wrapped:?}"
             );
         }
@@ -551,7 +555,7 @@ fn bounded_quantity_is_a_leaf_everywhere_in_declaration() {
         let environment = declare(&types).unwrap();
         for value_type in &types {
             assert!(!environment.contains_ieee(value_type));
-            assert_eq!(environment.check_type(value_type), Ok(()));
+            assert_eq!(environment.try_check_type(value_type), Ok(()));
         }
         assert!(!environment.contains_ieee(&ValueType::Composite(key(100))));
         assert!(admits_equality_conversion(shape, shape, &scope));

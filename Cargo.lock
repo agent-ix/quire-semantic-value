@@ -135,6 +135,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "qsv-failing-allocator"
+version = "0.0.0"
+
+[[package]]
 name = "quire-canonical"
 version = "0.3.0"
 source = "git+https://github.com/agent-ix/quire-canonical?branch=main#5dc4e12db63b8fae647825b4e4b78df9b6dcadfe"
@@ -179,6 +183,7 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "ix-trace-rs",
+ "qsv-failing-allocator",
  "quire-canonical",
  "quire-exact",
  "thiserror",

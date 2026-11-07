@@ -137,12 +137,14 @@ fn resolved_topology_is_visible_and_unsealed_union_grants_nothing() {
 /// fails direct and Option-wrapped membership on either type key.
 ///
 /// Trace: FR-115-AC-5
-#[trace("TC-915", "FR-115-AC-5")]
+#[trace("TC-915", "FR-115-AC-5", "TC-929", "FR-132-AC-1")]
 #[test]
 fn sealed_union_final_key_never_admits_a_record_or_tuple_carrier() {
     let mut env = TypeEnvironment::new([shape()], []).unwrap();
     env.seal_union_verified(key(1), key(40), bindings(key(40)))
         .unwrap();
+    assert_eq!(env.try_check_type(&ValueType::Composite(key(1))), Ok(()));
+    assert_eq!(env.try_check_type(&ValueType::Composite(key(40))), Ok(()));
     for declaration in [key(1), key(40)] {
         for slots in [vec![], vec![FieldValue::Present(integer(1))]] {
             let carrier =
@@ -522,15 +524,17 @@ fn ieee_and_named_escape_checks_run_before_any_binding_exists() {
         None,
     ));
     assert_eq!(
-        env.check_type(&set).unwrap_err().cause,
-        IllTypedCause::OperatorIneligible
+        env.try_check_type(&set).unwrap_err(),
+        quire_semantic_value::declaration::TypeCheckError::Refused(quire_exact::IllTyped {
+            cause: IllTypedCause::OperatorIneligible
+        })
     );
     let sequence = ValueType::collection(CollectionType::new(
         CollectionKind::Sequence,
         ValueType::Composite(key(1)),
         None,
     ));
-    assert_eq!(env.check_type(&sequence), Ok(()));
+    assert_eq!(env.try_check_type(&sequence), Ok(()));
     let Err(EnvironmentFailure::Refused(actual)) = TypeEnvironment::new(
         [CompositeDeclaration::new(
             key(1),

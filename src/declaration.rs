@@ -46,7 +46,7 @@
 //! `Population` is QSpec FR-153's own restriction: it is never nested inside a
 //! record field, tuple position, option payload or collection element (every
 //! such context is refused earlier, at declaration admission, by
-//! `TypeEnvironment::type_refusal`), so none of this module's `admits()`
+//! `TypeEnvironment::walk_type_refusal`), so none of this module's `admits()`
 //! calls (`fill_slots`'s field check) ever receive a `Population` pair; only an
 //! evaluator's top-level parameter-admission loop needs the QSL FR-089-AC-5
 //! compensation, since `Population<T>[N]` is reachable there directly as a bare
@@ -162,16 +162,25 @@ mod storage_reservation_tests {
     }
 
     /// Trace: FR-108-AC-2
-    #[trace("TC-907", "FR-108-AC-2")]
+    #[trace("TC-907", "FR-108-AC-2", "TC-929", "FR-132-AC-3")]
     #[test]
     fn size_overflow_is_distinct_from_allocator_denial() {
         let mut values: Vec<u8> = Vec::new();
+        let failure = reserve_elements(&mut values, usize::MAX, &GlobalReservations)
+            .expect_err("overflow cannot reach the allocator");
         assert_eq!(
-            reserve_elements(&mut values, usize::MAX, &GlobalReservations),
-            Err(StorageFailure::Capacity(StorageRequest::new(
+            failure,
+            StorageFailure::Capacity(StorageRequest::new(
                 usize::MAX,
                 StorageUnit::AdditionalElements,
-            )))
+            ))
+        );
+        assert_eq!(
+            TypeCheckError::from(failure),
+            TypeCheckError::Capacity(StorageRequest::new(
+                usize::MAX,
+                StorageUnit::AdditionalElements
+            ),)
         );
     }
 
@@ -1844,6 +1853,85 @@ impl StorageRequest {
     }
 }
 
+/// Failure of an external type check, without retained traversal state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TypeCheckError {
+    /// The type is semantically ineligible.
+    Refused(IllTyped),
+    /// An allocator denied this representable reservation.
+    Allocation(StorageRequest),
+    /// Reservation sizing overflowed.
+    Capacity(StorageRequest),
+}
+
+impl From<StorageFailure> for TypeCheckError {
+    fn from(failure: StorageFailure) -> Self {
+        match failure {
+            StorageFailure::Allocation(request) => Self::Allocation(request),
+            StorageFailure::Capacity(request) => Self::Capacity(request),
+        }
+    }
+}
+
+// Borrow the unknown key until the caller chooses its diagnostic representation.
+enum TypeRefusal<'a> {
+    UnknownDeclaration(&'a NodeKey),
+    Type(IllTypedCause),
+}
+
+impl TypeRefusal<'_> {
+    fn cause(&self) -> IllTypedCause {
+        match self {
+            Self::UnknownDeclaration(_) => IllTypedCause::TypeMismatch,
+            Self::Type(cause) => *cause,
+        }
+    }
+
+    fn into_declaration<R: ReservationPolicy>(self, reserve: &R) -> Admission<DeclarationCause> {
+        match self {
+            Self::UnknownDeclaration(key) => Ok(DeclarationCause::UnknownDeclaration(
+                try_clone_node(key, reserve)?,
+            )),
+            Self::Type(cause) => Ok(DeclarationCause::Type(cause)),
+        }
+    }
+}
+
+// Only storage behavior varies between the established infallible equality
+// checker and fallible external checking/admission. Semantic decisions do not.
+trait TypeWalkStorage<E> {
+    fn reserve<T>(&self, values: &mut Vec<T>, additional: usize) -> Result<(), E>;
+
+    fn push<T>(&self, values: &mut Vec<T>, value: T) -> Result<(), E> {
+        self.reserve(values, 1)?;
+        values.push(value);
+        Ok(())
+    }
+}
+
+struct FallibleTypeStorage<'a, R>(&'a R);
+
+impl<R: ReservationPolicy, E: From<StorageFailure>> TypeWalkStorage<E>
+    for FallibleTypeStorage<'_, R>
+{
+    fn reserve<T>(&self, values: &mut Vec<T>, additional: usize) -> Result<(), E> {
+        reserve_elements(values, additional, self.0).map_err(E::from)
+    }
+}
+
+struct EqualityTypeStorage;
+
+impl TypeWalkStorage<core::convert::Infallible> for EqualityTypeStorage {
+    fn reserve<T>(
+        &self,
+        values: &mut Vec<T>,
+        additional: usize,
+    ) -> Result<(), core::convert::Infallible> {
+        values.reserve_exact(additional);
+        Ok(())
+    }
+}
+
 /// Test control for an actual type-environment storage reservation.
 ///
 /// `AllocationDenied` and `CapacityExceeded` classify the measured request at
@@ -1984,7 +2072,11 @@ pub(crate) fn reserve_elements<T, R: ReservationPolicy>(
         .map_err(|_| StorageFailure::Allocation(request))
 }
 
-fn try_push<T, R: ReservationPolicy>(values: &mut Vec<T>, value: T, policy: &R) -> Admission<()> {
+fn try_push<T, R: ReservationPolicy>(
+    values: &mut Vec<T>,
+    value: T,
+    policy: &R,
+) -> Result<(), StorageFailure> {
     reserve_elements(values, 1, policy)?;
     values.push(value);
     Ok(())
@@ -2143,15 +2235,24 @@ impl<K: Ord, V> OrderedIndex<K, V> {
         value: V,
         reserve: &R,
     ) -> Result<Option<V>, StorageFailure> {
+        self.insert_with(key, value, |entries| reserve_elements(entries, 1, reserve))
+    }
+
+    fn insert_with<E>(
+        &mut self,
+        key: K,
+        value: V,
+        reserve: impl FnOnce(&mut Vec<(K, V)>) -> Result<(), E>,
+    ) -> Result<Option<V>, E> {
         if self.entries.last().is_none_or(|(last, _)| last < &key) {
-            reserve_elements(&mut self.entries, 1, reserve)?;
+            reserve(&mut self.entries)?;
             self.entries.push((key, value));
             return Ok(None);
         }
         match self.entries.binary_search_by(|(item, _)| item.cmp(&key)) {
             Ok(at) => Ok(Some(core::mem::replace(&mut self.entries[at].1, value))),
             Err(at) => {
-                reserve_elements(&mut self.entries, 1, reserve)?;
+                reserve(&mut self.entries)?;
                 self.entries.insert(at, (key, value));
                 Ok(None)
             }
@@ -3242,13 +3343,18 @@ impl TypeEnvironment {
     /// bag or ordered set has an IEEE-bearing element type. Enum declarations
     /// are checked against the quire-spec-language checker's admitted scope;
     /// this environment does not hold or check them.
-    pub fn check_type(&self, value_type: &ValueType) -> Result<(), IllTyped> {
-        match self.type_refusal(value_type) {
+    /// Storage failures retain the native reservation request and allocate no
+    /// diagnostic payload. The environment and input remain unchanged.
+    pub fn try_check_type(&self, value_type: &ValueType) -> Result<(), TypeCheckError> {
+        match self.walk_type_refusal(
+            value_type,
+            &mut |_| Ok::<(), StorageFailure>(()),
+            &FallibleTypeStorage(&GlobalReservations),
+        )? {
             None => Ok(()),
-            Some(DeclarationCause::Type(cause)) => Err(IllTyped { cause }),
-            Some(_) => Err(IllTyped {
-                cause: IllTypedCause::TypeMismatch,
-            }),
+            Some(refusal) => Err(TypeCheckError::Refused(IllTyped {
+                cause: refusal.cause(),
+            })),
         }
     }
 
@@ -3358,83 +3464,16 @@ impl TypeEnvironment {
         false
     }
 
-    /// The first refusal of one type's named declarations and element types.
-    fn type_refusal(&self, value_type: &ValueType) -> Option<DeclarationCause> {
-        let mut pending = vec![value_type];
-        while let Some(value_type) = pending.pop() {
-            match value_type {
-                ValueType::Composite(key)
-                    if !self
-                        .composites
-                        .contains_key(self.union_handles.get(key).unwrap_or(key)) =>
-                {
-                    return Some(DeclarationCause::UnknownDeclaration(key.clone()));
-                }
-                // QSpec FR-143: `T` in `Reference<T>` must name a model object
-                // type; any other target is `type-mismatch`. The key is an
-                // effective identity, so an admitted record or
-                // tuple (keyed by `NodeKey`) can never satisfy it either.
-                ValueType::Reference(key) if !self.object_types.contains_key(key) => {
-                    return Some(DeclarationCause::Type(IllTypedCause::TypeMismatch));
-                }
-                // QSpec FR-153 names a population binding only as the direct
-                // operand of `allInstances`/`lookup` (checked by
-                // `Typer::all_instances`/`Typer::lookup` themselves, which
-                // never route the population expression's own type through
-                // this walk) and as a bare parameter type (bypassed by
-                // `bind_parameters`, the one caller allowed to name it).
-                // Every other named-type context -- an equality operand or
-                // `Convert` target (`TypeEnvironment::check_equality`'s own
-                // explicit refusal covers the former), an `Option` payload, a
-                // collection element, or a record/tuple/object-type member --
-                // refuses it here, never admitting a binding into a context
-                // QSpec FR-153 never gives it Outputs for.
-                ValueType::Population(_) => {
-                    return Some(DeclarationCause::Type(IllTypedCause::OperatorIneligible));
-                }
-                ValueType::Option(payload) => pending.push(payload),
-                ValueType::Collection(collection) => {
-                    if collection.kind() != CollectionKind::Sequence
-                        && self.contains_ieee(collection.element())
-                    {
-                        return Some(DeclarationCause::Type(IllTypedCause::OperatorIneligible));
-                    }
-                    pending.push(collection.element());
-                }
-                // A map's values are neither deduplicated, ordered nor keyed,
-                // so IEEE content is not refused here, as under a `Sequence`.
-                ValueType::Map(map) => pending.push(map.values()),
-                ValueType::Boolean
-                | ValueType::Integer
-                | ValueType::Int(_)
-                | ValueType::Rational(_)
-                | ValueType::Decimal(_)
-                | ValueType::Float(_)
-                | ValueType::Quantity(_)
-                | ValueType::BoundedQuantity(_)
-                | ValueType::CarriedQuantity(_)
-                | ValueType::Text(_)
-                | ValueType::String
-                | ValueType::Uuid
-                | ValueType::Timestamp
-                | ValueType::Enum(_)
-                | ValueType::Composite(_)
-                | ValueType::Reference(_) => {}
-            }
-        }
-        None
-    }
-
-    fn contains_ieee_admission<R: ReservationPolicy>(
+    fn contains_ieee_walk<S: TypeWalkStorage<E>, E>(
         &self,
         value_type: &ValueType,
-        charge: &mut impl FnMut(usize) -> Admission<()>,
-        reserve: &R,
-    ) -> Admission<bool> {
+        charge: &mut impl FnMut(usize) -> Result<(), E>,
+        storage: &S,
+    ) -> Result<bool, E> {
         let mut visited: OrderedIndex<&NodeKey, ()> = OrderedIndex::default();
         charge(1)?;
         let mut pending = Vec::new();
-        try_push(&mut pending, value_type, reserve)?;
+        storage.push(&mut pending, value_type)?;
         let mut first = true;
         while let Some(value_type) = pending.pop() {
             if !first {
@@ -3443,16 +3482,16 @@ impl TypeEnvironment {
             first = false;
             match value_type {
                 ValueType::Float(_) => return Ok(true),
-                ValueType::Option(payload) => try_push(&mut pending, payload, reserve)?,
+                ValueType::Option(payload) => storage.push(&mut pending, payload)?,
                 ValueType::Collection(collection) => {
-                    try_push(&mut pending, collection.element(), reserve)?;
+                    storage.push(&mut pending, collection.element())?;
                 }
-                ValueType::Map(map) => try_push(&mut pending, map.values(), reserve)?,
+                ValueType::Map(map) => storage.push(&mut pending, map.values())?,
                 ValueType::Composite(key) => {
                     if visited.contains_key(&key) {
                         continue;
                     }
-                    visited.try_insert(key, (), reserve)?;
+                    visited.insert_with(key, (), |entries| storage.reserve(entries, 1))?;
                     match self
                         .composites
                         .get(key)
@@ -3460,12 +3499,12 @@ impl TypeEnvironment {
                     {
                         Some(CompositeShape::Record(fields)) => {
                             for field in fields {
-                                try_push(&mut pending, field.value_type(), reserve)?;
+                                storage.push(&mut pending, field.value_type())?;
                             }
                         }
                         Some(CompositeShape::Tuple(positions)) => {
                             for position in positions {
-                                try_push(&mut pending, position, reserve)?;
+                                storage.push(&mut pending, position)?;
                             }
                         }
                         Some(CompositeShape::Union(members)) => {
@@ -3473,7 +3512,7 @@ impl TypeEnvironment {
                             for member in members {
                                 charge(member.positions.len())?;
                                 for ty in &member.positions {
-                                    try_push(&mut pending, ty, reserve)?;
+                                    storage.push(&mut pending, ty)?;
                                 }
                             }
                         }
@@ -3506,9 +3545,20 @@ impl TypeEnvironment {
         charge: &mut impl FnMut(usize) -> Admission<()>,
         reserve: &R,
     ) -> Admission<Option<DeclarationCause>> {
+        self.walk_type_refusal(value_type, charge, &FallibleTypeStorage(reserve))?
+            .map(|refusal| refusal.into_declaration(reserve))
+            .transpose()
+    }
+
+    fn walk_type_refusal<'a, S: TypeWalkStorage<E>, E>(
+        &self,
+        value_type: &'a ValueType,
+        charge: &mut impl FnMut(usize) -> Result<(), E>,
+        storage: &S,
+    ) -> Result<Option<TypeRefusal<'a>>, E> {
         charge(1)?;
         let mut pending = Vec::new();
-        try_push(&mut pending, value_type, reserve)?;
+        storage.push(&mut pending, value_type)?;
         let mut first = true;
         while let Some(value_type) = pending.pop() {
             if !first {
@@ -3516,31 +3566,29 @@ impl TypeEnvironment {
             }
             first = false;
             match value_type {
-                ValueType::Composite(key) if !self.composites.contains_key(key) => {
-                    return Ok(Some(DeclarationCause::UnknownDeclaration(try_clone_node(
-                        key, reserve,
-                    )?)));
+                ValueType::Composite(key)
+                    if !self
+                        .composites
+                        .contains_key(self.union_handles.get(key).unwrap_or(key)) =>
+                {
+                    return Ok(Some(TypeRefusal::UnknownDeclaration(key)));
                 }
                 ValueType::Reference(key) if !self.object_types.contains_key(key) => {
-                    return Ok(Some(DeclarationCause::Type(IllTypedCause::TypeMismatch)));
+                    return Ok(Some(TypeRefusal::Type(IllTypedCause::TypeMismatch)));
                 }
                 ValueType::Population(_) => {
-                    return Ok(Some(DeclarationCause::Type(
-                        IllTypedCause::OperatorIneligible,
-                    )));
+                    return Ok(Some(TypeRefusal::Type(IllTypedCause::OperatorIneligible)));
                 }
-                ValueType::Option(payload) => try_push(&mut pending, payload, reserve)?,
+                ValueType::Option(payload) => storage.push(&mut pending, payload)?,
                 ValueType::Collection(collection) => {
                     if collection.kind() != CollectionKind::Sequence
-                        && self.contains_ieee_admission(collection.element(), charge, reserve)?
+                        && self.contains_ieee_walk(collection.element(), charge, storage)?
                     {
-                        return Ok(Some(DeclarationCause::Type(
-                            IllTypedCause::OperatorIneligible,
-                        )));
+                        return Ok(Some(TypeRefusal::Type(IllTypedCause::OperatorIneligible)));
                     }
-                    try_push(&mut pending, collection.element(), reserve)?;
+                    storage.push(&mut pending, collection.element())?;
                 }
-                ValueType::Map(map) => try_push(&mut pending, map.values(), reserve)?,
+                ValueType::Map(map) => storage.push(&mut pending, map.values())?,
                 ValueType::Boolean
                 | ValueType::Integer
                 | ValueType::Int(_)
@@ -5347,11 +5395,16 @@ impl TypeEnvironment {
         let ill_typed = |cause| Err(IllTyped { cause });
         for operand in [&left, &right] {
             for value_type in core::iter::once(&operand.source).chain(operand.target.iter()) {
-                if let Some(cause) = self.type_refusal(value_type) {
-                    return ill_typed(match cause {
-                        DeclarationCause::Type(cause) => cause,
-                        _ => IllTypedCause::TypeMismatch,
-                    });
+                let refusal = match self.walk_type_refusal(
+                    value_type,
+                    &mut |_| Ok::<(), core::convert::Infallible>(()),
+                    &EqualityTypeStorage,
+                ) {
+                    Ok(refusal) => refusal,
+                    Err(impossible) => match impossible {},
+                };
+                if let Some(refusal) = refusal {
+                    return ill_typed(refusal.cause());
                 }
             }
         }
@@ -5743,7 +5796,7 @@ mod native_type_tests {
             Integer::one(),
         ));
         for value_type in [ValueType::Uuid, ValueType::Timestamp] {
-            assert_eq!(types.check_type(&value_type), Ok(()));
+            assert_eq!(types.try_check_type(&value_type), Ok(()));
             assert!(!types.contains_ieee(&value_type));
             assert!(!admits_equality_conversion(
                 &bounded_integer,
@@ -5780,7 +5833,7 @@ mod native_type_tests {
         let decomposed = Value::String("e\u{301}".into());
         let equal_copy = Value::String("e\u{301}".into());
 
-        assert_eq!(types.check_type(&ValueType::String), Ok(()));
+        assert_eq!(types.try_check_type(&ValueType::String), Ok(()));
         assert!(!types.contains_ieee(&ValueType::String));
         assert!(types
             .admits(&ValueType::String, &decomposed)
