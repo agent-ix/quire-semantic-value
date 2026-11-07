@@ -119,14 +119,23 @@ fn external_semantics_preserve_nested_traversal_and_refusal_priority() {
         );
     }
     for ty in [
-        ValueType::Population(common::effective(9)),
-        ValueType::option(ValueType::Population(common::effective(9))),
+        ValueType::Population(None),
+        ValueType::option(ValueType::Population(None)),
     ] {
         assert_eq!(
             environment.try_check_type(&ty),
             refused(IllTypedCause::OperatorIneligible)
         );
     }
+    let unknown = ValueType::Composite(common::node(999));
+    qsv_failing_allocator::arm(1);
+    let unknown_result = environment.try_check_type(&unknown);
+    let denied = qsv_failing_allocator::disarm();
+    assert_eq!(
+        denied, None,
+        "unknown-key errors allocate no identity clone"
+    );
+    assert_eq!(unknown_result, refused(IllTypedCause::TypeMismatch));
     for kind in [
         CollectionKind::Set,
         CollectionKind::Bag,
