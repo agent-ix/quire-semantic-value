@@ -194,9 +194,10 @@ fn ieee_discovery_preserves_record_tuple_union_and_cycle_behavior() {
             CompositeDeclaration::new(
                 common::node(4),
                 "Cycle",
-                CompositeShape::Tuple(vec![ValueType::option(ValueType::Composite(common::node(
-                    4,
-                )))]),
+                CompositeShape::Union(vec![UnionMemberDeclaration::resolved(
+                    Identifier::new("Next").unwrap(),
+                    vec![ValueType::option(ValueType::Composite(common::node(4)))],
+                )]),
             ),
         ],
         [ObjectTypeDeclaration::new(
