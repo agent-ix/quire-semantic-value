@@ -25,7 +25,7 @@ Scope: FR-114-AC-1, FR-114-AC-2, FR-114-AC-3.
    the root of the same origin.
 3. Order the locations of step 1 together.
 4. Compare a `ModelOperationClause` origin for operation `Q` at position 2
-   with `Origin::StateClause { clause: "Q", index: 2 }`.
+   with `ExpressionOwner::StateClause { clause: "Q", index: 2 }`.
 
 ## Expected Results
 

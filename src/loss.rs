@@ -6,7 +6,7 @@
 
 use quire_exact::{DecimalLoss, IeeeExactLoss, IeeeFlags};
 
-use crate::location::Location;
+use crate::location::ExpressionLocation;
 
 /// Information one completed operation discarded.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,7 +23,7 @@ pub enum ValueLoss {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocatedLoss {
     /// The producing expression.
-    pub location: Location,
+    pub location: ExpressionLocation,
     /// What was discarded.
     pub loss: ValueLoss,
 }

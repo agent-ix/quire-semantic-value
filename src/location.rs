@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Expression locations: the declaration an
-//! expression belongs to ([`Origin`]) and the child-index path from that
-//! declaration's root expression ([`Location`]). A checking refusal, an
+//! expression belongs to ([`ExpressionOwner`]) and the child-index path from that
+//! declaration's root expression ([`ExpressionLocation`]). A checking refusal, an
 //! evaluation outcome and a loss record are all located this way.
 //!
 //! These are not `quire_exact::{Origin, Location}`: those name a checked
@@ -17,7 +17,7 @@ use core::hash::{Hash, Hasher};
 
 /// The declaration a location belongs to.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum Origin {
+pub enum ExpressionOwner {
     /// The body of the named function, at this zero-based declaration index.
     Body {
         /// The declared name.
@@ -63,7 +63,7 @@ pub enum Origin {
     /// source order. An `operation_anchor`/`frame` node names no position
     /// of its own, so this names a real position of the unit (the
     /// attempt's own declared name) to resolve its generated occurrence's
-    /// region, the same way `Origin::StateClause` does for a `pre`/`post`
+    /// region, the same way `ExpressionOwner::StateClause` does for a `pre`/`post`
     /// clause's own anchor (QSL FR-096).
     ProtocolAttempt {
         /// The protocol's index among the package's protocols.
@@ -73,7 +73,7 @@ pub enum Origin {
     },
     /// One `requires` or `ensures` clause a domain package authors on a
     /// model operation (QSL FR-103). It is not a unit state clause, so it
-    /// is not counted by [`Origin::StateClause`]'s index.
+    /// is not counted by [`ExpressionOwner::StateClause`]'s index.
     ModelOperationClause {
         /// The operation's identifying text.
         operation: String,
@@ -98,14 +98,14 @@ pub enum OperationClauseKind {
 /// declaration's root expression.
 ///
 /// The path is a shared parent chain: a child is the parent's chain plus one
-/// link, so [`Location::child`] costs the same at any depth and a node a
+/// link, so [`ExpressionLocation::child`] costs the same at any depth and a node a
 /// hundred thousand levels down holds no copy of the path above it. The index
-/// sequence is built only on output, by [`Location::path`]. Clone, equality,
+/// sequence is built only on output, by [`ExpressionLocation::path`]. Clone, equality,
 /// hash, order, debug and drop never recurse with the depth.
 #[derive(Clone)]
-pub struct Location {
+pub struct ExpressionLocation {
     /// The owning declaration.
-    pub origin: Origin,
+    pub origin: ExpressionOwner,
     tip: Option<Arc<Link>>,
 }
 
@@ -135,15 +135,15 @@ impl Drop for Link {
     }
 }
 
-impl Location {
+impl ExpressionLocation {
     /// The location of the root expression of `origin`.
-    pub fn root(origin: Origin) -> Self {
+    pub fn root(origin: ExpressionOwner) -> Self {
         Self { origin, tip: None }
     }
 
     /// The location `path` reaches from the root of `origin`, one child
     /// index per step.
-    pub fn at(origin: Origin, path: &[usize]) -> Self {
+    pub fn at(origin: ExpressionOwner, path: &[usize]) -> Self {
         path.iter()
             .fold(Self::root(origin), |location, index| location.child(*index))
     }
@@ -222,7 +222,7 @@ impl Location {
     }
 
     /// The links from this location's tip up to, but not including, the
-    /// root: each one's address (see [`Location::chain_address`]) and the
+    /// root: each one's address (see [`ExpressionLocation::chain_address`]) and the
     /// child index it takes, nearest the tip first.
     pub fn ancestry(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         let mut link = self.tip.as_deref();
@@ -254,15 +254,15 @@ impl Location {
     }
 }
 
-impl PartialEq for Location {
+impl PartialEq for ExpressionLocation {
     fn eq(&self, other: &Self) -> bool {
         self.origin == other.origin && self.same_path(other)
     }
 }
 
-impl Eq for Location {}
+impl Eq for ExpressionLocation {}
 
-impl Hash for Location {
+impl Hash for ExpressionLocation {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.origin.hash(state);
         self.depth().hash(state);
@@ -278,7 +278,7 @@ impl Hash for Location {
 /// (a map keyed by location needs a deterministic order, not that one); two
 /// different paths of one depth whose fingerprints collide fall back to the
 /// sequences themselves.
-impl Ord for Location {
+impl Ord for ExpressionLocation {
     fn cmp(&self, other: &Self) -> Ordering {
         let fingerprint =
             |location: &Self| location.tip.as_deref().map_or(0, |link| link.fingerprint);
@@ -296,15 +296,15 @@ impl Ord for Location {
     }
 }
 
-impl PartialOrd for Location {
+impl PartialOrd for ExpressionLocation {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl fmt::Debug for Location {
+impl fmt::Debug for ExpressionLocation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Location")
+        f.debug_struct("ExpressionLocation")
             .field("origin", &self.origin)
             .field("depth", &self.depth())
             .field("last_index", &self.last_index())
@@ -318,8 +318,8 @@ mod tests {
     use alloc::vec;
     use ix_trace_rs::trace;
 
-    fn body() -> Origin {
-        Origin::Body {
+    fn body() -> ExpressionOwner {
+        ExpressionOwner::Body {
             function: String::from("f"),
             index: 2,
         }
@@ -330,7 +330,7 @@ mod tests {
     #[trace("TC-914", "FR-114-AC-1", "FR-114-AC-2", "FR-114-AC-3")]
     #[test]
     fn a_model_operation_clause_origin_is_its_own() {
-        let clause = |operation: &str, kind, position| Origin::ModelOperationClause {
+        let clause = |operation: &str, kind, position| ExpressionOwner::ModelOperationClause {
             operation: String::from(operation),
             kind,
             position,
@@ -340,19 +340,19 @@ mod tests {
         let place_ens_0 = clause("place", OperationClauseKind::Ensures, 0);
         let cancel_req_0 = clause("cancel", OperationClauseKind::Requires, 0);
         let roots = [&place_req_0, &place_req_1, &place_ens_0, &cancel_req_0]
-            .map(|origin| Location::root(origin.clone()));
+            .map(|origin| ExpressionLocation::root(origin.clone()));
         for (i, left) in roots.iter().enumerate() {
             for (j, right) in roots.iter().enumerate() {
                 assert_eq!(left == right, i == j);
             }
         }
         assert_eq!(
-            Location::root(place_req_0.clone()),
-            Location::root(clause("place", OperationClauseKind::Requires, 0))
+            ExpressionLocation::root(place_req_0.clone()),
+            ExpressionLocation::root(clause("place", OperationClauseKind::Requires, 0))
         );
         assert_ne!(
-            Location::at(place_req_0.clone(), &[0]),
-            Location::root(place_req_0.clone())
+            ExpressionLocation::at(place_req_0.clone(), &[0]),
+            ExpressionLocation::root(place_req_0.clone())
         );
         let mut ordered = vec![
             roots[2].clone(),
@@ -362,7 +362,7 @@ mod tests {
         ];
         ordered.sort();
         assert_eq!(ordered, [3, 0, 1, 2].map(|index| roots[index].clone()));
-        let state = Origin::StateClause {
+        let state = ExpressionOwner::StateClause {
             clause: String::from("Q"),
             index: 2,
         };
@@ -373,7 +373,7 @@ mod tests {
     /// the parent unchanged.
     #[test]
     fn child_extends_the_path_and_keeps_the_origin() {
-        let parent = Location::at(body(), &[1]);
+        let parent = ExpressionLocation::at(body(), &[1]);
         let child = parent.child(3);
         assert_eq!(child.origin, parent.origin);
         assert_eq!(child.path(), vec![1, 3]);
@@ -384,16 +384,19 @@ mod tests {
     /// chain they share, and order by depth first.
     #[test]
     fn equal_paths_built_apart_are_equal_and_order_by_depth() {
-        let left = Location::at(body(), &[0, 4, 1]);
-        let right = Location::root(body()).child(0).child(4).child(1);
+        let left = ExpressionLocation::at(body(), &[0, 4, 1]);
+        let right = ExpressionLocation::root(body()).child(0).child(4).child(1);
         assert!(!left.shares_chain_with(&right));
         assert_eq!(left, right);
-        assert_ne!(left, Location::at(body(), &[0, 4, 2]));
-        assert_ne!(left, Location::at(body(), &[0, 4]));
-        assert!(Location::at(body(), &[0, 4]) < left);
-        assert!(Location::at(body(), &[7]) < Location::at(body(), &[0, 4]));
+        assert_ne!(left, ExpressionLocation::at(body(), &[0, 4, 2]));
+        assert_ne!(left, ExpressionLocation::at(body(), &[0, 4]));
+        assert!(ExpressionLocation::at(body(), &[0, 4]) < left);
+        assert!(ExpressionLocation::at(body(), &[7]) < ExpressionLocation::at(body(), &[0, 4]));
         assert_eq!(left.cmp(&right), Ordering::Equal);
-        assert_ne!(left.cmp(&Location::at(body(), &[0, 4, 2])), Ordering::Equal);
+        assert_ne!(
+            left.cmp(&ExpressionLocation::at(body(), &[0, 4, 2])),
+            Ordering::Equal
+        );
     }
 
     /// A chain a million links long is built, cloned, compared, formatted
@@ -403,7 +406,7 @@ mod tests {
         let handle = std::thread::Builder::new()
             .stack_size(256 * 1024)
             .spawn(|| {
-                let mut location = Location::root(body());
+                let mut location = ExpressionLocation::root(body());
                 for _ in 0..1_000_000 {
                     location = location.child(0);
                 }
@@ -412,7 +415,7 @@ mod tests {
                 assert_eq!(location.depth(), 1_000_000);
                 assert_eq!(location.path().len(), 1_000_000);
                 assert!(!alloc::format!("{location:?}").is_empty());
-                let other = Location::at(body(), &vec![0; 1_000_000]);
+                let other = ExpressionLocation::at(body(), &vec![0; 1_000_000]);
                 assert_eq!(other, location);
             })
             .expect("spawn");

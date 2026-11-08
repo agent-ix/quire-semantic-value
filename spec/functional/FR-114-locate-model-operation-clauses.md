@@ -8,7 +8,7 @@ relationships: []
 
 ## Description
 
-`quire-semantic-value` SHALL give `Origin` a variant for one `requires` or
+`quire-semantic-value` SHALL give `ExpressionOwner` a variant for one `requires` or
 `ensures` clause of a model operation. It names the operation, the clause kind
 and the clause's position in the operation's list of that kind, so a location
 in such a clause is told apart from a location in any other clause, including
@@ -23,7 +23,7 @@ origin of a unit state clause, whose index counts a different list.
 
 ## Behavior
 
-1. `Origin::ModelOperationClause { operation, kind, position }` holds the
+1. `ExpressionOwner::ModelOperationClause { operation, kind, position }` holds the
    operation's identifying text, which is opaque to this crate and SHALL
    identify one operation within the package (a bare name that two models
    share does not), an `OperationClauseKind` (`Requires` or
@@ -31,7 +31,7 @@ origin of a unit state clause, whose index counts a different list.
 2. Two locations in the same clause, with equal paths, are equal. Locations
    that differ in operation, kind or position are unequal, and order by
    operation, then kind (`Requires` before `Ensures`), then position.
-3. The variant is distinct from `Origin::StateClause`: equal names and indices
+3. The variant is distinct from `ExpressionOwner::StateClause`: equal names and indices
    in the two variants are unequal.
 
 ## Acceptance Criteria
