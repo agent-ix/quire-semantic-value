@@ -3082,9 +3082,10 @@ impl TypeEnvironment {
                         collection.bound(),
                     ))
                 }
-                ValueType::Map(map) => {
-                    ValueType::map(quire_exact::MapType::new(resolved, map.bound()))
-                }
+                ValueType::Map(map) => ValueType::map(
+                    quire_exact::MapType::new(map.key().clone(), resolved, map.bound())
+                        .expect("a map key that was already valid stays valid"),
+                ),
                 ValueType::Boolean
                 | ValueType::Integer
                 | ValueType::Int(_)

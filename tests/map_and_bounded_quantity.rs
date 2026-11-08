@@ -110,7 +110,7 @@ fn bound(minimum: u64, maximum: u64) -> Option<CardinalityBound> {
 }
 
 fn map_of(values: ValueType, bound: Option<CardinalityBound>) -> ValueType {
-    ValueType::map(MapType::new(values, bound))
+    ValueType::map(MapType::new(ValueType::String, values, bound).unwrap())
 }
 
 fn sequence_of(element: ValueType) -> ValueType {
