@@ -230,7 +230,8 @@ fn ieee_discovery_preserves_record_tuple_union_and_cycle_behavior() {
             );
         }
     }
-    let map = ValueType::map(MapType::new(ValueType::option(float), None));
+    let map =
+        ValueType::map(MapType::new(ValueType::String, ValueType::option(float), None).unwrap());
     assert_eq!(environment.try_check_type(&map), Ok(()));
     assert_eq!(
         environment.try_check_type(&collection(CollectionKind::Set, map)),
