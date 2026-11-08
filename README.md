@@ -1,5 +1,8 @@
 # quire-semantic-value
 
+[![Discord](https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/k8DVhuYBR2)
+[![Quire](https://img.shields.io/badge/Quire-Specification%20Language-1F6FEB)](https://github.com/agent-ix/quire-spec-language)
+
 quire-semantic-value is a `no_std` Rust library of runtime values for the
 Quire stack: quantities with units, enumeration members, records, tuples and
 unions checked against their declared shape, object references, and the
@@ -87,7 +90,7 @@ more storage; it cannot provide a declaration result or inject an
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/ecosystem-dark.svg">
-  <img alt="The Quire repositories. The main chain runs from the standard, quire-specification, to the compiler, quire-spec-language, then quire-contract-ir, quire-contract-codegen and quire-contract-runtime. quire-spec-language also feeds quire-protocol, and quire-contract-ir feeds quire-analyze. quire-observation feeds quire-protocol and quire-mltl. Above the chain, quire-driver runs it, quire-integration tests it and quire-verification plans verification. Below it, shared libraries used throughout: quire-exact, quire-semantic-value, quire-walk, quire-canonical and quire-verification-contracts." src="docs/images/ecosystem-light.svg">
+  <img alt="The Quire repositories. The main chain runs from the standard, quire-specification, to the compiler, quire-spec-language, then quire-contract-ir, quire-contract-codegen and quire-contract-runtime. quire-spec-language also feeds quire-protocol, and quire-contract-ir feeds quire-analyze. quire-observation feeds quire-protocol and quire-mltl. quire-eval is the evaluation core. Above the chain, quire-driver runs it, quire-integration tests it and quire-verification plans verification. Below it, shared libraries used throughout: quire-exact, quire-semantic-value, quire-walk, quire-canonical and quire-verification-contracts." src="docs/images/ecosystem-light.svg">
 </picture>
 
 This crate depends on
@@ -113,7 +116,7 @@ forbids `unsafe` code.
 `spec/` holds the requirements this crate owns directly: the admission and
 dangling-reference rules of the object closure, and the rule that the crate
 mints no node, effective or population identity. The requirements for the other
-modules are owned by quire-spec-language and quire-specification (private), and
+modules are owned by quire-spec-language and [quire-specification](https://github.com/agent-ix/quire-specification), and
 moving them here is remaining work.
 
 ## Contributing
